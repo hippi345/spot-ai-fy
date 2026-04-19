@@ -900,6 +900,22 @@ class SpotifyToolRunner:
             "/search",
             params={"q": q, "type": types, "market": market, "limit": limit, "offset": offset},
         )
+        # Spotify dev-mode search responses interleave literal `null` entries into every
+        # `items` array (sparsification — see backend/scripts/diag_search_and_owned.py).
+        # Small/local models read the nulls as "no results" and hallucinate an empty
+        # answer. Strip them before the LLM ever sees the payload and keep a note of the
+        # real `total` so the agent can say "found some" even when the page is sparse.
+        if isinstance(data, dict):
+            for bucket_key in ("tracks", "artists", "albums", "playlists", "shows", "episodes", "audiobooks"):
+                bucket = data.get(bucket_key)
+                if not isinstance(bucket, dict):
+                    continue
+                raw_items = bucket.get("items") if isinstance(bucket.get("items"), list) else []
+                clean = [it for it in raw_items if isinstance(it, dict)]
+                bucket["items"] = clean
+                bucket["returned_count"] = len(clean)
+                if "total" in bucket:
+                    bucket["total_in_catalog"] = bucket.get("total")
         return _compact(data)
 
     def _user_playlists(self, arguments: dict[str, Any]) -> str:
@@ -1630,8 +1646,19 @@ class SpotifyToolRunner:
     def _duplicate_playlist(self, arguments: dict[str, Any]) -> str:
         """Composite: copy another user's playlist into a brand-new playlist owned by the signed-in user.
 
-        Steps: read source meta + paginate tracks → resolve current user id → create new playlist →
-        add tracks in 100-uri batches → return new playlist_id (which is fully writable).
+        "Duplicate" is NOT a native Spotify endpoint — this tool is a composite that does what
+        the Spotify mobile UI's "Add to other playlist" action does under the hood:
+          1. resolve the signed-in user (me_id) — must be done before ownership comparison
+          2. GET /playlists/{source_pid} for metadata (owner id, name)
+          3. if source owner != me_id → emit a precise "source not owned in dev mode" error
+             with `source_not_owned_by_user: true` BEFORE we create any destination, so we
+             never leave an empty orphan playlist in the user's library
+          4. paginate GET /playlists/{source_pid}/items to collect track uris (owned sources
+             only, where the read is guaranteed to work in dev mode)
+          5. POST /users/{me_id}/playlists to create the destination
+          6. POST /playlists/{new_pid}/items in 100-uri batches to fill it
+        The resulting new_playlist_id is fully writable by the signed-in user — downstream
+        spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks calls will succeed.
         """
         source_pid = _normalize_spotify_id(
             _pick_arg(
@@ -1662,15 +1689,88 @@ class SpotifyToolRunner:
                 }
             )
 
-        source = self.client.api_get(f"/playlists/{source_pid}")
+        logger.info("duplicate_playlist step=1_me source_pid=%s", source_pid)
+        try:
+            me = self.client.api_get("/me")
+        except httpx.HTTPStatusError as e:
+            logger.info("duplicate_playlist step=1_me FAILED status=%s body=%s",
+                        e.response.status_code, (e.response.text or "")[:200])
+            raise
+        me_id = me.get("id") if isinstance(me, dict) else None
+        if not me_id:
+            return json.dumps({"error": "Could not resolve current user id from /me."})
+
+        logger.info("duplicate_playlist step=2_source_meta source_pid=%s me_id=%s", source_pid, me_id)
+        try:
+            source = self.client.api_get(
+                f"/playlists/{source_pid}",
+                params={"fields": "id,name,owner(id,display_name)"},
+            )
+        except httpx.HTTPStatusError as e:
+            logger.info("duplicate_playlist step=2_source_meta FAILED status=%s body=%s source_pid=%s",
+                        e.response.status_code, (e.response.text or "")[:200], source_pid)
+            code = e.response.status_code
+            if code in (403, 404):
+                return json.dumps(
+                    {
+                        "error": f"Spotify HTTP {code} for GET /playlists/{{id}} (source playlist)",
+                        "source_playlist_id": source_pid,
+                        "hint": (
+                            "Source playlist not found. Either the id is wrong or the playlist "
+                            "has been deleted. Confirm the id from spotify_user_playlists (the "
+                            "user's own playlists) or spotify_search_playlists for public ones."
+                        ),
+                    }
+                )
+            raise
         if not isinstance(source, dict):
             return _compact(source)
         source_name = str(source.get("name") or "Untitled playlist")
         source_owner = source.get("owner") if isinstance(source.get("owner"), dict) else {}
+        source_owner_id = source_owner.get("id") if isinstance(source_owner, dict) else None
         source_owner_name = (
             source_owner.get("display_name") if isinstance(source_owner, dict) else None
-        ) or (source_owner.get("id") if isinstance(source_owner, dict) else None)
+        ) or source_owner_id
 
+        source_is_owned_by_user = bool(source_owner_id) and source_owner_id == me_id
+        # Check ownership up front. Spotify's Feb-2026 dev-mode migration blocks
+        # GET /playlists/{id}/items for any playlist the signed-in user doesn't own
+        # (empirically verified — see backend/scripts/diag_followed_tracks.py). This is
+        # the ONLY case where duplication cannot proceed; duplicating playlists the user
+        # DOES own is fully supported and must not hit this branch. We return the gate
+        # BEFORE creating a destination so we never leave an empty orphan.
+        if not source_is_owned_by_user:
+            return json.dumps(
+                {
+                    "error": "Cannot duplicate: source playlist is not owned by the signed-in user",
+                    "source_playlist_id": source_pid,
+                    "source_playlist_name": source_name,
+                    "source_owner": source_owner_name,
+                    "source_owner_id": source_owner_id,
+                    "current_user_id": me_id,
+                    "source_not_owned_by_user": True,
+                    "endpoint_gated_in_dev_mode": True,
+                    "extended_quota_mode_required": True,
+                    "hint": (
+                        "'Duplicate' here is a composite of GET /playlists/{id}/items + "
+                        "POST /users/{me}/playlists + POST /playlists/{new}/items. Spotify's "
+                        "Feb-2026 dev-mode migration blocks GET /playlists/{id}/items for any "
+                        "playlist you don't own, so we can't read the source's tracks. This is "
+                        "NOT a scope/re-auth issue and applies even to playlists the user "
+                        "follows. Duplicating playlists the signed-in user OWNS still works "
+                        "fully — do NOT tell the user owned-playlist duplication is blocked. "
+                        "For this non-owned case tell the user: 'Spotify blocks reading another "
+                        "user's playlist contents in dev mode, so I can't copy this one. I can "
+                        "play it in place, or rebuild a similar playlist from search.'"
+                    ),
+                    "try_instead": [
+                        "spotify_play_playlist  (play the followed/public playlist directly — does not require reading tracks)",
+                        "spotify_search + spotify_create_playlist + spotify_add_tracks_to_playlist  (rebuild a similar list you own)",
+                    ],
+                }
+            )
+
+        logger.info("duplicate_playlist step=3_items_start source_pid=%s (owned=true)", source_pid)
         max_tracks = _safe_int(arguments.get("max_tracks"), 5000, lo=1, hi=10000)
         track_uris: list[str] = []
         seen: set[str] = set()
@@ -1678,17 +1778,32 @@ class SpotifyToolRunner:
         page_size = 100
         truncated = False
         while True:
-            page = self.client.api_get(
-                f"/playlists/{source_pid}/tracks",
-                params={"limit": page_size, "offset": offset, "fields": "items(track(uri,type,is_local)),next"},
-            )
+            try:
+                # Spotify's Feb-2026 dev-mode migration renames items[i].track -> items[i].item.
+                # Ask for both so we survive pre- and post-migration responses; the extractor
+                # below accepts either key.
+                page = self.client.api_get(
+                    f"/playlists/{source_pid}/items",
+                    params={
+                        "limit": page_size,
+                        "offset": offset,
+                        "fields": "items(track(uri,type,is_local),item(uri,type,is_local)),next",
+                    },
+                )
+            except httpx.HTTPStatusError as e:
+                logger.info("duplicate_playlist step=3_items FAILED status=%s offset=%s body=%s",
+                            e.response.status_code, offset, (e.response.text or "")[:200])
+                raise
             if not isinstance(page, dict):
                 break
             items = page.get("items") if isinstance(page.get("items"), list) else []
             for it in items:
                 if not isinstance(it, dict):
                     continue
-                tr = it.get("track") if isinstance(it.get("track"), dict) else None
+                # Spotify dev-mode returns the playable under "item"; legacy API used "track".
+                tr = it.get("item") if isinstance(it.get("item"), dict) else None
+                if tr is None and isinstance(it.get("track"), dict):
+                    tr = it.get("track")
                 if not tr:
                     continue
                 if tr.get("type") and tr.get("type") != "track":
@@ -1709,38 +1824,53 @@ class SpotifyToolRunner:
                 break
             offset += page_size
 
-        me = self.client.api_get("/me")
-        me_id = me.get("id") if isinstance(me, dict) else None
-        if not me_id:
-            return json.dumps({"error": "Could not resolve current user id from /me."})
-
         dest_name = _coerce_str(_pick_arg(arguments, "name", "new_name", "title"), "").strip()
         if not dest_name:
             dest_name = f"Copy of {source_name}"
         public = bool(arguments.get("public", False))
         description_raw = _coerce_str(_pick_arg(arguments, "description", "desc"), "").strip()
         if not description_raw:
-            owner_label = source_owner_name or "another user"
-            description_raw = f"Copy of '{source_name}' by {owner_label}, duplicated via Spot-AI-fy."
+            # Owned-source path only (non-owned sources are rejected above) — describe the
+            # new playlist as a self-copy so the user can tell it apart from the original.
+            description_raw = f"Copy of '{source_name}', duplicated via Spot-AI-fy."
 
-        new_pl = self.client.api_post(
-            f"/users/{me_id}/playlists",
-            json_body={"name": dest_name, "public": public, "description": description_raw},
-        )
+        # Use the shortcut POST /me/playlists form that _create_playlist uses. Empirically
+        # (see diag run on 2026-04-19), Spotify's Feb-2026 dev-mode migration returns 403 for
+        # the explicit POST /users/{user_id}/playlists form but accepts POST /me/playlists
+        # with the same body. Keeping both tools on the same endpoint avoids divergence.
+        logger.info("duplicate_playlist step=4_create_dest name=%r public=%s", dest_name, public)
+        try:
+            new_pl = self.client.api_post(
+                "/me/playlists",
+                json_body={"name": dest_name, "public": public, "description": description_raw},
+            )
+        except httpx.HTTPStatusError as e:
+            logger.info("duplicate_playlist step=4_create_dest FAILED status=%s body=%s",
+                        e.response.status_code, (e.response.text or "")[:200])
+            raise
         if not isinstance(new_pl, dict) or not new_pl.get("id"):
             return _compact(new_pl)
         new_pid = str(new_pl["id"])
 
+        logger.info("duplicate_playlist step=5_add_tracks new_pid=%s total_uris=%s",
+                    new_pid, len(track_uris))
         added = 0
         snapshot_id: str | None = None
         for i in range(0, len(track_uris), 100):
             batch = track_uris[i : i + 100]
-            snap = self.client.api_post(
-                f"/playlists/{new_pid}/tracks", json_body={"uris": batch}
-            )
+            try:
+                snap = self.client.api_post(
+                    f"/playlists/{new_pid}/items", json_body={"uris": batch}
+                )
+            except httpx.HTTPStatusError as e:
+                logger.info("duplicate_playlist step=5_add_tracks FAILED batch_start=%s status=%s body=%s",
+                            i, e.response.status_code, (e.response.text or "")[:200])
+                raise
             added += len(batch)
             if isinstance(snap, dict) and isinstance(snap.get("snapshot_id"), str):
                 snapshot_id = snap["snapshot_id"]
+
+        logger.info("duplicate_playlist step=6_done new_pid=%s added=%s", new_pid, added)
 
         result: dict[str, Any] = {
             "ok": True,
@@ -2299,11 +2429,15 @@ class SpotifyToolRunner:
                 pid = ctx.split(":", 2)[2]
                 data = self.client.api_get(
                     f"/playlists/{pid}/items",
-                    params={"limit": 1, "fields": "items(track(uri,is_playable))"},
+                    params={
+                        "limit": 1,
+                        # Feb-2026 dev mode renames items[i].track -> items[i].item.
+                        "fields": "items(track(uri,is_playable),item(uri,is_playable))",
+                    },
                 )
                 items = data.get("items") if isinstance(data, dict) else None
                 if isinstance(items, list) and items and isinstance(items[0], dict):
-                    track = items[0].get("track")
+                    track = items[0].get("item") or items[0].get("track")
                     if isinstance(track, dict):
                         uri = track.get("uri")
                         if isinstance(uri, str) and uri.strip():
@@ -3196,12 +3330,18 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "spotify_duplicate_playlist",
             "description": (
-                "Copy ANY accessible playlist into a brand-new playlist OWNED by the signed-in user, "
-                "so the user can then add/remove/reorder tracks freely. Use this for 'copy <playlist> "
-                "and let me edit it' or 'turn <someone else's playlist> into mine'. Returns "
-                "new_playlist_id (also exposed as playlist_id_for_add_tracks) which is fully writable. "
-                "After calling, edit with spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks / "
-                "etc., and play with spotify_play_playlist."
+                "Composite tool (NOT a native Spotify endpoint): reads the source playlist's "
+                "tracks, creates a brand-new playlist OWNED by the signed-in user, and fills it "
+                "with those tracks. Same effect as 'Add to other playlist' in the Spotify mobile "
+                "UI. Use for 'copy <playlist> and let me edit it' or 'duplicate my playlist X'. "
+                "Works fully when the user OWNS the source; returns new_playlist_id (also exposed "
+                "as playlist_id_for_add_tracks) which is fully writable. Dev-mode limit: if the "
+                "source is owned by another user (including playlists the signed-in user merely "
+                "follows), the read is blocked by Spotify and the tool returns "
+                "source_not_owned_by_user: true with try_instead alternatives — do NOT suggest "
+                "sign-out in that case. After a successful copy, edit with "
+                "spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks etc., and play "
+                "with spotify_play_playlist."
             ),
             "parameters": {
                 "type": "object",
