@@ -393,17 +393,58 @@ def iter_ollama_chat_events(
         ollama_model = read_effective_ollama_model(settings.data_dir, settings.ollama_model)
         base_system = _SYSTEM + load_optional_agent_context_markdown(settings)
         messages: list[dict[str, Any]] = [{"role": "system", "content": base_system}]
-        for turn in _coerce_chat_history(history):
+        history_turns = _coerce_chat_history(history)
+        hist_cap = int(getattr(settings, "ollama_history_messages", 0) or 0)
+        if hist_cap > 0 and len(history_turns) > hist_cap:
+            history_turns = history_turns[-hist_cap:]
+        for turn in history_turns:
             messages.append({"role": turn["role"], "content": turn["content"]})
         messages.append({"role": "user", "content": user_text})
         url = f"{settings.ollama_host.rstrip('/')}/api/chat"
         native_tools = True
         json_mode_patched = False
-        yield {"type": "status", "message": f"Connecting to Ollama ({ollama_model})…"}
+
+        # Shared Ollama tuning — applied to every /api/chat body so prompts don't
+        # silently truncate at n_ctx=4096 and the model stays resident between turns.
+        ollama_options: dict[str, Any] = {}
+        if settings.ollama_num_ctx and settings.ollama_num_ctx > 0:
+            ollama_options["num_ctx"] = int(settings.ollama_num_ctx)
+        ollama_keep_alive = (settings.ollama_keep_alive or "").strip()
+        tool_result_cap = int(getattr(settings, "ollama_tool_result_max", 0) or 0)
+        if tool_result_cap <= 0:
+            tool_result_cap = _TOOL_RESULT_CHAT_MAX
+        steps_override = int(getattr(settings, "ollama_max_steps", 0) or 0)
+        max_steps = steps_override if steps_override > 0 else int(settings.agent_max_steps)
+
+        def _apply_ollama_tuning(b: dict[str, Any]) -> dict[str, Any]:
+            if ollama_options:
+                existing = b.get("options")
+                if isinstance(existing, dict):
+                    merged = {**ollama_options, **existing}
+                else:
+                    merged = dict(ollama_options)
+                b["options"] = merged
+            if ollama_keep_alive:
+                b["keep_alive"] = ollama_keep_alive
+            return b
+
+        connect_bits = [ollama_model]
+        if ollama_options.get("num_ctx"):
+            connect_bits.append(f"ctx={ollama_options['num_ctx']}")
+        if ollama_keep_alive:
+            connect_bits.append(f"keep={ollama_keep_alive}")
+        if hist_cap > 0:
+            connect_bits.append(f"hist={hist_cap}")
+        if steps_override > 0:
+            connect_bits.append(f"steps={steps_override}")
+        yield {
+            "type": "status",
+            "message": f"Connecting to Ollama ({', '.join(connect_bits)})…",
+        }
 
         with httpx.Client(timeout=httpx.Timeout(600.0, connect=30.0)) as client:
-            for step_idx in range(settings.agent_max_steps):
-                yield {"type": "round", "step": step_idx + 1, "max": settings.agent_max_steps}
+            for step_idx in range(max_steps):
+                yield {"type": "round", "step": step_idx + 1, "max": max_steps}
                 nudge_attempt = 0
                 msg: dict[str, Any] = {}
                 while nudge_attempt < 3:
@@ -427,6 +468,7 @@ def iter_ollama_chat_events(
                             body["format"] = "json"
                         if native_tools:
                             body["tools"] = OLLAMA_TOOLS
+                        _apply_ollama_tuning(body)
 
                         with client.stream("POST", url, json=body) as r:
                             if r.status_code == 400 and native_tools:
@@ -525,6 +567,7 @@ def iter_ollama_chat_events(
                             "stream": False,
                             "format": "json",
                         }
+                        _apply_ollama_tuning(ns_body)
                         try:
                             nr = client.post(
                                 url,
@@ -603,7 +646,7 @@ def iter_ollama_chat_events(
                     result = runner.run(name, args)
                     preview = result[:240] + ("…" if len(result) > 240 else "")
                     yield {"type": "tool_done", "name": name, "preview": preview}
-                    result_chat = _cap_tool_result_for_chat(result)
+                    result_chat = _cap_tool_result_for_chat(result, max_len=tool_result_cap)
                     if native_tools:
                         messages.append({"role": "tool", "name": name, "content": result_chat})
                     else:

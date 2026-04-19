@@ -37,6 +37,27 @@ class Settings(BaseSettings):
 
     ollama_host: str = "http://127.0.0.1:11434"
     ollama_model: str = "gemma2:2b"
+    # Ollama context window (tokens). Default 4096 silently truncates agent prompts that
+    # include a long system prompt + chat history + tool results. Bumping to 8192 costs
+    # a little extra KV cache (~1 GB RAM for 8B-class models) but keeps the full prompt.
+    # Set to 0 to let Ollama use its per-model default.
+    ollama_num_ctx: int = 8192
+    # How long Ollama keeps the model resident after the last request. A short keep-alive
+    # means every prompt can pay a ~2-minute reload penalty on CPU-only machines.
+    # Accepts Ollama duration strings ("30m", "2h") or "-1" to keep forever.
+    ollama_keep_alive: str = "30m"
+    # Number of previous chat messages to replay when talking to Ollama. Every round of
+    # the agent re-processes the full prompt, so history length directly multiplies
+    # prompt-eval time on CPU. 0 = pass all messages the frontend sent (currently 40).
+    ollama_history_messages: int = 0
+    # Character cap on tool results injected back into Ollama conversation. Smaller caps
+    # leave more context-window budget for the model's reply and shrink prompt-eval time
+    # for every subsequent round. Applies only to Ollama; Gemini keeps the original cap.
+    ollama_tool_result_max: int = 0
+    # Per-provider override for agent_max_steps when talking to Ollama. 0 = use
+    # agent_max_steps. Lower values bail out of runaway tool loops faster when a local
+    # model gets confused.
+    ollama_max_steps: int = 0
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
