@@ -373,6 +373,8 @@ def _spotify_403_message_is_scope_ambiguous(spotify_api_message: str | None) -> 
 # original /authorize consent was narrower, they must Sign out → Connect to re-consent.
 _MODIFY_PLAYLIST_SCOPES = ("playlist-modify-public", "playlist-modify-private")
 _READ_PLAYLIST_SCOPES = ("playlist-read-private", "playlist-read-collaborative")
+_USER_TOP_SCOPES = ("user-top-read",)
+_USER_FOLLOW_READ_SCOPES = ("user-follow-read",)
 
 _TOOL_REQUIRED_SCOPES: dict[str, tuple[str, ...]] = {
     "spotify_add_tracks_to_playlist": _MODIFY_PLAYLIST_SCOPES,
@@ -381,8 +383,13 @@ _TOOL_REQUIRED_SCOPES: dict[str, tuple[str, ...]] = {
     "spotify_reorder_playlist_tracks": _MODIFY_PLAYLIST_SCOPES,
     "spotify_update_playlist": _MODIFY_PLAYLIST_SCOPES,
     "spotify_create_playlist": _MODIFY_PLAYLIST_SCOPES,
+    "spotify_duplicate_playlist": _MODIFY_PLAYLIST_SCOPES,
+    "spotify_follow_playlist": _MODIFY_PLAYLIST_SCOPES,
     "spotify_playlist_tracks": _READ_PLAYLIST_SCOPES,
     "spotify_get_playlist": _READ_PLAYLIST_SCOPES,
+    "spotify_top_artists": _USER_TOP_SCOPES,
+    "spotify_top_tracks": _USER_TOP_SCOPES,
+    "spotify_followed_artists": _USER_FOLLOW_READ_SCOPES,
 }
 
 
@@ -784,6 +791,20 @@ class SpotifyToolRunner:
                 return self._unfollow_playlist(arguments)
             case "spotify_user_saved_tracks":
                 return self._user_saved_tracks(arguments)
+            case "spotify_top_artists":
+                return self._top_artists(arguments)
+            case "spotify_top_tracks":
+                return self._top_tracks(arguments)
+            case "spotify_followed_artists":
+                return self._followed_artists(arguments)
+            case "spotify_user_public_playlists":
+                return self._user_public_playlists(arguments)
+            case "spotify_search_playlists":
+                return self._search_playlists(arguments)
+            case "spotify_follow_playlist":
+                return self._follow_playlist(arguments)
+            case "spotify_duplicate_playlist":
+                return self._duplicate_playlist(arguments)
             case "spotify_create_playlist":
                 return self._create_playlist(arguments)
             case "spotify_add_tracks_to_playlist":
@@ -983,7 +1004,13 @@ class SpotifyToolRunner:
         if not artist_id:
             return json.dumps({"error": "artist_id is required"})
         include_groups = _normalize_include_groups(_coerce_str(arguments.get("include_groups"), "album,single"))
-        limit = _safe_int(arguments.get("limit"), 50, lo=1, hi=50)
+        # Feb-2026 dev-mode migration: Spotify reduced /artists/{id}/albums `limit`
+        # max from 50 to **10** for non-extended apps (NOT 20 — empirically
+        # verified, see backend/scripts/diag_artist_albums_limit.py). limit>10
+        # returns HTTP 400 "Invalid limit". To count an artist's full discography
+        # the agent should read response.total (returned by Spotify) rather than
+        # paginate.
+        limit = _safe_int(arguments.get("limit"), 10, lo=1, hi=10)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
         canonical_id = self._canonical_artist_id(artist_id, market)
@@ -1234,6 +1261,513 @@ class SpotifyToolRunner:
         if isinstance(data, dict):
             data = _shrink_saved_tracks_page(data)
         return _compact(data, limit=8000)
+
+    @staticmethod
+    def _coerce_time_range(raw: Any) -> str:
+        s = str(raw or "").strip().lower().replace(" ", "_").replace("-", "_")
+        aliases = {
+            "short": "short_term",
+            "month": "short_term",
+            "monthly": "short_term",
+            "4weeks": "short_term",
+            "4_weeks": "short_term",
+            "medium": "medium_term",
+            "halfyear": "medium_term",
+            "half_year": "medium_term",
+            "6months": "medium_term",
+            "6_months": "medium_term",
+            "long": "long_term",
+            "year": "long_term",
+            "yearly": "long_term",
+            "alltime": "long_term",
+            "all_time": "long_term",
+        }
+        s = aliases.get(s, s)
+        if s in ("short_term", "medium_term", "long_term"):
+            return s
+        return "medium_term"
+
+    def _top_artists(self, arguments: dict[str, Any]) -> str:
+        time_range = self._coerce_time_range(arguments.get("time_range"))
+        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=49)
+        data = self.client.api_get(
+            "/me/top/artists",
+            params={"time_range": time_range, "limit": limit, "offset": offset},
+        )
+        if not isinstance(data, dict):
+            return _compact(data, limit=8000)
+        raw_items = data.get("items") if isinstance(data.get("items"), list) else []
+        items: list[dict[str, Any]] = []
+        for i, a in enumerate(raw_items):
+            if not isinstance(a, dict):
+                continue
+            images = a.get("images") if isinstance(a.get("images"), list) else []
+            first_img = images[0] if images and isinstance(images[0], dict) else None
+            followers = a.get("followers") if isinstance(a.get("followers"), dict) else {}
+            ext = a.get("external_urls") if isinstance(a.get("external_urls"), dict) else {}
+            items.append(
+                {
+                    "rank": offset + i + 1,
+                    "id": a.get("id"),
+                    "name": a.get("name"),
+                    "uri": a.get("uri"),
+                    "popularity": a.get("popularity"),
+                    "followers": followers.get("total") if isinstance(followers, dict) else None,
+                    "genres": a.get("genres") if isinstance(a.get("genres"), list) else [],
+                    "image": first_img.get("url") if isinstance(first_img, dict) else None,
+                    "external_url": ext.get("spotify") if isinstance(ext, dict) else None,
+                }
+            )
+        shrunk = {
+            "time_range": time_range,
+            "limit": limit,
+            "offset": offset,
+            "total": data.get("total"),
+            "items": items,
+            "hint": (
+                "rank is 1-based within the current time_range (short_term ~last 4 weeks, "
+                "medium_term ~last 6 months, long_term = calculated from ~the user's all-time "
+                "history). Spotify refreshes these daily and does not return per-artist play counts."
+            ),
+        }
+        return _compact(shrunk, limit=8000)
+
+    def _top_tracks(self, arguments: dict[str, Any]) -> str:
+        time_range = self._coerce_time_range(arguments.get("time_range"))
+        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=49)
+        data = self.client.api_get(
+            "/me/top/tracks",
+            params={"time_range": time_range, "limit": limit, "offset": offset},
+        )
+        if not isinstance(data, dict):
+            return _compact(data, limit=8000)
+        raw_items = data.get("items") if isinstance(data.get("items"), list) else []
+        items: list[dict[str, Any]] = []
+        for i, t in enumerate(raw_items):
+            if not isinstance(t, dict):
+                continue
+            album = t.get("album") if isinstance(t.get("album"), dict) else {}
+            artists_raw = t.get("artists") if isinstance(t.get("artists"), list) else []
+            artists = [
+                {"id": a.get("id"), "name": a.get("name")}
+                for a in artists_raw
+                if isinstance(a, dict)
+            ]
+            ext = t.get("external_urls") if isinstance(t.get("external_urls"), dict) else {}
+            items.append(
+                {
+                    "rank": offset + i + 1,
+                    "id": t.get("id"),
+                    "name": t.get("name"),
+                    "uri": t.get("uri"),
+                    "popularity": t.get("popularity"),
+                    "duration_ms": t.get("duration_ms"),
+                    "explicit": t.get("explicit"),
+                    "artists": artists,
+                    "album": {
+                        "id": album.get("id"),
+                        "name": album.get("name"),
+                        "release_date": album.get("release_date"),
+                    } if album else None,
+                    "external_url": ext.get("spotify") if isinstance(ext, dict) else None,
+                }
+            )
+        shrunk = {
+            "time_range": time_range,
+            "limit": limit,
+            "offset": offset,
+            "total": data.get("total"),
+            "items": items,
+            "hint": (
+                "rank is 1-based within the current time_range (short_term ~last 4 weeks, "
+                "medium_term ~last 6 months, long_term = calculated from ~the user's all-time "
+                "history). Spotify refreshes these daily and does not return per-track play counts."
+            ),
+        }
+        return _compact(shrunk, limit=8000)
+
+    def _followed_artists(self, arguments: dict[str, Any]) -> str:
+        """List artists the signed-in user follows. Web API does NOT expose followed *users*."""
+        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        after = _coerce_str(_pick_arg(arguments, "after", "cursor", "next_cursor"), "")
+        params: dict[str, Any] = {"type": "artist", "limit": limit}
+        if after:
+            params["after"] = after
+        data = self.client.api_get("/me/following", params=params)
+        if not isinstance(data, dict):
+            return _compact(data, limit=8000)
+        block = data.get("artists") if isinstance(data.get("artists"), dict) else {}
+        raw_items = block.get("items") if isinstance(block.get("items"), list) else []
+        items: list[dict[str, Any]] = []
+        for a in raw_items:
+            if not isinstance(a, dict):
+                continue
+            images = a.get("images") if isinstance(a.get("images"), list) else []
+            first_img = images[0] if images and isinstance(images[0], dict) else None
+            followers = a.get("followers") if isinstance(a.get("followers"), dict) else {}
+            ext = a.get("external_urls") if isinstance(a.get("external_urls"), dict) else {}
+            items.append(
+                {
+                    "id": a.get("id"),
+                    "name": a.get("name"),
+                    "uri": a.get("uri"),
+                    "popularity": a.get("popularity"),
+                    "followers": followers.get("total") if isinstance(followers, dict) else None,
+                    "genres": a.get("genres") if isinstance(a.get("genres"), list) else [],
+                    "image": first_img.get("url") if isinstance(first_img, dict) else None,
+                    "external_url": ext.get("spotify") if isinstance(ext, dict) else None,
+                }
+            )
+        cursors = block.get("cursors") if isinstance(block.get("cursors"), dict) else {}
+        next_after = cursors.get("after") if isinstance(cursors, dict) else None
+        return _compact(
+            {
+                "items": items,
+                "limit": block.get("limit"),
+                "total": block.get("total"),
+                "next_cursor": next_after,
+                "has_more": bool(next_after),
+                "note": (
+                    "Spotify's Web API only exposes ARTISTS the user follows (not USERS the user "
+                    "follows, and not the user's own followers). For pagination, pass next_cursor "
+                    "as `after` on the next call."
+                ),
+            },
+            limit=8000,
+        )
+
+    def _user_public_playlists(self, arguments: dict[str, Any]) -> str:
+        """List a Spotify user's PUBLIC playlists by their user_id (no scope required, public data)."""
+        user_id = _coerce_str(_pick_arg(arguments, "user_id", "userId", "username", "id"), "")
+        if not user_id:
+            return json.dumps(
+                {
+                    "error": "user_id is required",
+                    "hint": (
+                        "Pass the target user's Spotify user_id (the part after spotify:user: "
+                        "or open.spotify.com/user/<id>). The Web API has NO endpoint to look up "
+                        "a user by display name — the user must provide their id, or we use "
+                        "spotify_me.id for the signed-in user."
+                    ),
+                }
+            )
+        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
+        try:
+            data = self.client.api_get(
+                f"/users/{user_id}/playlists", params={"limit": limit, "offset": offset}
+            )
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            # Spotify's Feb-2026 API migration gated GET /users/{user_id}/playlists behind
+            # Extended Quota Mode. Empirically (see backend/scripts/diag_user_playlists.py),
+            # dev-mode apps now get HTTP 403 "Forbidden" for EVERY user_id — the signed-in
+            # user, well-known editorial accounts (`spotify`, `bbc`), and fake ids alike.
+            # This is NOT a scope issue (no scope is required for this endpoint) and NOT a
+            # bad-user-id issue. The only remediation is for the developer to apply for
+            # Extended Quota Mode in their Spotify dashboard. Until then, suggest
+            # spotify_search_playlists as a working alternative.
+            if code in (403, 404):
+                return json.dumps(
+                    {
+                        "error": f"Spotify HTTP {code} for spotify_user_public_playlists",
+                        "user_id_tried": user_id,
+                        "not_a_scope_issue": True,
+                        "endpoint_gated_in_dev_mode": True,
+                        "extended_quota_mode_required": True,
+                        "hint": (
+                            "GET /users/{user_id}/playlists is gated behind Spotify's "
+                            "Extended Quota Mode as of their Feb-2026 API migration. "
+                            "Dev-mode apps get 403 for every user_id (including the signed-in "
+                            "user and well-known accounts like 'spotify'). This is NOT a scope "
+                            "problem and signing out will not help — do NOT suggest "
+                            "Sign out → Connect. Tell the user: 'Listing another user's public "
+                            "playlists requires Extended Quota Mode which this app does not "
+                            "have; I can instead search for playlists by topic (spotify_search_playlists) "
+                            "or operate on your own playlists (spotify_user_playlists).'"
+                        ),
+                        "try_instead": [
+                            "spotify_search_playlists  (find playlists by description/topic)",
+                            "spotify_user_playlists    (list YOUR playlists — works in dev mode)",
+                        ],
+                    }
+                )
+            raise
+        if not isinstance(data, dict):
+            return _compact(data, limit=6000)
+        raw_items = data.get("items") if isinstance(data.get("items"), list) else []
+        items: list[dict[str, Any]] = []
+        for p in raw_items:
+            if not isinstance(p, dict):
+                continue
+            owner = p.get("owner") if isinstance(p.get("owner"), dict) else {}
+            tracks = p.get("tracks") if isinstance(p.get("tracks"), dict) else {}
+            images = p.get("images") if isinstance(p.get("images"), list) else []
+            first_img = images[0] if images and isinstance(images[0], dict) else None
+            ext = p.get("external_urls") if isinstance(p.get("external_urls"), dict) else {}
+            items.append(
+                {
+                    "id": p.get("id"),
+                    "name": p.get("name"),
+                    "uri": p.get("uri"),
+                    "owner": {
+                        "id": owner.get("id") if isinstance(owner, dict) else None,
+                        "display_name": owner.get("display_name") if isinstance(owner, dict) else None,
+                    },
+                    "total_tracks": tracks.get("total") if isinstance(tracks, dict) else None,
+                    "public": p.get("public"),
+                    "collaborative": p.get("collaborative"),
+                    "image": first_img.get("url") if isinstance(first_img, dict) else None,
+                    "external_url": ext.get("spotify") if isinstance(ext, dict) else None,
+                }
+            )
+        return _compact(
+            {
+                "user_id": user_id,
+                "items": items,
+                "limit": data.get("limit"),
+                "offset": data.get("offset"),
+                "total": data.get("total"),
+                "next": data.get("next"),
+                "note": (
+                    "Only PUBLIC playlists are visible to other users. There is no Web API endpoint "
+                    "for reading another user's private or unlisted playlists — say so plainly if "
+                    "the user expected to see one."
+                ),
+            },
+            limit=8000,
+        )
+
+    def _search_playlists(self, arguments: dict[str, Any]) -> str:
+        """Search Spotify's public catalog for playlists matching a free-text description."""
+        q = _pick_arg(arguments, "query", "q", "description", "search_query")
+        if not q:
+            return json.dumps({"error": "query is required"})
+        market = _normalize_market(_pick_arg(arguments, "market", "country"))
+        limit = _safe_int(arguments.get("limit"), 5, lo=1, hi=10)
+        offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=950)
+        data = self.client.api_get(
+            "/search",
+            params={"q": q, "type": "playlist", "market": market, "limit": limit, "offset": offset},
+        )
+        if not isinstance(data, dict):
+            return _compact(data, limit=6000)
+        block = data.get("playlists") if isinstance(data.get("playlists"), dict) else {}
+        raw_items = block.get("items") if isinstance(block.get("items"), list) else []
+        items: list[dict[str, Any]] = []
+        for p in raw_items:
+            if not isinstance(p, dict):
+                continue
+            owner = p.get("owner") if isinstance(p.get("owner"), dict) else {}
+            tracks = p.get("tracks") if isinstance(p.get("tracks"), dict) else {}
+            images = p.get("images") if isinstance(p.get("images"), list) else []
+            first_img = images[0] if images and isinstance(images[0], dict) else None
+            ext = p.get("external_urls") if isinstance(p.get("external_urls"), dict) else {}
+            items.append(
+                {
+                    "id": p.get("id"),
+                    "name": p.get("name"),
+                    "uri": p.get("uri"),
+                    "description": p.get("description"),
+                    "owner": {
+                        "id": owner.get("id") if isinstance(owner, dict) else None,
+                        "display_name": owner.get("display_name") if isinstance(owner, dict) else None,
+                    },
+                    "total_tracks": tracks.get("total") if isinstance(tracks, dict) else None,
+                    "public": p.get("public"),
+                    "collaborative": p.get("collaborative"),
+                    "image": first_img.get("url") if isinstance(first_img, dict) else None,
+                    "external_url": ext.get("spotify") if isinstance(ext, dict) else None,
+                }
+            )
+        return _compact(
+            {
+                "query": q,
+                "items": items,
+                "limit": block.get("limit"),
+                "offset": block.get("offset"),
+                "total": block.get("total"),
+                "next": block.get("next"),
+                "hint": (
+                    "Use one of these item.id values with spotify_follow_playlist (to follow), "
+                    "spotify_play_playlist (to play), or spotify_duplicate_playlist (to copy into a "
+                    "new playlist owned by the user). Adding/removing tracks on someone else's "
+                    "playlist is NOT possible — duplicate it first."
+                ),
+            },
+            limit=8000,
+        )
+
+    def _follow_playlist(self, arguments: dict[str, Any]) -> str:
+        """Follow a playlist owned by another user (or re-follow your own).
+
+        Spotify maps "follow" to "save to your library" for playlists. PUT requires
+        playlist-modify-public (default) or playlist-modify-private (if public=false).
+        """
+        pid = _normalize_spotify_id(
+            _pick_arg(arguments, "playlist_id", "playlistId", "id"), "playlist"
+        )
+        if not pid:
+            return json.dumps({"error": "playlist_id is required"})
+        public_raw = arguments.get("public", True)
+        public = bool(public_raw) if not isinstance(public_raw, str) else public_raw.strip().lower() not in ("0", "false", "no", "off", "")
+        self.client.api_put(f"/playlists/{pid}/followers", json_body={"public": public})
+        return json.dumps(
+            {
+                "ok": True,
+                "playlist_id": pid,
+                "public": public,
+                "note": (
+                    "Followed (added to library). The playlist now appears in spotify_user_playlists, "
+                    "but you still do NOT own it — to add or remove tracks you must duplicate it first "
+                    "with spotify_duplicate_playlist."
+                ),
+            }
+        )
+
+    def _duplicate_playlist(self, arguments: dict[str, Any]) -> str:
+        """Composite: copy another user's playlist into a brand-new playlist owned by the signed-in user.
+
+        Steps: read source meta + paginate tracks → resolve current user id → create new playlist →
+        add tracks in 100-uri batches → return new playlist_id (which is fully writable).
+        """
+        source_pid = _normalize_spotify_id(
+            _pick_arg(
+                arguments,
+                "source_playlist_id",
+                "sourcePlaylistId",
+                "from_playlist_id",
+                "playlist_id",
+                "id",
+            ),
+            "playlist",
+        )
+        if not source_pid:
+            return json.dumps({"error": "source_playlist_id is required"})
+
+        granted = set(self.client.get_token_scopes())
+        missing_modify = _missing_any_of(granted, _MODIFY_PLAYLIST_SCOPES)
+        if missing_modify:
+            return json.dumps(
+                {
+                    "error": (
+                        "Cannot create the destination playlist: the signed-in token has no "
+                        "playlist-modify scope. Sign out → Connect to re-consent."
+                    ),
+                    "missing_scopes": missing_modify,
+                    "stale_scopes_need_reauth": True,
+                    "suggest_sign_out_of_spotify": True,
+                }
+            )
+
+        source = self.client.api_get(f"/playlists/{source_pid}")
+        if not isinstance(source, dict):
+            return _compact(source)
+        source_name = str(source.get("name") or "Untitled playlist")
+        source_owner = source.get("owner") if isinstance(source.get("owner"), dict) else {}
+        source_owner_name = (
+            source_owner.get("display_name") if isinstance(source_owner, dict) else None
+        ) or (source_owner.get("id") if isinstance(source_owner, dict) else None)
+
+        max_tracks = _safe_int(arguments.get("max_tracks"), 5000, lo=1, hi=10000)
+        track_uris: list[str] = []
+        seen: set[str] = set()
+        offset = 0
+        page_size = 100
+        truncated = False
+        while True:
+            page = self.client.api_get(
+                f"/playlists/{source_pid}/tracks",
+                params={"limit": page_size, "offset": offset, "fields": "items(track(uri,type,is_local)),next"},
+            )
+            if not isinstance(page, dict):
+                break
+            items = page.get("items") if isinstance(page.get("items"), list) else []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                tr = it.get("track") if isinstance(it.get("track"), dict) else None
+                if not tr:
+                    continue
+                if tr.get("type") and tr.get("type") != "track":
+                    continue
+                if tr.get("is_local"):
+                    continue
+                uri = tr.get("uri")
+                if not isinstance(uri, str) or not uri.startswith("spotify:track:"):
+                    continue
+                if uri in seen:
+                    continue
+                seen.add(uri)
+                track_uris.append(uri)
+                if len(track_uris) >= max_tracks:
+                    truncated = True
+                    break
+            if truncated or not page.get("next") or not items:
+                break
+            offset += page_size
+
+        me = self.client.api_get("/me")
+        me_id = me.get("id") if isinstance(me, dict) else None
+        if not me_id:
+            return json.dumps({"error": "Could not resolve current user id from /me."})
+
+        dest_name = _coerce_str(_pick_arg(arguments, "name", "new_name", "title"), "").strip()
+        if not dest_name:
+            dest_name = f"Copy of {source_name}"
+        public = bool(arguments.get("public", False))
+        description_raw = _coerce_str(_pick_arg(arguments, "description", "desc"), "").strip()
+        if not description_raw:
+            owner_label = source_owner_name or "another user"
+            description_raw = f"Copy of '{source_name}' by {owner_label}, duplicated via Spot-AI-fy."
+
+        new_pl = self.client.api_post(
+            f"/users/{me_id}/playlists",
+            json_body={"name": dest_name, "public": public, "description": description_raw},
+        )
+        if not isinstance(new_pl, dict) or not new_pl.get("id"):
+            return _compact(new_pl)
+        new_pid = str(new_pl["id"])
+
+        added = 0
+        snapshot_id: str | None = None
+        for i in range(0, len(track_uris), 100):
+            batch = track_uris[i : i + 100]
+            snap = self.client.api_post(
+                f"/playlists/{new_pid}/tracks", json_body={"uris": batch}
+            )
+            added += len(batch)
+            if isinstance(snap, dict) and isinstance(snap.get("snapshot_id"), str):
+                snapshot_id = snap["snapshot_id"]
+
+        result: dict[str, Any] = {
+            "ok": True,
+            "source_playlist_id": source_pid,
+            "source_playlist_name": source_name,
+            "source_owner": source_owner_name,
+            "new_playlist_id": new_pid,
+            "playlist_id_for_add_tracks": new_pid,
+            "new_playlist_name": dest_name,
+            "new_playlist_uri": new_pl.get("uri"),
+            "public": public,
+            "tracks_copied": added,
+            "tracks_skipped_local_or_non_track": max(0, len(seen) - added)
+            if added < len(seen)
+            else 0,
+            "truncated_at_max_tracks": truncated,
+            "next_steps": (
+                "You now OWN the copy. Use spotify_add_tracks_to_playlist / "
+                "spotify_remove_playlist_tracks / spotify_replace_playlist_tracks / "
+                "spotify_reorder_playlist_tracks with playlist_id = new_playlist_id to edit it. "
+                "Play it with spotify_play_playlist (playlist_id = new_playlist_id) or "
+                "spotify_start_resume_playback context_uri = new_playlist_uri."
+            ),
+        }
+        if snapshot_id:
+            result["snapshot_id"] = snapshot_id
+        return _compact(result, limit=4000)
 
     def _create_playlist(self, arguments: dict[str, Any]) -> str:
         name = str(arguments.get("name", "")).strip()
@@ -2498,6 +3032,202 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {"limit": {"type": "integer"}, "offset": {"type": "integer"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_top_artists",
+            "description": (
+                "Return the signed-in user's top artists for a given time window. "
+                "Use this for 'my top artists / favorite artists / who do I listen to most'. "
+                "time_range: short_term (~last 4 weeks), medium_term (~last 6 months, default), "
+                "long_term (calculated from ~the user's all-time history). "
+                "Spotify does NOT expose per-artist play counts; rank is the only ordering signal. "
+                "Requires Spotify scope user-top-read — if missing, instruct the user to Sign out → Connect."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "time_range": {
+                        "type": "string",
+                        "enum": ["short_term", "medium_term", "long_term"],
+                        "description": "Time window for the ranking. Default medium_term (~last 6 months).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "How many artists to return (1-50). Default 20.",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Pagination offset (0-49). Spotify caps the total list at 50.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_top_tracks",
+            "description": (
+                "Return the signed-in user's top tracks for a given time window. "
+                "Use this for 'my top songs / most played tracks / favorite songs'. "
+                "time_range: short_term (~last 4 weeks), medium_term (~last 6 months, default), "
+                "long_term (calculated from ~the user's all-time history). "
+                "Spotify does NOT expose per-track play counts; rank is the only ordering signal. "
+                "Requires Spotify scope user-top-read — if missing, instruct the user to Sign out → Connect."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "time_range": {
+                        "type": "string",
+                        "enum": ["short_term", "medium_term", "long_term"],
+                        "description": "Time window for the ranking. Default medium_term (~last 6 months).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "How many tracks to return (1-50). Default 20.",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Pagination offset (0-49). Spotify caps the total list at 50.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_followed_artists",
+            "description": (
+                "List the ARTISTS the signed-in user follows (cursor-paginated). "
+                "Spotify's Web API does NOT expose users the user follows, and does NOT expose the "
+                "user's own follower list (only a count via spotify_me). If the user asks for either "
+                "of those, say so plainly and offer this tool as the closest available alternative. "
+                "Requires Spotify scope user-follow-read — if missing, instruct Sign out → Connect."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "1-50. Default 20."},
+                    "after": {
+                        "type": "string",
+                        "description": "Cursor for the next page (echo back next_cursor from a previous call).",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_user_public_playlists",
+            "description": (
+                "List a Spotify user's PUBLIC playlists by their user_id. No scope required (public data). "
+                "Use this when the user asks 'what playlists does <person> have' and gives a user_id "
+                "(the part after spotify:user: or open.spotify.com/user/<id>). The Web API has NO endpoint "
+                "to look up a user by display name, and CANNOT show another user's private playlists — "
+                "say that plainly if the user expected either."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string", "description": "Target Spotify user_id."},
+                    "limit": {"type": "integer", "description": "1-50. Default 20."},
+                    "offset": {"type": "integer", "description": "Pagination offset."},
+                },
+                "required": ["user_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_search_playlists",
+            "description": (
+                "Search Spotify's catalog for public PLAYLISTS matching a free-text description "
+                "(e.g. 'lo-fi study beats', 'workout 2025 hip hop'). Returns id, name, owner, "
+                "image, total_tracks. Use this for 'find me a playlist about <X>'. Then optionally "
+                "spotify_follow_playlist (to save it), spotify_play_playlist (to play it), or "
+                "spotify_duplicate_playlist (to copy it into a writable playlist you own). "
+                "Editing someone else's playlist is NOT possible — duplicate first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Free-text description / search query."},
+                    "limit": {"type": "integer", "description": "1-10. Default 5."},
+                    "offset": {"type": "integer", "description": "Pagination offset (0-950)."},
+                    "market": {"type": "string", "description": "Optional ISO 3166 country code (e.g. US)."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_follow_playlist",
+            "description": (
+                "Follow a playlist (Spotify treats this as 'save to your library'). Works for any "
+                "playlist_id, including ones owned by other users. Following does NOT make you the "
+                "owner — you still cannot add/remove tracks; for that, use spotify_duplicate_playlist. "
+                "Requires playlist-modify-public (default) or playlist-modify-private if public=false."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "playlist_id": {"type": "string"},
+                    "public": {
+                        "type": "boolean",
+                        "description": "Whether the follow is public on your profile. Default true.",
+                    },
+                },
+                "required": ["playlist_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_duplicate_playlist",
+            "description": (
+                "Copy ANY accessible playlist into a brand-new playlist OWNED by the signed-in user, "
+                "so the user can then add/remove/reorder tracks freely. Use this for 'copy <playlist> "
+                "and let me edit it' or 'turn <someone else's playlist> into mine'. Returns "
+                "new_playlist_id (also exposed as playlist_id_for_add_tracks) which is fully writable. "
+                "After calling, edit with spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks / "
+                "etc., and play with spotify_play_playlist."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_playlist_id": {
+                        "type": "string",
+                        "description": "Playlist to copy from (any user's public/collaborative playlist).",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Optional name for the new playlist. Defaults to 'Copy of <source>'.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional description for the new playlist.",
+                    },
+                    "public": {
+                        "type": "boolean",
+                        "description": "Whether the new playlist is public on the user's profile. Default false.",
+                    },
+                    "max_tracks": {
+                        "type": "integer",
+                        "description": "Cap on tracks to copy. Default 5000, hard max 10000.",
+                    },
+                },
+                "required": ["source_playlist_id"],
             },
         },
     },

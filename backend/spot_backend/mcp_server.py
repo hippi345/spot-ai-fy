@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
 
 from spot_backend.spotify_tools import SpotifyToolRunner
@@ -55,6 +57,103 @@ def spotify_playlist_tracks(playlist_id: str, limit: int = 50, offset: int = 0) 
 def spotify_user_saved_tracks(limit: int = 50, offset: int = 0) -> str:
     """List the user's saved (liked) tracks."""
     return _runner.run("spotify_user_saved_tracks", {"limit": limit, "offset": offset})
+
+
+@mcp.tool()
+def spotify_top_artists(
+    time_range: str = "medium_term", limit: int = 20, offset: int = 0
+) -> str:
+    """Return the signed-in user's top artists for a time window.
+
+    time_range is one of: short_term (~last 4 weeks), medium_term (~last 6 months,
+    default), long_term (~all-time). Requires Spotify scope user-top-read.
+    """
+    return _runner.run(
+        "spotify_top_artists",
+        {"time_range": time_range, "limit": limit, "offset": offset},
+    )
+
+
+@mcp.tool()
+def spotify_top_tracks(
+    time_range: str = "medium_term", limit: int = 20, offset: int = 0
+) -> str:
+    """Return the signed-in user's top tracks for a time window.
+
+    time_range is one of: short_term (~last 4 weeks), medium_term (~last 6 months,
+    default), long_term (~all-time). Requires Spotify scope user-top-read.
+    """
+    return _runner.run(
+        "spotify_top_tracks",
+        {"time_range": time_range, "limit": limit, "offset": offset},
+    )
+
+
+@mcp.tool()
+def spotify_followed_artists(limit: int = 20, after: str = "") -> str:
+    """List artists the signed-in user follows (cursor-paginated).
+
+    The Web API does not expose users the user follows, nor the user's own
+    follower list — only artists. Requires scope user-follow-read.
+    """
+    args: dict[str, Any] = {"limit": limit}
+    if after:
+        args["after"] = after
+    return _runner.run("spotify_followed_artists", args)
+
+
+@mcp.tool()
+def spotify_user_public_playlists(user_id: str, limit: int = 20, offset: int = 0) -> str:
+    """List a Spotify user's PUBLIC playlists by their user_id (no scope required)."""
+    return _runner.run(
+        "spotify_user_public_playlists",
+        {"user_id": user_id, "limit": limit, "offset": offset},
+    )
+
+
+@mcp.tool()
+def spotify_search_playlists(
+    query: str, limit: int = 5, offset: int = 0, market: str = ""
+) -> str:
+    """Search Spotify's catalog for public playlists matching a free-text description."""
+    args: dict[str, Any] = {"query": query, "limit": limit, "offset": offset}
+    if market:
+        args["market"] = market
+    return _runner.run("spotify_search_playlists", args)
+
+
+@mcp.tool()
+def spotify_follow_playlist(playlist_id: str, public: bool = True) -> str:
+    """Follow (save to library) a playlist by id. Does NOT make you the owner."""
+    return _runner.run(
+        "spotify_follow_playlist",
+        {"playlist_id": playlist_id, "public": public},
+    )
+
+
+@mcp.tool()
+def spotify_duplicate_playlist(
+    source_playlist_id: str,
+    name: str = "",
+    description: str = "",
+    public: bool = False,
+    max_tracks: int = 5000,
+) -> str:
+    """Copy any accessible playlist into a new playlist OWNED by the signed-in user.
+
+    Returns the new playlist id, which is fully writable for subsequent
+    spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks calls.
+    """
+    args: dict[str, Any] = {
+        "source_playlist_id": source_playlist_id,
+        "public": public,
+        "max_tracks": max_tracks,
+    }
+    if name:
+        args["name"] = name
+    if description:
+        args["description"] = description
+    return _runner.run("spotify_duplicate_playlist", args)
 
 
 @mcp.tool()

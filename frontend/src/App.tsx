@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 
 
@@ -140,6 +140,34 @@ export function App() {
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
 
   const [liveReply, setLiveReply] = useState("");
+
+  // Auto-scroll the chat-messages container to the bottom when a new message
+  // arrives or the streaming reply grows — but only if the user was already
+  // near the bottom, so we don't yank them away from older messages they
+  // scrolled up to read.
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+  const userPinnedToBottomRef = useRef<boolean>(true);
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    userPinnedToBottomRef.current = distanceFromBottom < 80;
+  }, []);
+
+  useEffect(() => {
+    if (!userPinnedToBottomRef.current) return;
+    const el = messagesRef.current;
+    if (!el) return;
+    // Two-step scroll: update synchronously, then again after layout settles
+    // (lets late-rendering content like the streaming bubble grow before we
+    // commit the final scroll position).
+    el.scrollTop = el.scrollHeight;
+    const id = window.requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [messages.length, liveReply, sending, traceSteps.length]);
 
   const [llm, setLlm] = useState<LlmStatus | null>(null);
 
@@ -1102,7 +1130,13 @@ export function App() {
 
         </div>
 
-        <div className="messages" role="log" aria-relevant="additions">
+        <div
+          className="messages"
+          role="log"
+          aria-relevant="additions"
+          ref={messagesRef}
+          onScroll={handleMessagesScroll}
+        >
 
           {messages.map((m, i) => (
 

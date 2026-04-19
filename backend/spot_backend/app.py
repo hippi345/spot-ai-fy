@@ -200,26 +200,48 @@ def chat(body: ChatBody) -> dict[str, str]:
                 raise HTTPException(
                     status_code=429,
                     detail=(
-                        "Gemini returned HTTP 429 (quota or rate limit). Your project may have no remaining "
-                        "free-tier allowance, or billing is not enabled—see "
-                        "https://ai.google.dev/gemini-api/docs/rate-limits and usage "
-                        "https://ai.dev/rate-limit . If the error mentions limit:0, enable billing / a paid plan "
-                        "for the Generative Language API on the Google Cloud project tied to your API key, or wait "
-                        "for limits to reset. You can switch the LLM backend to Ollama in this app while you sort "
-                        "that out."
+                        f"Gemini hit its rate limit / quota for {gemini_model}. On the free tier this typically "
+                        "resets daily. Try a lighter model from the Settings dropdown (e.g. gemini-2.5-flash-lite), "
+                        "switch to Ollama in Settings, or enable billing on your Google AI key if you need more headroom."
+                    ),
+                ) from e
+            if code == 503:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"Gemini is overloaded right now — Google has been returning 'service unavailable' for "
+                        f"{gemini_model}. Please try again in a minute, pick a lighter model from the Settings "
+                        "dropdown (e.g. gemini-2.5-flash-lite or gemini-1.5-flash), or switch to Ollama in Settings."
+                    ),
+                ) from e
+            if code == 404:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"The Gemini model {gemini_model} isn't available for your API key right now (it may have "
+                        "been retired, or your key isn't enabled for it). Pick a different model from the Settings dropdown."
+                    ),
+                ) from e
+            if code in (401, 403):
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Google rejected the Gemini API key (it's missing, expired, or doesn't have access to this "
+                        "model). Please double-check GEMINI_API_KEY in backend/.env and restart the backend, or switch "
+                        "to Ollama in Settings if you don't have a working key handy."
                     ),
                 ) from e
             raise HTTPException(
                 status_code=502,
                 detail=(
-                    f"Gemini HTTP {code} for model {gemini_model!r}. "
-                    f"Response: {snippet or str(e)}"
+                    f"Gemini ran into an unexpected problem on that request ({gemini_model}). Please try again in "
+                    "a moment, pick a different model from the Settings dropdown, or switch to Ollama in Settings."
                 ),
             ) from e
         raise HTTPException(
             status_code=502,
             detail=(
-                f"Ollama returned HTTP {e.response.status_code} for model {ollama_model!r} at {s.ollama_host}. "
+                f"Ollama returned an error for model {ollama_model!r} at {s.ollama_host}. "
                 f"Try: ollama pull {ollama_model}. Response: {snippet or str(e)}"
             ),
         ) from e
@@ -228,8 +250,9 @@ def chat(body: ChatBody) -> dict[str, str]:
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    f"Could not reach Gemini API ({e}). Check GEMINI_API_KEY and network, "
-                    "or switch the LLM backend to Ollama in the app (or set LLM_PROVIDER=ollama in backend/.env)."
+                    "I couldn't reach Gemini just now (network error talking to Google's API). "
+                    "Please try again in a minute, check GEMINI_API_KEY in backend/.env, or "
+                    "switch to Ollama in Settings if it keeps happening."
                 ),
             ) from e
         raise HTTPException(
