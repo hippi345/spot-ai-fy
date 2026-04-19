@@ -14,10 +14,13 @@ from spot_backend.chat_sse import sse_data
 from spot_backend.config import get_settings
 from spot_backend.llm_prefs import (
     clear_llm_provider_override,
+    gemini_model_override_active,
     ollama_model_override_active,
     prefs_path_exists,
+    read_effective_gemini_model,
     read_effective_llm_provider,
     read_effective_ollama_model,
+    write_gemini_model_override,
     write_llm_provider,
     write_ollama_model_override,
 )
@@ -65,6 +68,10 @@ class LlmProviderBody(BaseModel):
 
 
 class OllamaModelBody(BaseModel):
+    model: str = Field(..., min_length=1, max_length=200)
+
+
+class GeminiModelBody(BaseModel):
     model: str = Field(..., min_length=1, max_length=200)
 
 
@@ -181,6 +188,7 @@ def chat(body: ChatBody) -> dict[str, str]:
     s = get_settings()
     active = read_effective_llm_provider(s.data_dir, s.llm_provider)
     ollama_model = read_effective_ollama_model(s.data_dir, s.ollama_model)
+    gemini_model = read_effective_gemini_model(s.data_dir, s.gemini_model)
     hist = _dump_chat_history(body)
     try:
         text = run_chat_turn(body.message, s, history=hist)
@@ -204,7 +212,7 @@ def chat(body: ChatBody) -> dict[str, str]:
             raise HTTPException(
                 status_code=502,
                 detail=(
-                    f"Gemini HTTP {code} for model {s.gemini_model!r}. "
+                    f"Gemini HTTP {code} for model {gemini_model!r}. "
                     f"Response: {snippet or str(e)}"
                 ),
             ) from e
@@ -281,6 +289,20 @@ def reset_ollama_model() -> dict[str, str]:
     return {"ok": "true"}
 
 
+@app.post("/api/llm/gemini-model")
+def set_gemini_model(body: GeminiModelBody) -> dict[str, str]:
+    s = get_settings()
+    write_gemini_model_override(s.data_dir, body.model)
+    return {"ok": "true", "model": body.model.strip()}
+
+
+@app.delete("/api/llm/gemini-model")
+def reset_gemini_model() -> dict[str, str]:
+    s = get_settings()
+    write_gemini_model_override(s.data_dir, None)
+    return {"ok": "true"}
+
+
 @app.get("/api/llm")
 def llm_status() -> dict[str, Any]:
     """Reachability for the active LLM provider (Ollama or Gemini)."""
@@ -296,30 +318,42 @@ def llm_status() -> dict[str, Any]:
     }
 
     if active == "gemini":
-        out["configured_model"] = s.gemini_model
+        effective_gemini = read_effective_gemini_model(s.data_dir, s.gemini_model)
+        out["env_gemini_model"] = s.gemini_model
+        out["configured_model"] = effective_gemini
+        out["gemini_model_ui_override"] = gemini_model_override_active(s.data_dir)
         key = (s.gemini_api_key or "").strip()
         if not key:
             out["error"] = "GEMINI_API_KEY is not set in backend/.env"
             return out
         try:
+            # pageSize=200 so the UI can list every model the key can access.
             r = httpx.get(
                 "https://generativelanguage.googleapis.com/v1beta/models",
-                params={"key": key, "pageSize": 5},
+                params={"key": key, "pageSize": 200},
                 timeout=10.0,
             )
             r.raise_for_status()
             data = r.json()
-            names = [
-                str(m.get("name", ""))
-                for m in data.get("models", [])
-                if isinstance(m, dict) and m.get("name")
-            ]
+            # Keep only text-generation capable models so the dropdown is useful for chat.
+            names: list[str] = []
+            for m in data.get("models", []):
+                if not isinstance(m, dict):
+                    continue
+                full = str(m.get("name", ""))
+                if not full:
+                    continue
+                methods = m.get("supportedGenerationMethods") or []
+                if isinstance(methods, list) and "generateContent" not in methods:
+                    continue
+                short = full.split("/", 1)[1] if full.startswith("models/") else full
+                names.append(short)
+            names.sort()
             out["reachable"] = True
-            out["models"] = names[:20]
-            want = s.gemini_model.strip()
+            out["models"] = names
+            want = effective_gemini.strip().lower()
             out["model_installed"] = any(
-                isinstance(n, str) and (n.split("/")[-1] if "/" in n else n).lower() == want.lower()
-                for n in names
+                isinstance(n, str) and n.lower() == want for n in names
             )
         except httpx.RequestError as e:
             out["error"] = str(e)

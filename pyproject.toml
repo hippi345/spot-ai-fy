@@ -1,0 +1,64 @@
+[tool.pylint.main]
+py-version = "3.12"
+jobs = 0
+ignore-paths = [
+    "backend/\\.venv/.*",
+    "frontend/.*",
+]
+
+[tool.pylint."messages control"]
+# Disabled categories (rationale):
+# - C0114/C0115/C0116: not documenting every internal helper / pydantic model
+#   pollutes signal; module-level intent is covered by the package docstring.
+# - C0301: the agent system prompts (agent.py / gemini_llm.py) intentionally
+#   live as multi-kilobyte single-line bullet strings so Ollama/Gemini receive
+#   them verbatim; wrapping would change semantics for the LLM.
+# - C0415: import-outside-toplevel is used deliberately to break the
+#   agent <-> gemini_llm cyclic import. See R0401 below.
+# - R0401: same cyclic import; the functional cycle is mitigated by the
+#   lazy local imports above.
+# - R0902/R0903/R0904/R0911/R0912/R0913/R0914/R0915: complexity metrics.
+#   The large dispatch / chat-loop functions are straight-line orchestrators
+#   and splitting them hurts readability; pydantic data models trip R0903.
+# - W0511: TODO/FIXME markers are allowed.
+# - W0718: broad Exception catches are intentional at tool-dispatch
+#   boundaries where we must surface *any* failure as JSON instead of
+#   crashing the chat turn.
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "line-too-long",
+    "import-outside-toplevel",
+    "cyclic-import",
+    "too-many-instance-attributes",
+    "too-few-public-methods",
+    "too-many-public-methods",
+    "too-many-return-statements",
+    "too-many-branches",
+    "too-many-arguments",
+    "too-many-locals",
+    "too-many-statements",
+    "too-many-positional-arguments",
+    "fixme",
+    "broad-exception-caught",
+    # The tool module is a 2800-line orchestrator of Spotify REST endpoints by
+    # design; every helper is cohesive to that surface, so splitting it across
+    # files would just move the dispatch table around.
+    "too-many-lines",
+    # False positives for `list[str] | None` after a truthy guard. Astroid
+    # narrows `None` away from `if not x: return`, but not reliably on
+    # subscript access in the same block.
+    "unsubscriptable-object",
+]
+
+[tool.pylint.format]
+# Kept high (not 100) as a safety net for non-prompt code; line-too-long is
+# disabled overall because the LLM prompts are intentionally single-line.
+max-line-length = 140
+
+[tool.pylint.reports]
+# Require at least this score, so accidental regressions still fail CI even
+# with the generous disables above.
+score = true
+fail-under = 9.5

@@ -45,6 +45,10 @@ type LlmStatus = {
 
   ollama_model_ui_override?: boolean;
 
+  env_gemini_model?: string;
+
+  gemini_model_ui_override?: boolean;
+
   reachable: boolean;
 
   models: string[] | null;
@@ -54,10 +58,6 @@ type LlmStatus = {
   error: string | null;
 
 };
-
-
-
-const OLLAMA_MODEL_PRESETS = ["gemma2:2b", "gemma2:9b", "llama3.1:8b", "deepseek-coder-v2"] as const;
 
 
 
@@ -127,6 +127,10 @@ export function App() {
 
   const [ollamaCustomModel, setOllamaCustomModel] = useState("");
 
+  const [geminiModelSelect, setGeminiModelSelect] = useState("__env__");
+
+  const [geminiCustomModel, setGeminiCustomModel] = useState("");
+
 
 
   const refreshLlm = useCallback(async () => {
@@ -143,25 +147,57 @@ export function App() {
 
       const eff = (data.configured_model || "").trim();
 
-      const fromEnv = !data.ollama_model_ui_override;
+      if (p === "ollama") {
 
-      if (fromEnv) {
+        const available = data.models ?? [];
 
-        setOllamaModelSelect("__env__");
+        const fromEnv = !data.ollama_model_ui_override;
 
-        setOllamaCustomModel(eff || (data.env_ollama_model ?? "").trim());
+        if (fromEnv) {
 
-      } else if ((OLLAMA_MODEL_PRESETS as readonly string[]).includes(eff)) {
+          setOllamaModelSelect("__env__");
 
-        setOllamaModelSelect(eff);
+          setOllamaCustomModel(eff || (data.env_ollama_model ?? "").trim());
 
-        setOllamaCustomModel(eff);
+        } else if (available.includes(eff)) {
+
+          setOllamaModelSelect(eff);
+
+          setOllamaCustomModel(eff);
+
+        } else {
+
+          setOllamaModelSelect("__custom__");
+
+          setOllamaCustomModel(eff);
+
+        }
 
       } else {
 
-        setOllamaModelSelect("__custom__");
+        const available = data.models ?? [];
 
-        setOllamaCustomModel(eff);
+        const fromEnv = !data.gemini_model_ui_override;
+
+        if (fromEnv) {
+
+          setGeminiModelSelect("__env__");
+
+          setGeminiCustomModel(eff || (data.env_gemini_model ?? "").trim());
+
+        } else if (available.includes(eff)) {
+
+          setGeminiModelSelect(eff);
+
+          setGeminiCustomModel(eff);
+
+        } else {
+
+          setGeminiModelSelect("__custom__");
+
+          setGeminiCustomModel(eff);
+
+        }
 
       }
 
@@ -341,6 +377,86 @@ export function App() {
 
 
 
+  const applyGeminiModel = async () => {
+
+    if (!llm || llm.provider !== "gemini") return;
+
+    setLlmSaving(true);
+
+    setError(null);
+
+    try {
+
+      if (geminiModelSelect === "__env__") {
+
+        await readJson(await fetch("/api/llm/gemini-model", { method: "DELETE" }));
+
+        setBanner("Gemini model from .env again.");
+
+      } else {
+
+        const tag =
+
+          geminiModelSelect === "__custom__" ? geminiCustomModel.trim() : geminiModelSelect.trim();
+
+        if (!tag) throw new Error("Enter a Gemini model name (e.g. gemini-2.5-flash).");
+
+        await readJson(
+
+          await fetch("/api/llm/gemini-model", {
+
+            method: "POST",
+
+            headers: { "Content-Type": "application/json" },
+
+            body: JSON.stringify({ model: tag }),
+
+          }),
+
+        );
+
+        setBanner(`Gemini: ${tag}.`);
+
+      }
+
+      await refreshLlm();
+
+    } catch (e) {
+
+      setError(e instanceof Error ? e.message : "Could not save Gemini model");
+
+    } finally {
+
+      setLlmSaving(false);
+
+    }
+
+  };
+
+
+
+  const geminiModelApplyDisabled = useMemo(() => {
+
+    if (!llm || llm.provider !== "gemini") return true;
+
+    if (geminiModelSelect === "__env__") return !llm.gemini_model_ui_override;
+
+    if (geminiModelSelect === "__custom__") {
+
+      const t = geminiCustomModel.trim();
+
+      if (!t) return true;
+
+      return Boolean(llm.gemini_model_ui_override && t === (llm.configured_model || "").trim());
+
+    }
+
+    return Boolean(llm.gemini_model_ui_override && geminiModelSelect === (llm.configured_model || "").trim());
+
+  }, [llm, geminiModelSelect, geminiCustomModel]);
+
+
+
   const refreshSession = useCallback(async () => {
 
     const s = await readJson<Session>(await fetch("/api/session"));
@@ -416,6 +532,30 @@ export function App() {
     if (session?.signed_in) void refreshDevices();
 
   }, [session?.signed_in, refreshDevices]);
+
+
+
+  useEffect(() => {
+
+    if (!banner) return;
+
+    const id = window.setTimeout(() => setBanner(null), 8000);
+
+    return () => window.clearTimeout(id);
+
+  }, [banner]);
+
+
+
+  useEffect(() => {
+
+    if (!error) return;
+
+    const id = window.setTimeout(() => setError(null), 8000);
+
+    return () => window.clearTimeout(id);
+
+  }, [error]);
 
 
 
@@ -777,18 +917,12 @@ export function App() {
 
 
   const statusChips = useMemo(() => {
-    const bits: string[] = [];
-    if (session?.signed_in) bits.push("Spotify");
-    else bits.push("Spotify off");
-    if (session?.signed_in) {
-      if (session.spotify_playlist_write_ok === true) bits.push("playlist edit OK");
-      else if (session.spotify_playlist_write_ok === false) bits.push("reconnect for playlists");
-    }
-    if (llm?.provider === "gemini") bits.push("Gemini");
-    else if (llm?.provider === "ollama") bits.push("Ollama");
-    if (session?.device_id) bits.push("device saved");
-    return bits.join(" · ");
-  }, [session?.signed_in, session?.device_id, session?.spotify_playlist_write_ok, llm?.provider]);
+    const spotifyLabel = `Spotify — ${session?.signed_in ? "Connected" : "Not connected"}`;
+    const llmName = llm?.provider === "gemini" ? "Gemini" : "Ollama";
+    const llmConnected = Boolean(llm?.reachable);
+    const llmLabel = `${llmName} — ${llmConnected ? "Connected" : "Not connected"}`;
+    return `${spotifyLabel} · ${llmLabel}`;
+  }, [session?.signed_in, llm?.provider, llm?.reachable]);
 
 
 
@@ -1034,7 +1168,7 @@ export function App() {
 
                     <option value="__env__">From .env ({llm.env_ollama_model?.trim() || "OLLAMA_MODEL"})</option>
 
-                    {OLLAMA_MODEL_PRESETS.map((m) => (
+                    {(llm.models ?? []).map((m) => (
 
                       <option key={m} value={m}>
 
@@ -1080,6 +1214,78 @@ export function App() {
 
               ) : null}
 
+
+
+              {llm.provider === "gemini" ? (
+
+                <div className="control-row wrap">
+
+                  <label htmlFor="gemini-model" className="control-label">
+
+                    Model
+
+                  </label>
+
+                  <select
+
+                    id="gemini-model"
+
+                    value={geminiModelSelect}
+
+                    onChange={(e) => setGeminiModelSelect(e.target.value)}
+
+                    disabled={llmSaving || !llm.reachable}
+
+                  >
+
+                    <option value="__env__">From .env ({llm.env_gemini_model?.trim() || "GEMINI_MODEL"})</option>
+
+                    {(llm.models ?? []).map((m) => (
+
+                      <option key={m} value={m}>
+
+                        {m}
+
+                      </option>
+
+                    ))}
+
+                    <option value="__custom__">Custom…</option>
+
+                  </select>
+
+                  {geminiModelSelect === "__custom__" ? (
+
+                    <input
+
+                      type="text"
+
+                      value={geminiCustomModel}
+
+                      onChange={(e) => setGeminiCustomModel(e.target.value)}
+
+                      placeholder="e.g. gemini-2.5-pro"
+
+                      disabled={llmSaving}
+
+                      className="control-input"
+
+                      aria-label="Custom Gemini model name"
+
+                    />
+
+                  ) : null}
+
+                  <button type="button" onClick={() => void applyGeminiModel()} disabled={llmSaving || geminiModelApplyDisabled}>
+
+                    Apply model
+
+                  </button>
+
+                </div>
+
+              ) : null}
+
               <p className="meta-line">
 
                 {llm.provider === "gemini" ? (
@@ -1087,6 +1293,18 @@ export function App() {
                   <>
 
                     <code>{llm.configured_model || "—"}</code>
+
+                    {llm.gemini_model_ui_override ? (
+
+                      <>
+
+                        {" "}
+
+                        · override (env <code>{llm.env_gemini_model || "—"}</code>)
+
+                      </>
+
+                    ) : null}
 
                     {llm.ui_override ? (
 

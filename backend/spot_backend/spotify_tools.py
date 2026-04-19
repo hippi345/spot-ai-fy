@@ -9,11 +9,11 @@ from typing import Any
 
 import httpx
 
-logger = logging.getLogger(__name__)
-
 from spot_backend.config import Settings, get_settings
 from spot_backend.spotify_client import SpotifyAuthError, SpotifyClient
 from spot_backend.token_store import load_device
+
+logger = logging.getLogger(__name__)
 
 
 def _compact(data: Any, limit: int = 6000) -> str:

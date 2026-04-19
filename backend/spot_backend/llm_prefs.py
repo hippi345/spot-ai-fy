@@ -34,6 +34,9 @@ def _persist_prefs(data_dir: Path, raw: dict[str, Any]) -> None:
     om = raw.get("ollama_model")
     if isinstance(om, str) and om.strip():
         clean["ollama_model"] = om.strip()
+    gm = raw.get("gemini_model")
+    if isinstance(gm, str) and gm.strip():
+        clean["gemini_model"] = gm.strip()
     path = _prefs_path(data_dir)
     if not clean:
         if path.is_file():
@@ -80,8 +83,27 @@ def write_ollama_model_override(data_dir: Path, model: str | None) -> None:
     _persist_prefs(data_dir, raw)
 
 
+def read_effective_gemini_model(data_dir: Path, env_model: str) -> str:
+    """Optional `gemini_model` in prefs overrides GEMINI_MODEL from .env."""
+    raw = _load_prefs_raw(data_dir)
+    gm = raw.get("gemini_model")
+    if isinstance(gm, str) and gm.strip():
+        return gm.strip()
+    return (env_model or "gemini-2.5-flash").strip()
+
+
+def write_gemini_model_override(data_dir: Path, model: str | None) -> None:
+    """Persist Gemini model tag, or clear override when model is None/empty."""
+    raw = _load_prefs_raw(data_dir)
+    if model is not None and str(model).strip():
+        raw["gemini_model"] = str(model).strip()
+    else:
+        raw.pop("gemini_model", None)
+    _persist_prefs(data_dir, raw)
+
+
 def clear_llm_provider_override(data_dir: Path) -> None:
-    """Remove all UI LLM overrides (provider and Ollama model)."""
+    """Remove all UI LLM overrides (provider and model overrides)."""
     path = _prefs_path(data_dir)
     if path.is_file():
         path.unlink()
@@ -94,3 +116,8 @@ def prefs_path_exists(data_dir: Path) -> bool:
 def ollama_model_override_active(data_dir: Path) -> bool:
     om = _load_prefs_raw(data_dir).get("ollama_model")
     return isinstance(om, str) and bool(om.strip())
+
+
+def gemini_model_override_active(data_dir: Path) -> bool:
+    gm = _load_prefs_raw(data_dir).get("gemini_model")
+    return isinstance(gm, str) and bool(gm.strip())

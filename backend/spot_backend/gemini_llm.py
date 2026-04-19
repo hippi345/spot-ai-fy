@@ -129,7 +129,9 @@ def run_chat_turn_gemini(
     if not key:
         return "GEMINI_API_KEY is not set. Add it to backend/.env (from Google AI Studio)."
 
-    model = (settings.gemini_model or _DEFAULT_GEMINI_MODEL).strip()
+    from spot_backend.llm_prefs import read_effective_gemini_model
+
+    model = read_effective_gemini_model(settings.data_dir, settings.gemini_model) or _DEFAULT_GEMINI_MODEL
     declarations = _openai_tools_to_gemini_declarations(OLLAMA_TOOLS)
     runner = SpotifyToolRunner(settings=settings)
     full_system = _SYSTEM + load_optional_agent_context_markdown(settings)
