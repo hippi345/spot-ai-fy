@@ -1,28 +1,48 @@
-name: NodeJS with Webpack
+name: frontend build
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   pull_request:
-    branches: [ "main" ]
+    branches: [main]
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [18.x, 20.x, 22.x]
+        node-version: [20.x, 22.x]
+
+    defaults:
+      run:
+        # The frontend (React + Vite + TypeScript) lives in ./frontend.
+        # There is no package.json at the repo root — so every npm step must
+        # run from this directory.
+        working-directory: frontend
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ matrix.node-version }}
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-    - name: Build
-      run: |
-        npm install
-        npx webpack
+      - name: Install dependencies
+        # `npm ci` is a lockfile-faithful, cache-friendly install that
+        # matches what production builds get. Falls back to `npm install`
+        # only if the lockfile is missing.
+        run: npm ci
+
+      - name: Type-check
+        # tsc is available via the typescript devDependency; fails the build
+        # if any .ts / .tsx has a type error before we even try to bundle.
+        run: npx tsc --noEmit
+
+      - name: Build
+        # vite build (invoked by `npm run build`) produces frontend/dist.
+        run: npm run build
