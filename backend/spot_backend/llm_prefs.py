@@ -83,20 +83,28 @@ def write_ollama_model_override(data_dir: Path, model: str | None) -> None:
     _persist_prefs(data_dir, raw)
 
 
+def _strip_gemini_prefix(name: str) -> str:
+    """Gemini REST returns full-form names ("models/gemini-2.0-flash") but the
+    generateContent URL is built as `/models/{name}:…`, so a stored full-form
+    name would produce `/models/models/…` → 404. Normalize to the short name."""
+    n = name.strip()
+    return n.split("/", 1)[1] if n.startswith("models/") else n
+
+
 def read_effective_gemini_model(data_dir: Path, env_model: str) -> str:
     """Optional `gemini_model` in prefs overrides GEMINI_MODEL from .env."""
     raw = _load_prefs_raw(data_dir)
     gm = raw.get("gemini_model")
     if isinstance(gm, str) and gm.strip():
-        return gm.strip()
-    return (env_model or "gemini-2.5-flash").strip()
+        return _strip_gemini_prefix(gm)
+    return _strip_gemini_prefix(env_model or "gemini-2.5-flash")
 
 
 def write_gemini_model_override(data_dir: Path, model: str | None) -> None:
     """Persist Gemini model tag, or clear override when model is None/empty."""
     raw = _load_prefs_raw(data_dir)
     if model is not None and str(model).strip():
-        raw["gemini_model"] = str(model).strip()
+        raw["gemini_model"] = _strip_gemini_prefix(str(model))
     else:
         raw.pop("gemini_model", None)
     _persist_prefs(data_dir, raw)

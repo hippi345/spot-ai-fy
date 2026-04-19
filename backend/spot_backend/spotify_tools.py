@@ -1740,6 +1740,76 @@ class SpotifyToolRunner:
             return active[0]["id"]
         return ""
 
+    @staticmethod
+    def _body_has_target(body: dict[str, Any]) -> bool:
+        """True when the play body specifies a concrete track URI (uris[0] or offset.uri)."""
+        uris = body.get("uris") if isinstance(body, dict) else None
+        if isinstance(uris, list) and uris:
+            first = uris[0]
+            if isinstance(first, str) and first.strip():
+                return True
+        off = body.get("offset") if isinstance(body, dict) else None
+        if isinstance(off, dict):
+            ou = off.get("uri")
+            if isinstance(ou, str) and ou.strip():
+                return True
+        return False
+
+    def _first_track_uri_of_context(self, context_uri: str) -> str:
+        """Return the first playable track URI of a playlist/album context, or '' on failure."""
+        if not isinstance(context_uri, str):
+            return ""
+        ctx = context_uri.strip()
+        try:
+            if ctx.startswith("spotify:playlist:"):
+                pid = ctx.split(":", 2)[2]
+                data = self.client.api_get(
+                    f"/playlists/{pid}/items",
+                    params={"limit": 1, "fields": "items(track(uri,is_playable))"},
+                )
+                items = data.get("items") if isinstance(data, dict) else None
+                if isinstance(items, list) and items and isinstance(items[0], dict):
+                    track = items[0].get("track")
+                    if isinstance(track, dict):
+                        uri = track.get("uri")
+                        if isinstance(uri, str) and uri.strip():
+                            return uri.strip()
+            elif ctx.startswith("spotify:album:"):
+                aid = ctx.split(":", 2)[2]
+                data = self.client.api_get(f"/albums/{aid}/tracks", params={"limit": 1})
+                items = data.get("items") if isinstance(data, dict) else None
+                if isinstance(items, list) and items and isinstance(items[0], dict):
+                    uri = items[0].get("uri")
+                    if isinstance(uri, str) and uri.strip():
+                        return uri.strip()
+        except httpx.HTTPStatusError as exc:
+            logger.info("spotify_play: failed to fetch first track for %s: %s", ctx, exc)
+        return ""
+
+    def _pause_then_play(self, body: dict[str, Any], *, device_id: str = "") -> bool:
+        """Pause current playback, wait briefly, then replay the requested body.
+
+        This is a last-resort unsticker for Spotify Connect sessions that refuse to switch
+        context after a transfer+replay cycle. Returns True only when post-replay
+        verification succeeds.
+        """
+        if not body:
+            return False
+        pause_path = "/me/player/pause"
+        if device_id:
+            pause_path = f"{pause_path}?device_id={device_id}"
+        try:
+            self.client.api_put(pause_path)
+        except httpx.HTTPStatusError as exc:
+            logger.info("spotify_play: pause before replay returned %s", exc)
+        time.sleep(0.6)
+        try:
+            self._try_play(device_id, body)
+        except httpx.HTTPStatusError as exc:
+            logger.info("spotify_play: replay after pause failed: %s", exc)
+            return False
+        return self._playback_matches(body, attempts=8, delay_s=0.5)
+
     def _start_playback(self, arguments: dict[str, Any]) -> str:
         device_id = str(arguments.get("device_id", "")).strip() or self._device_id() or ""
         body: dict[str, Any] = {}
@@ -1773,6 +1843,37 @@ class SpotifyToolRunner:
                         "playback_verified": True,
                     }
                 )
+            # Spotify Connect sometimes refuses to switch from a held session when we only
+            # send context_uri. Fetch the first track of the target context and retry with
+            # an explicit offset.uri — that both gives us a concrete target to verify and
+            # enables the force-skip salvage path below.
+            if not self._body_has_target(body):
+                first_uri = self._first_track_uri_of_context(body.get("context_uri") or "")
+                if first_uri:
+                    logger.info(
+                        "spotify_play: verification failed for context-only play %s; "
+                        "re-issuing with explicit offset.uri=%s",
+                        body.get("context_uri"),
+                        first_uri,
+                    )
+                    body = {**body, "offset": {"uri": first_uri}}
+                    try:
+                        self._try_play(device_id, body)
+                    except httpx.HTTPStatusError:
+                        pass
+                    if self._playback_matches(body, attempts=6, delay_s=0.5):
+                        return json.dumps(
+                            {
+                                "ok": True,
+                                "device_id": device_id or None,
+                                "body": body,
+                                "playback_verified": True,
+                                "note": (
+                                    "Context-only play was not reflected on the device; "
+                                    "retried with the playlist's first track as the offset."
+                                ),
+                            }
+                        )
             chosen = self._resolve_target_device(device_id)
             if chosen:
                 try:
@@ -1797,7 +1898,7 @@ class SpotifyToolRunner:
                             "note": "Playback did not switch on the first attempt; forced a transfer to the target device and retried.",
                         }
                     )
-            # Last resort: if Spotify treated the offset as "up next" (common when already
+            # Last resort A: if Spotify treated the offset as "up next" (common when already
             # playing from the same context), skip forward until the target track becomes current.
             if self._force_to_target_track(body, device_id=chosen or device_id):
                 return json.dumps(
@@ -1809,6 +1910,22 @@ class SpotifyToolRunner:
                         "note": (
                             "Spotify queued the target as 'up next' instead of jumping — forced skip(s) "
                             "to advance to the requested track."
+                        ),
+                    }
+                )
+            # Last resort B: pause current playback first, then replay. This unsticks the
+            # Spotify Connect client in cases where a lingering session on the same device
+            # keeps the previous track playing even after transfer+replay.
+            if self._pause_then_play(body, device_id=chosen or device_id):
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "device_id": chosen or device_id or None,
+                        "body": body,
+                        "playback_verified": True,
+                        "note": (
+                            "Device refused to switch — paused the current session, waited, "
+                            "then replayed the requested context."
                         ),
                     }
                 )

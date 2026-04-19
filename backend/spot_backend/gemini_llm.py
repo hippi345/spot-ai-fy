@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import httpx
@@ -10,6 +11,51 @@ import httpx
 from spot_backend.config import Settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
+
+# Google returns 503 UNAVAILABLE when a specific Gemini model is over-subscribed
+# (the message literally says "high demand … usually temporary"). 429 is
+# rate-limit / quota. In both cases a short exponential backoff is the
+# documented remedy before giving up.
+# Source: https://ai.google.dev/gemini-api/docs/troubleshooting
+_GEMINI_RETRY_STATUSES: frozenset[int] = frozenset({429, 503})
+_GEMINI_RETRY_ATTEMPTS: int = 4
+_GEMINI_RETRY_BASE_SLEEP: float = 1.5
+
+
+def _gemini_post_with_retry(
+    client: httpx.Client,
+    url: str,
+    *,
+    params: dict[str, Any],
+    json_body: dict[str, Any],
+) -> httpx.Response:
+    """POST to Gemini with exponential backoff on 503 / 429.
+
+    On the final attempt (or any non-retryable status) we still call
+    raise_for_status so the outer except httpx.HTTPStatusError handler can
+    surface a useful error message to the user.
+    """
+    last: httpx.Response | None = None
+    for attempt in range(_GEMINI_RETRY_ATTEMPTS):
+        resp = client.post(url, params=params, json=json_body)
+        last = resp
+        if resp.status_code not in _GEMINI_RETRY_STATUSES:
+            resp.raise_for_status()
+            return resp
+        # Honor an explicit Retry-After header when present; otherwise
+        # backoff 1.5s, 3s, 6s, 12s.
+        retry_after = resp.headers.get("Retry-After")
+        sleep_s: float
+        try:
+            sleep_s = float(retry_after) if retry_after else _GEMINI_RETRY_BASE_SLEEP * (2 ** attempt)
+        except ValueError:
+            sleep_s = _GEMINI_RETRY_BASE_SLEEP * (2 ** attempt)
+        if attempt == _GEMINI_RETRY_ATTEMPTS - 1:
+            break
+        time.sleep(sleep_s)
+    assert last is not None
+    last.raise_for_status()
+    return last
 
 _GEMINI_REST = "https://generativelanguage.googleapis.com/v1beta"
 _DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
@@ -38,6 +84,10 @@ Rules:
   * PLAY NEXT (queue only, does NOT interrupt) — ONLY when the user literally says "next", "queue", or "after": "play X next", "queue X", "add X to the queue", "after this song play X". Use spotify_play_next (alias of spotify_add_to_queue). NEVER use these for "start playing X" / "play [playlist] at [track]" — those are PLAY NOW and belong in spotify_play_playlist / spotify_start_resume_playback. If uncertain, default to PLAY NOW.
 - Multi-verb requests (e.g. "add, verify, then play starting at X with repeat on") must execute EVERY verb as a tool call. PREFER the composite tools: spotify_add_tracks_by_query (search + dedupe + add with optional min_year) and spotify_play_playlist (start context + start_at_uri + repeat + shuffle in one call). For "add a <artist> song (ideally from <year>) to <playlist>, verify, then play starting there with repeat on" the minimal chain is: spotify_add_tracks_by_query → spotify_play_playlist with start_at_uri = added_tracks[0].uri and repeat = "context". Treat the added_tracks list in the response as authoritative — quote those names/artists. Only chain spotify_search + spotify_add_tracks_to_playlist + spotify_start_resume_playback + spotify_set_repeat when the user picked specific titles that don't fit a single query.
 - NEVER invent or memorize Spotify track ids. Every track id you pass to a tool must come from a tool result in this session (spotify_search tracks.items, spotify_add_tracks_by_query.added_tracks, spotify_playlist_tracks, spotify_get_track). If spotify_add_tracks_to_playlist returned rejected_uris or try_instead = "spotify_add_tracks_by_query", switch tools instead of guessing more ids.
+- KNOWN SPOTIFY API LIMITATIONS — do not iterate tools trying to fetch data that does not exist. Answer the user plainly instead:
+  * "Most listened / most played / favorite playlist" — Spotify's Web API does NOT expose per-playlist listen counts or top-playlists. It only exposes user-top at track and artist granularity: /me/top/tracks and /me/top/artists (time_range=short_term|medium_term|long_term). Reply that Spotify does not publish top-playlist analytics, and offer to fetch the user's top tracks or top artists instead — do NOT call spotify_user_playlists + spotify_playlist_tracks in a loop looking for a count.
+  * Per-track / per-album play counts — not exposed on the Web API. Say so, and offer top tracks/artists as a proxy.
+  * Listening history beyond the most recently played 50 items — not exposed. spotify_playback_state + /me/player/recently-played (up to 50, not currently wrapped) is the ceiling. Say so rather than iterating.
 - The user selects an active device in the UI; omit device_id unless you must override it.
 - After tools return, give a short natural language summary for the user.
 
@@ -159,8 +209,7 @@ def run_chat_turn_gemini(
                     "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
                 }
 
-                resp = client.post(url, params=params, json=body)
-                resp.raise_for_status()
+                resp = _gemini_post_with_retry(client, url, params=params, json_body=body)
                 data = resp.json()
 
                 cands = data.get("candidates")
@@ -238,6 +287,20 @@ def run_chat_turn_gemini(
                 f"Set GEMINI_MODEL in backend/.env to a current id (e.g. {_DEFAULT_GEMINI_MODEL!r} or gemini-1.5-flash). "
                 f"List models: GET {_GEMINI_REST}/models?key=YOUR_KEY — "
                 "https://ai.google.dev/gemini-api/docs/models"
+            )
+        if code == 503:
+            return (
+                f"Gemini HTTP 503: model {model!r} is over-subscribed right now — "
+                f"retried {_GEMINI_RETRY_ATTEMPTS} times and Google kept returning UNAVAILABLE. "
+                "Switch to a less-loaded model in the dropdown (e.g. gemini-2.5-flash-lite or "
+                "gemini-1.5-flash), or try again in a minute."
+            )
+        if code == 429:
+            return (
+                f"Gemini HTTP 429: rate limit / quota exhausted for model {model!r}. "
+                "If this is a free-tier key, usage resets daily — see "
+                "https://ai.google.dev/gemini-api/docs/rate-limits — otherwise enable billing "
+                "or switch the backend to Ollama."
             )
         return f"Gemini HTTP {code}: {snippet or str(e)}"
     finally:
