@@ -29,6 +29,20 @@ type ChatMessage = { role: "user" | "assistant"; text: string };
 
 
 
+type TraceStepKind = "status" | "round" | "tool";
+
+type TraceStep = {
+  id: number;
+  kind: TraceStepKind;
+  label: string;
+  detail?: string;
+  startedAt: number;
+  finishedAt?: number;
+  status: "running" | "done" | "error";
+};
+
+
+
 type LlmStatus = {
 
   provider?: string;
@@ -113,7 +127,17 @@ export function App() {
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
 
-  const [trace, setTrace] = useState("");
+  const [traceSteps, setTraceSteps] = useState<TraceStep[]>([]);
+
+  const [showTraceDetail, setShowTraceDetail] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("spotaify.showTraceDetail") === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
 
   const [liveReply, setLiveReply] = useState("");
 
@@ -559,6 +583,24 @@ export function App() {
 
 
 
+  useEffect(() => {
+    try {
+      localStorage.setItem("spotaify.showTraceDetail", showTraceDetail ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [showTraceDetail]);
+
+
+
+  useEffect(() => {
+    if (!sending) return;
+    const id = window.setInterval(() => setNowTick(Date.now()), 500);
+    return () => window.clearInterval(id);
+  }, [sending]);
+
+
+
   const deviceOptions = useMemo(() => {
 
     return devices.map((d) => ({
@@ -609,7 +651,7 @@ export function App() {
 
     setError(null);
 
-    setTrace("");
+    setTraceSteps([]);
 
     setLiveReply("");
 
@@ -623,13 +665,45 @@ export function App() {
 
     const timeoutId = window.setTimeout(() => controller.abort(), chatTimeoutMs);
 
+    let nextStepId = 1;
+    const newStepId = () => nextStepId++;
 
-
-    const appendTrace = (line: string) => {
-
-      setTrace((prev) => (prev ? `${prev}\n` : "") + line);
-
+    const pushStep = (step: Omit<TraceStep, "id" | "startedAt"> & { startedAt?: number }) => {
+      const id = newStepId();
+      const now = Date.now();
+      setTraceSteps((prev) => {
+        const finished = prev.map((s) =>
+          s.status === "running" ? { ...s, status: "done" as const, finishedAt: now } : s,
+        );
+        return [
+          ...finished,
+          { ...step, id, startedAt: step.startedAt ?? now } as TraceStep,
+        ];
+      });
+      return id;
     };
+
+    const finishStep = (id: number, patch?: Partial<TraceStep>) => {
+      const now = Date.now();
+      setTraceSteps((prev) =>
+        prev.map((s) =>
+          s.id === id
+            ? { ...s, status: "done", finishedAt: now, ...patch }
+            : s,
+        ),
+      );
+    };
+
+    const finishAllRunning = () => {
+      const now = Date.now();
+      setTraceSteps((prev) =>
+        prev.map((s) =>
+          s.status === "running" ? { ...s, status: "done", finishedAt: now } : s,
+        ),
+      );
+    };
+
+    const toolStepIdByName = new Map<string, number>();
 
 
 
@@ -695,17 +769,25 @@ export function App() {
 
         switch (typ) {
 
-          case "status":
-
-            appendTrace(String(j.message ?? ""));
-
+          case "status": {
+            const msg = String(j.message ?? "");
+            if (msg.trim()) {
+              const sid = pushStep({ kind: "status", label: msg, status: "done" });
+              finishStep(sid);
+            }
             break;
+          }
 
-          case "round":
-
-            appendTrace(`Round ${String(j.step ?? "?")} / ${String(j.max ?? "?")}`);
-
+          case "round": {
+            const step = String(j.step ?? "?");
+            const max = String(j.max ?? "?");
+            pushStep({
+              kind: "round",
+              label: `Round ${step} / ${max} — waiting for model…`,
+              status: "running",
+            });
             break;
+          }
 
           case "llm_delta":
 
@@ -715,17 +797,35 @@ export function App() {
 
             break;
 
-          case "tool_start":
-
-            appendTrace(`→ Tool: ${String(j.name ?? "")}…`);
-
+          case "tool_start": {
+            const name = String(j.name ?? "");
+            const id = pushStep({
+              kind: "tool",
+              label: name || "tool",
+              status: "running",
+            });
+            if (name) toolStepIdByName.set(name, id);
             break;
+          }
 
-          case "tool_done":
-
-            appendTrace(`  ✓ ${String(j.name ?? "")} ${j.preview ? `(${String(j.preview)})` : ""}`);
-
+          case "tool_done": {
+            const name = String(j.name ?? "");
+            const preview = j.preview ? String(j.preview) : "";
+            const id = toolStepIdByName.get(name);
+            if (id !== undefined) {
+              finishStep(id, { detail: preview || undefined });
+              toolStepIdByName.delete(name);
+            } else {
+              const sid = pushStep({
+                kind: "tool",
+                label: name || "tool",
+                status: "done",
+                detail: preview || undefined,
+              });
+              finishStep(sid, { detail: preview || undefined });
+            }
             break;
+          }
 
           case "final":
 
@@ -733,9 +833,13 @@ export function App() {
 
             setLiveReply(reply);
 
+            finishAllRunning();
+
             break;
 
           case "error":
+
+            finishAllRunning();
 
             throw new Error(String(j.message ?? "Stream error"));
 
@@ -885,7 +989,7 @@ export function App() {
 
       setLiveReply("");
 
-      if (streamOk) setTrace("");
+      if (streamOk) setTraceSteps([]);
 
     }
 
@@ -915,6 +1019,24 @@ export function App() {
   };
 
 
+
+  const formatElapsed = (ms: number): string => {
+    if (!Number.isFinite(ms) || ms < 0) return "0.0s";
+    if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
+    if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+    const m = Math.floor(ms / 60_000);
+    const s = Math.round((ms % 60_000) / 1000);
+    return `${m}m ${s.toString().padStart(2, "0")}s`;
+  };
+
+  const traceIcon = (step: TraceStep): string => {
+    if (step.status === "running") return "⟳";
+    if (step.kind === "tool") return "✓";
+    if (step.kind === "round") return "▸";
+    return "•";
+  };
+
+  const showTracePanel = llm?.provider === "ollama" && traceSteps.length > 0;
 
   const statusChips = useMemo(() => {
     const spotifyLabel = `Spotify — ${session?.signed_in ? "Connected" : "Not connected"}`;
@@ -994,7 +1116,7 @@ export function App() {
 
         </div>
 
-        {sending && (liveReply || trace) ? (
+        {sending && (liveReply || traceSteps.length > 0) ? (
 
           <div className="bubble assistant streaming" aria-live="polite">
 
@@ -1004,14 +1126,43 @@ export function App() {
 
         ) : null}
 
-        {trace ? (
-
-          <pre className="trace-log" aria-live="polite">
-
-            {trace}
-
-          </pre>
-
+        {showTracePanel ? (
+          <div className="trace-panel" aria-live="polite" aria-label="Agent progress">
+            <div className="trace-panel-head">
+              <span className="trace-panel-title">
+                {sending ? "Agent progress" : "Last run"}
+              </span>
+              <label className="trace-detail-toggle">
+                <input
+                  type="checkbox"
+                  checked={showTraceDetail}
+                  onChange={(e) => setShowTraceDetail(e.target.checked)}
+                />
+                <span>Show details</span>
+              </label>
+            </div>
+            <ul className="trace-steps">
+              {traceSteps.map((step) => {
+                const end = step.finishedAt ?? (step.status === "running" ? nowTick : step.startedAt);
+                const elapsed = Math.max(0, end - step.startedAt);
+                return (
+                  <li
+                    key={step.id}
+                    className={`trace-step trace-step--${step.kind} trace-step--${step.status}`}
+                  >
+                    <span className="trace-step-icon" aria-hidden="true">
+                      {traceIcon(step)}
+                    </span>
+                    <span className="trace-step-label">{step.label}</span>
+                    <span className="trace-step-time">{formatElapsed(elapsed)}</span>
+                    {showTraceDetail && step.detail ? (
+                      <pre className="trace-step-detail">{step.detail}</pre>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         ) : null}
 
         {error ? <div className="error">{error}</div> : null}

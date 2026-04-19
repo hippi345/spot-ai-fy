@@ -660,42 +660,120 @@ button:disabled {
 
 
 
-.trace-log {
-
-  max-height: 160px;
-
-  overflow: auto;
-
-  margin-top: 4px;
-
-  padding: 8px 10px;
-
+.trace-panel {
+  margin-top: 6px;
+  padding: 8px 10px 10px;
   border-radius: 10px;
-
   border: 1px dashed var(--border);
-
   background: #0a0a0e;
-
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-
-  font-size: 0.76rem;
-
-  line-height: 1.45;
-
   color: var(--muted);
-
-  white-space: pre-wrap;
-
+  font-size: 0.78rem;
 }
 
+.trace-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
 
-
-.trace-log strong {
-
-  color: var(--text);
-
+.trace-panel-title {
   font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
 
+.trace-detail-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.trace-detail-toggle input[type="checkbox"] {
+  accent-color: #1db954;
+}
+
+.trace-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trace-step {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  grid-column-gap: 8px;
+  align-items: baseline;
+  padding: 3px 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.45;
+}
+
+.trace-step-icon {
+  text-align: center;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.trace-step-label {
+  color: var(--text);
+  word-break: break-word;
+}
+
+.trace-step-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  opacity: 0.85;
+}
+
+.trace-step-detail {
+  grid-column: 2 / 4;
+  margin: 4px 0 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.trace-step--tool .trace-step-icon { color: #1db954; }
+.trace-step--round .trace-step-icon { color: #9aa0a6; }
+.trace-step--status .trace-step-label { color: var(--muted); }
+
+.trace-step--running .trace-step-icon {
+  color: #f5c518;
+  animation: trace-spin 1.2s linear infinite;
+  display: inline-block;
+}
+
+.trace-step--running .trace-step-label {
+  color: var(--text);
+}
+
+@keyframes trace-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trace-step--running .trace-step-icon { animation: none; }
 }
 
 
