@@ -16,8 +16,11 @@ from spot_backend.action_claim_guard import (
     reply_claims_unbacked_action,
 )
 from spot_backend.chat_messages import (
+    assistant_reply_is_promise_only,
     friendly_reply_for_empty_model_output,
     is_unpersisted_assistant_fallback,
+    prepare_user_visible_reply,
+    tool_result_is_rejected_or_invalid_id,
 )
 from spot_backend.config import Settings, get_settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
@@ -77,6 +80,7 @@ Rules:
   * Editing a playlist owned by someone else — NOT supported by the Web API. Offer spotify_duplicate_playlist to copy it into a new playlist the user owns; the new playlist is fully writable (returned id works with spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks / spotify_replace_playlist_tracks / spotify_reorder_playlist_tracks).
 - The user selects an active device in the UI; omit device_id unless you must override it.
 - After tools return, give a short natural language summary for the user.
+- Never mention internal tool or function names (spotify_* identifiers) to the user — describe actions in plain language only.
 
 High-level phrasing (you resolve intent → concrete tools; do not ask the user for Spotify ids first unless truly impossible):
 - "Add [artist or songs] to my playlist [name]" / "put these on [name]" → spotify_user_playlists (match the name to an id), then USE spotify_add_tracks_by_query with {playlist_id, query, count, min_year?} as a single call. Only fall back to spotify_search + spotify_add_tracks_to_playlist when the user picked specific songs by title that need individual resolution. Never use a playlist id from someone else's search result.
@@ -128,6 +132,27 @@ _JSON_PLAIN_ANSWER_FOLLOWUP = (
     "Do not start your reply with `{`, `[`, or a markdown code fence. "
     "Use a single ```json ... ``` tool block only if you still need another Spotify API call."
 )
+
+_PROMISE_AFTER_ID_ERROR_NUDGE = (
+    "Spot-AI-fy: The last Spotify tool failed because an id/uri was invalid. "
+    "Do not reply with only a promise — call spotify_search or another lookup tool now, "
+    "then answer with what you found."
+)
+
+
+def _apply_ollama_tuning(
+    body: dict[str, Any],
+    settings: Settings,
+    ollama_options: dict[str, Any],
+    *,
+    omit_think_field: bool = False,
+) -> None:
+    apply_ollama_request_tuning(
+        body,
+        settings,
+        ollama_options,
+        omit_think_field=omit_think_field,
+    )
 
 
 def _tool_calls_from_payload(payload: Any) -> list[dict[str, Any]] | None:
@@ -456,6 +481,8 @@ def iter_ollama_chat_events(
     """Yields Spot-AI-fy progress events for the Ollama agent; ends with ``final`` or ``error``."""
     runner = SpotifyToolRunner(settings=settings)
     successful_tools: set[str] = set()
+    tool_results: list[str] = []
+    promise_nudge_used = False
     action_claim_reprompted = False
     try:
         ollama_model = read_effective_ollama_model(settings.data_dir, settings.ollama_model)
@@ -645,7 +672,9 @@ def iter_ollama_chat_events(
                             "stream": False,
                             "format": "json",
                         }
-                        _apply_ollama_tuning(ns_body)
+                        _apply_ollama_tuning(
+                            ns_body, settings, ollama_options, omit_think_field=omit_think_field
+                        )
                         try:
                             nr = client.post(
                                 url,
@@ -713,6 +742,20 @@ def iter_ollama_chat_events(
                             reprompt_action_claim = True
                             break
                         final_text = action_claim_honest_fallback()
+                    if (
+                        assistant_reply_is_promise_only(final_text)
+                        and tool_results
+                        and tool_result_is_rejected_or_invalid_id(tool_results[-1])
+                        and not promise_nudge_used
+                    ):
+                        promise_nudge_used = True
+                        messages.append({"role": "user", "content": _PROMISE_AFTER_ID_ERROR_NUDGE})
+                        yield {
+                            "type": "status",
+                            "message": "Last tool failed on id validation — nudging the model to retry…",
+                        }
+                        continue
+                    final_text = prepare_user_visible_reply(final_text, tool_results)
                     yield {"type": "final", "text": final_text}
                     return
 
@@ -731,6 +774,7 @@ def iter_ollama_chat_events(
                     yield {"type": "tool_start", "name": name}
                     result = runner.run(name, args)
                     record_successful_tool(successful_tools, name, result)
+                    tool_results.append(result)
                     preview = result[:240] + ("…" if len(result) > 240 else "")
                     yield {"type": "tool_done", "name": name, "preview": preview}
                     result_chat = _cap_tool_result_for_chat(result, max_len=tool_result_cap)
@@ -744,7 +788,13 @@ def iter_ollama_chat_events(
                 if json_mode_patched:
                     messages.append({"role": "user", "content": _JSON_PLAIN_ANSWER_FOLLOWUP})
 
-            yield {"type": "final", "text": "Stopped after maximum tool steps. Try a simpler request."}
+            yield {
+                "type": "final",
+                "text": prepare_user_visible_reply(
+                    "Stopped after maximum tool steps. Try a simpler request.",
+                    tool_results,
+                ),
+            }
     finally:
         runner.close()
 

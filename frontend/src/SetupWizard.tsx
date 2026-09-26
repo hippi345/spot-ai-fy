@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   fetchSetupStatus,
@@ -41,6 +41,8 @@ export function SetupWizard({
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [cpuHint, setCpuHint] = useState<string | null>(null);
 
+  const didInitialRefresh = useRef(false);
+
   const refresh = useCallback(async (opts?: { preserveStep?: boolean }) => {
     const s = await fetchSetupStatus();
     setStatus(s);
@@ -57,6 +59,10 @@ export function SetupWizard({
   }, [onComplete, closeOnComplete, ollamaModel]);
 
   useEffect(() => {
+    if (didInitialRefresh.current) {
+      return;
+    }
+    didInitialRefresh.current = true;
     void refresh();
   }, [refresh]);
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +20,7 @@ from spot_backend.gemini_llm import run_chat_turn_gemini
 from spot_backend.ollama_agent_profile import SMALL_MODEL_TOOL_NAMES, small_model_route_hint
 from spot_backend.setup_service import _ollama_cpu_profile
 from spot_backend.spotify_tools import SpotifyToolRunner, pick_latest_album_release
+from tests.recheck_helpers import install_cpu_only_ollama_profile_mocks, mock_artist_name_search
 from fastapi.testclient import TestClient
 
 
@@ -31,6 +31,7 @@ def test_r2_itemA_save_tracks_uses_me_library_put(data_dir, signed_in_tokens) ->
         return_value=httpx.Response(200)
     )
     runner = SpotifyToolRunner(settings=Settings())
+    runner._session_known_ids.add(track_id)
     raw = runner.run("spotify_save_tracks", {"track_ids": [track_id]})
     runner.close()
     assert json.loads(raw)["ok"] is True
@@ -45,6 +46,7 @@ def test_r2_itemA_follow_artist_uses_me_library_put(data_dir, signed_in_tokens) 
         return_value=httpx.Response(200)
     )
     runner = SpotifyToolRunner(settings=Settings())
+    runner._session_known_ids.add(artist_id)
     raw = runner.run("spotify_follow_artist", {"artist_id": artist_id})
     runner.close()
     assert json.loads(raw)["ok"] is True
@@ -141,16 +143,7 @@ def test_r2_itemC_action_guard_reprompts_when_claim_without_tool(data_dir, signe
 @respx.mock
 def test_r2_itemC_play_playlist_resolves_artist_name(data_dir, signed_in_tokens) -> None:
     artist_id = "aaaaaaaaaaaaaaaaaaaaaa"
-    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "artists": {
-                    "items": [{"id": artist_id, "name": "Radiohead", "type": "artist"}],
-                }
-            },
-        )
-    )
+    mock_artist_name_search(artist_id, "Radiohead")
     play = respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
         return_value=httpx.Response(204)
     )
@@ -191,23 +184,7 @@ def test_r2_itemD_create_playlist_forces_private_when_spotify_returns_public(
 
 
 def test_r2_itemF_cpu_only_always_shows_hint(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_get(url, *args, **kwargs):
-        req = httpx.Request("GET", str(url))
-        if str(url).endswith("/api/ps"):
-            return httpx.Response(
-                200,
-                json={"models": [{"name": "qwen3:4b-instruct", "size_vram": 0}]},
-                request=req,
-            )
-        raise AssertionError(url)
-
-    def fake_post(url, *args, **kwargs):
-        req = httpx.Request("POST", str(url))
-        return httpx.Response(200, json={"response": "OK"}, request=req)
-
-    monkeypatch.setattr(httpx, "get", fake_get)
-    monkeypatch.setattr(httpx, "post", fake_post)
-    monkeypatch.setattr(time, "perf_counter", lambda: 0.0)
+    install_cpu_only_ollama_profile_mocks(monkeypatch)
     profile = _ollama_cpu_profile("http://127.0.0.1:11434", "qwen3:4b-instruct")
     assert profile["cpu_only"] is True
     assert profile.get("message")

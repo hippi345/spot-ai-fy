@@ -17,6 +17,9 @@ from spot_backend.action_claim_guard import (
     reply_claims_unbacked_action,
 )
 from spot_backend.config import Settings
+from spot_backend.chat_messages import (
+    prepare_user_visible_reply,
+)
 from spot_backend.context_loader import load_optional_agent_context_markdown
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
 
@@ -115,6 +118,7 @@ Rules:
   * Editing someone else's playlist — NOT supported by the Web API. Offer spotify_duplicate_playlist to copy it into a new playlist the user owns; the new playlist is fully writable for spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks / etc.
 - The user selects an active device in the UI; omit device_id unless you must override it.
 - After tools return, give a short natural language summary for the user.
+- Never mention internal tool or function names (spotify_* identifiers) to the user — describe actions in plain language only.
 
 High-level natural language: infer the user's goal and run the right tool sequence yourself (no need to ask for technical ids first). Examples: "add John Mayer to my Workout playlist" → spotify_user_playlists to find Workout's id, spotify_search for tracks, spotify_add_tracks_to_playlist. "Create a chill mix with …" → spotify_create_playlist then search then add. "What's on my running list?" → user_playlists / get_playlist / playlist_tracks. "My liked songs" → spotify_user_saved_tracks. "My top artists / favorite artists / who do I listen to most" → spotify_top_artists. "My top songs / most played tracks" → spotify_top_tracks. "Artists I follow" → spotify_followed_artists. "Show me <user_id>'s playlists" → spotify_user_public_playlists. "Find me a playlist about <description>" → spotify_search_playlists, then optionally spotify_follow_playlist or spotify_play_playlist. "Copy <someone else's playlist> so I can edit it" → spotify_duplicate_playlist, then edit with spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks on the new id. "Most popular album" → search + get_album / artist_top_tracks and explain the metric. On tool errors, read detail/hint and retry with a corrected plan when possible.
 For create-then-add-then-play: playlist_id = create response `id` or `playlist_id_for_add_tracks`. Pass search results as `tracks` (array of tracks.items objects), or the whole search `tracks` object `{items: [...]}` — the server unwraps `items`. Start playback with context_uri `spotify:playlist:<id>`. On add failure: obey suggest_sign_out_of_spotify; if false, retry tools — never sign-out advice. Do not say "usually permissions." """
@@ -329,12 +333,26 @@ def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
         return ["spotify_recently_played"]
     if re.search(r"\b(like this|save this|add to (my )?library)\b", t):
         return [
+            "spotify_playback_state",
             "spotify_save_tracks",
             "spotify_save_albums",
             "spotify_follow_playlist",
             "spotify_follow_artist",
         ]
     return None
+
+
+def gemini_tool_call_signature(name: str, args: dict[str, Any]) -> str:
+    return f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}"
+
+
+def gemini_should_block_repeated_tool_call(
+    last_signature: str | None,
+    name: str,
+    args: dict[str, Any],
+) -> bool:
+    sig = gemini_tool_call_signature(name, args)
+    return last_signature is not None and sig == last_signature
 
 
 def _gemini_generation_config_for_model(model: str) -> dict[str, Any]:
@@ -400,6 +418,9 @@ def run_chat_turn_gemini(
 
     had_tool_results = False
     successful_tools: set[str] = set()
+    tool_results: list[str] = []
+    last_tool_signature: str | None = None
+    last_tool_result: str | None = None
     action_claim_reprompted = False
     empty_turn_retries = 3
     # Gemini 2.5-flash with our 40-tool catalog is *unreliable* in AUTO function-
@@ -419,7 +440,7 @@ def run_chat_turn_gemini(
         with httpx.Client(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
             for _ in range(settings.agent_max_steps):
                 intent_tools = gemini_intent_allowed_function_names(user_text)
-                if intent_tools:
+                if intent_tools and not had_tool_results:
                     fc_mode = "ANY"
                 elif wants_spotify and not had_tool_results:
                     fc_mode = "ANY"
@@ -449,7 +470,6 @@ def run_chat_turn_gemini(
                     return "Unexpected Gemini response shape."
 
                 fr = cand.get("finishReason")
-                has_fc, has_visible = _gemini_candidate_has_tool_or_text(cand)
                 if gemini_candidate_is_effectively_empty(cand):
                     _log_gemini_empty_candidate(data, cand, label="empty_turn")
                     if empty_turn_retries > 0:
@@ -533,9 +553,19 @@ def run_chat_turn_gemini(
                         args: dict[str, Any] = {}
                         if isinstance(raw_args, dict):
                             args = raw_args
+                        sig = gemini_tool_call_signature(name, args)
+                        if gemini_should_block_repeated_tool_call(last_tool_signature, name, args):
+                            return prepare_user_visible_reply(
+                                "I already ran that Spotify action once this turn. "
+                                "Check Spotify or try rephrasing if something still looks wrong.",
+                                tool_results,
+                            )
                         if emit:
                             emit({"type": "tool_start", "name": name})
                         result = runner.run(name, args)
+                        last_tool_signature = sig
+                        last_tool_result = result
+                        tool_results.append(result)
                         record_successful_tool(successful_tools, name, result)
                         if emit:
                             preview = result[:240] + ("…" if len(result) > 240 else "")
@@ -575,7 +605,7 @@ def run_chat_turn_gemini(
                     ):
                         contents.append({"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]})
                         continue
-                    return joined
+                    return prepare_user_visible_reply(joined, tool_results)
 
                 # No visible text and no tool calls. Log everything we have so we can
                 # diagnose schema rejections, thought-only responses, etc.

@@ -20,9 +20,11 @@ from spot_backend.gemini_llm import (
 )
 from spot_backend.setup_service import _ollama_cpu_profile
 from spot_backend.spotify_tools import SpotifyToolRunner, collect_catalog_ids_from_tool_json
+from tests.recheck_helpers import install_cpu_only_ollama_profile_mocks, mock_artist_name_search
 
 
 # r3_item01 — empty session: fake album id rejected; real id verified via GET
+@pytest.mark.no_catalog_get_stub
 @respx.mock
 def test_r3_item01_empty_session_fake_album_id_rejected(data_dir, signed_in_tokens) -> None:
     fake = "7o93KZ9kX8c3a3Z9kX8c3a"
@@ -381,6 +383,7 @@ def test_r3_item12_save_this_album_from_playback(data_dir, signed_in_tokens) -> 
     )
     lib = respx.put("https://api.spotify.com/v1/me/library").mock(return_value=httpx.Response(200))
     runner = SpotifyToolRunner(settings=Settings())
+    runner._session_known_ids.add(album_id)
     raw = runner.run("spotify_save_albums", {"album_id": "this album"})
     runner.close()
     assert lib.called
@@ -416,6 +419,7 @@ def test_r3_item14_library_put_chunks_above_forty(data_dir, signed_in_tokens) ->
         return_value=httpx.Response(200)
     )
     runner = SpotifyToolRunner(settings=Settings())
+    runner._session_known_ids.update(ids)
     runner.run("spotify_save_tracks", {"track_ids": ids})
     runner.close()
     assert routes.call_count == 2

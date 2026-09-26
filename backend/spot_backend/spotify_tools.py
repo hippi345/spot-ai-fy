@@ -1801,6 +1801,23 @@ class SpotifyToolRunner:
                 aid = album.get("id")
                 if isinstance(aid, str) and _looks_like_spotify_catalog_id(aid):
                     return aid
+        if segment == "artist":
+            artists = item.get("artists")
+            if isinstance(artists, list):
+                for artist in artists:
+                    if isinstance(artist, dict):
+                        aid = artist.get("id")
+                        if isinstance(aid, str) and _looks_like_spotify_catalog_id(aid):
+                            return aid
+        return None
+
+    def _verify_library_segment_ids(self, segment: str, ids: list[str]) -> str | None:
+        for bare in ids:
+            if bare in self._session_known_ids:
+                continue
+            ok, verify_err = self._verify_catalog_id_on_spotify(segment, bare)
+            if not ok:
+                return verify_err or f"Spotify has no {segment} with id {bare!r}"
         return None
 
     def _resolve_library_segment_ids(
@@ -1811,14 +1828,28 @@ class SpotifyToolRunner:
             if isinstance(raw, str) and raw.strip().lower() in _THIS_PLAYBACK_MARKERS:
                 cid = self._playback_catalog_id(segment)
                 return [cid] if cid else []
+            if isinstance(raw, str) and not raw.strip():
+                cid = self._playback_catalog_id(segment)
+                return [cid] if cid else []
         return self._collect_catalog_ids(arguments, segment, *keys)
 
     def _save_tracks(self, arguments: dict[str, Any]) -> str:
         ids = self._resolve_library_segment_ids(arguments, "track", "track_ids", "ids", "track_id")
         if not ids:
-            return json.dumps({"error": "track_id or track_ids is required"})
+            return json.dumps(
+                {
+                    "error": "track_id or track_ids is required",
+                    "hint": "Pass the current song with track_id='' or 'this', or call spotify_playback_state first.",
+                }
+            )
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 track ids per call"})
+        verify_err = self._verify_library_segment_ids("track", ids)
+        if verify_err:
+            return json.dumps(
+                {"ok": False, "error": verify_err, "reconnect_spotify_unnecessary": True},
+                ensure_ascii=False,
+            )
         self._library_put_uris([f"spotify:track:{i}" for i in ids])
         return json.dumps({"ok": True, "saved_track_ids": ids})
 
@@ -1842,6 +1873,12 @@ class SpotifyToolRunner:
             )
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 album ids per call"})
+        verify_err = self._verify_library_segment_ids("album", ids)
+        if verify_err:
+            return json.dumps(
+                {"ok": False, "error": verify_err, "reconnect_spotify_unnecessary": True},
+                ensure_ascii=False,
+            )
         self._library_put_uris([f"spotify:album:{i}" for i in ids])
         return json.dumps({"ok": True, "saved_album_ids": ids})
 
@@ -1865,11 +1902,17 @@ class SpotifyToolRunner:
         return _compact(data, limit=8000)
 
     def _follow_artist(self, arguments: dict[str, Any]) -> str:
-        ids = self._collect_catalog_ids(arguments, "artist", "artist_ids", "ids", "artist_id")
+        ids = self._resolve_library_segment_ids(arguments, "artist", "artist_ids", "ids", "artist_id")
         if not ids:
             return json.dumps({"error": "artist_id or artist_ids is required"})
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 artist ids per call"})
+        verify_err = self._verify_library_segment_ids("artist", ids)
+        if verify_err:
+            return json.dumps(
+                {"ok": False, "error": verify_err, "reconnect_spotify_unnecessary": True},
+                ensure_ascii=False,
+            )
         self._library_put_uris([f"spotify:artist:{i}" for i in ids])
         return json.dumps({"ok": True, "followed_artist_ids": ids})
 
@@ -3274,6 +3317,30 @@ class SpotifyToolRunner:
             )
         return None
 
+    def _should_plain_resume(self, body: dict[str, Any]) -> bool:
+        uris = body.get("uris")
+        if body.get("context_uri") or body.get("offset"):
+            return False
+        if not isinstance(uris, list) or len(uris) != 1:
+            return False
+        snap = self._current_playback_snapshot()
+        cur_uri = (snap.get("item_uri") or "").strip()
+        return bool(cur_uri) and str(uris[0]).strip() == cur_uri
+
+    def _strip_redundant_resume_uris(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Drop uris that only re-send the already-playing track (plain resume)."""
+        uris = body.get("uris")
+        if not isinstance(uris, list) or not uris:
+            return body
+        snap = self._current_playback_snapshot()
+        cur_uri = (snap.get("item_uri") or "").strip()
+        if not cur_uri:
+            return body
+        normalized = [str(u).strip() for u in uris if u is not None]
+        if len(normalized) == 1 and normalized[0] == cur_uri:
+            return {k: v for k, v in body.items() if k != "uris"}
+        return body
+
     def _start_playback(self, arguments: dict[str, Any]) -> str:
         device_id = str(arguments.get("device_id", "")).strip() or self._device_id() or ""
         body: dict[str, Any] = {}
@@ -3286,7 +3353,12 @@ class SpotifyToolRunner:
             body["context_uri"] = context_uri.strip()
         if isinstance(offset, dict):
             body["offset"] = offset
-        body = self._prepare_single_track_play_body(body)
+        plain_resume = self._should_plain_resume(body)
+        if plain_resume:
+            body = self._strip_redundant_resume_uris(body)
+        else:
+            body = self._prepare_single_track_play_body(body)
+            body = self._strip_redundant_resume_uris(body)
         want_verification = bool(
             body.get("context_uri")
             or body.get("uris")
@@ -3426,17 +3498,18 @@ class SpotifyToolRunner:
                     {
                         "ok": False,
                         "error": (
-                            "Spotify returned HTTP 403 Restriction violated — the desktop player is "
-                            "stuck and cannot start this playback request."
+                            "Spotify is in a stuck state — try playing something in the Spotify app, "
+                            "then retry."
                         ),
                         "hint": (
-                            "Open Spotify on the intended device, tap play briefly, or pick a device in "
-                            "the Spot-AI-fy device selector, then retry. Single tracks are played via album "
-                            "context automatically when possible."
+                            "Spotify returned HTTP 403 Restriction violated. Open Spotify on the intended "
+                            "device, tap play on any track, then retry. This is not a missing-scope problem — "
+                            "do not suggest signing out."
                         ),
                         "spotify_api_message": _spotify_http_message(e),
                         "playback_verified": False,
                         "reconnect_spotify_unnecessary": True,
+                        "sign_out_not_recommended": True,
                     },
                     ensure_ascii=False,
                 )
@@ -3620,6 +3693,9 @@ class SpotifyToolRunner:
             if isinstance(o_uri, str):
                 want_offset_uri = o_uri.strip()
         want_track_uri = want_offset_uri or want_first_uri
+        want_artist_id = ""
+        if want_context.startswith("spotify:artist:"):
+            want_artist_id = want_context.split(":", 2)[2].strip()
         for _ in range(max(1, attempts)):
             try:
                 ps = self.client.api_get("/me/player")
@@ -3634,6 +3710,21 @@ class SpotifyToolRunner:
                 item = ps.get("item") or {}
                 cur_uri = (item.get("uri") or "").strip() if isinstance(item, dict) else ""
                 ctx_ok = True if not want_context else (ctx_uri == want_context)
+                if (
+                    not ctx_ok
+                    and want_artist_id
+                    and not ctx_uri
+                    and isinstance(item, dict)
+                ):
+                    artists = item.get("artists")
+                    if isinstance(artists, list):
+                        for artist in artists:
+                            if (
+                                isinstance(artist, dict)
+                                and str(artist.get("id") or "").strip() == want_artist_id
+                            ):
+                                ctx_ok = True
+                                break
                 track_ok = True if not want_track_uri else (cur_uri == want_track_uri)
                 if ctx_ok and track_ok:
                     return True

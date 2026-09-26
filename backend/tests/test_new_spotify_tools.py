@@ -64,6 +64,7 @@ def test_save_tracks(data_dir, signed_in_tokens) -> None:
         return_value=httpx.Response(200, json={})
     )
     runner = SpotifyToolRunner(settings=Settings())
+    runner._session_known_ids.add("1111111111111111111111")
     raw = runner.run("spotify_save_tracks", {"track_ids": ["1111111111111111111111"]})
     assert json.loads(raw)["ok"] is True
     assert route.called

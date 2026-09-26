@@ -274,6 +274,7 @@ The agent's system prompt is wired to tell you plainly when something isn't poss
 - **Editing another user's playlist** — not possible. The agent will offer `spotify_duplicate_playlist` to copy it into a writable playlist you own.
 - **Per-playlist / per-track / per-album play counts** — not in the API. The agent will offer `spotify_top_artists` / `spotify_top_tracks` as the closest proxy.
 - **Listening history beyond the most recent ~50 items** — not in the API.
+- **Private playlist visibility in Development Mode** — Spot-AI-fy always sends `public: false` on create/update and re-reads the playlist, but Spotify may still report `public: true` afterward. The [February 2026 Web API migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide) documents dev-mode limits (Premium owner, user caps, library endpoint changes, removed batch/browse routes) and does **not** state whether dev-mode apps can create truly private playlists; when a tool result includes `visibility_warning`, the assistant reply appends that note server-side.
 
 ## Security & privacy
 

@@ -102,16 +102,27 @@ def test_item03_single_track_play_uses_album_context(data_dir, signed_in_tokens)
     play_route = respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
         return_value=httpx.Response(204)
     )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(
+    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
+        return_value=httpx.Response(200, json={"devices": []})
+    )
+    player_calls = {"n": 0}
+
+    def player_state(_request):
+        player_calls["n"] += 1
+        if player_calls["n"] == 1:
+            item_uri = "spotify:track:9999999999999999999999"
+        else:
+            item_uri = f"spotify:track:{track_id}"
+        return httpx.Response(
             200,
             json={
                 "is_playing": True,
                 "context": {"uri": f"spotify:album:{album_id}"},
-                "item": {"uri": f"spotify:track:{track_id}"},
+                "item": {"uri": item_uri},
             },
         )
-    )
+
+    respx.get("https://api.spotify.com/v1/me/player").mock(side_effect=player_state)
     runner = SpotifyToolRunner(settings=Settings())
     raw = runner.run(
         "spotify_start_resume_playback",
@@ -120,9 +131,14 @@ def test_item03_single_track_play_uses_album_context(data_dir, signed_in_tokens)
     runner.close()
     data = json.loads(raw)
     assert data.get("ok") is True
-    sent = json.loads(play_route.calls.last.request.content or b"{}")
-    assert sent["context_uri"] == f"spotify:album:{album_id}"
-    assert sent["offset"] == {"uri": f"spotify:track:{track_id}"}
+    sent_bodies = [
+        json.loads(c.request.content or b"{}")
+        for c in play_route.calls
+        if c.request.content
+    ]
+    assert sent_bodies
+    assert sent_bodies[0]["context_uri"] == f"spotify:album:{album_id}"
+    assert sent_bodies[0]["offset"] == {"uri": f"spotify:track:{track_id}"}
 
 
 @respx.mock
@@ -149,7 +165,7 @@ def test_item03_restriction_violated_returns_clear_error(data_dir, signed_in_tok
     runner.close()
     data = json.loads(raw)
     assert data.get("ok") is False
-    assert "Restriction violated" in data.get("error", "")
+    assert "stuck state" in data.get("error", "").lower()
 
 
 @respx.mock
