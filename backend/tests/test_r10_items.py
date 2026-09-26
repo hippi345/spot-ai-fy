@@ -343,6 +343,7 @@ def test_r10_item5_make_private_visibility_note_once() -> None:
     tool_json = json.dumps(
         {
             "ok": False,
+            "visibility_change_requested": True,
             "visibility_warning": (
                 "I asked Spotify to make it private, but Spotify still shows it as public "
                 "(this can lag or be a known Spotify API quirk)."

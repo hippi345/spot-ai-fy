@@ -324,7 +324,7 @@ def test_r9_item2_post_play_clear_report_when_stuck(data_dir, signed_in_tokens) 
     data = json.loads(raw)
     assert data.get("ok") is False
     assert data.get("playback_verified") is False
-    assert "did not switch" in data.get("error", "").lower()
+    assert "wouldn't play" in str(data.get("user_message", "")).lower()
 
 
 @respx.mock

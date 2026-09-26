@@ -162,8 +162,30 @@ def test_r3_item05_create_playlist_visibility_warning_when_still_public(
     data, _put_called = run_create_playlist_private_flow(
         pid, post_public=False, get_public=True
     )
-    assert data.get("visibility_warning")
+    assert not data.get("visibility_warning")
     assert data.get("public") is True
+
+
+@respx.mock
+def test_r3_item05_create_playlist_visibility_warning_when_explicit_private_still_public(
+    data_dir, signed_in_tokens,
+) -> None:
+    pid = "rrrrrrrrrrrrrrrrrrrrrr"
+    respx.post("https://api.spotify.com/v1/me/playlists").mock(
+        return_value=httpx.Response(200, json={"id": pid, "name": "x", "public": False})
+    )
+    respx.put(f"https://api.spotify.com/v1/playlists/{pid}").mock(
+        return_value=httpx.Response(200)
+    )
+    respx.get(f"https://api.spotify.com/v1/playlists/{pid}").mock(
+        return_value=httpx.Response(200, json={"id": pid, "public": True, "name": "x"})
+    )
+    runner = SpotifyToolRunner(settings=Settings())
+    raw = runner.run("spotify_create_playlist", {"name": "Secret", "public": False})
+    runner.close()
+    data = json.loads(raw)
+    assert data.get("visibility_warning")
+    assert data.get("visibility_change_requested") is True
 
 
 # r3_item07 — CPU profile warm-then-ps

@@ -146,7 +146,11 @@ def test_r4_item5_pylint_fail_under_configured() -> None:
 # r4-item7 — visibility note appended server-side
 def test_r4_item7_visibility_note_appended_to_final_reply() -> None:
     tool_json = json.dumps(
-        {"ok": True, "visibility_warning": "Playlist is still public in Spotify dev mode."}
+        {
+            "ok": True,
+            "visibility_change_requested": True,
+            "visibility_warning": "Playlist is still public in Spotify dev mode.",
+        }
     )
     out = append_visibility_notes_to_reply("Created your playlist.", [tool_json])
     assert "still public" in out
@@ -237,6 +241,11 @@ def test_r4_item11_informational_prompt_not_intent_scoped() -> None:
 
 
 def test_r4_item11_prepare_user_visible_includes_visibility_note() -> None:
-    tool_json = json.dumps({"visibility_warning": "Dev mode may keep playlists public."})
+    tool_json = json.dumps(
+        {
+            "visibility_change_requested": True,
+            "visibility_warning": "Dev mode may keep playlists public.",
+        }
+    )
     out = prepare_user_visible_reply("Done.", [tool_json])
     assert "Dev mode may keep playlists public." in out

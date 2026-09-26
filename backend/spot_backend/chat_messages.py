@@ -109,6 +109,8 @@ def collect_visibility_warnings(tool_results: list[str]) -> list[str]:
             continue
         if not isinstance(data, dict):
             continue
+        if not data.get("visibility_change_requested"):
+            continue
         note = data.get("visibility_warning")
         if isinstance(note, str) and note.strip() and note not in seen:
             seen.add(note)
@@ -116,22 +118,43 @@ def collect_visibility_warnings(tool_results: list[str]) -> list[str]:
     return warnings
 
 
+_VISIBILITY_NOTE_MARKERS = (
+    "still shows it as public",
+    "still reports this playlist as public",
+)
+
+
+def _text_contains_visibility_note(text: str) -> bool:
+    low = (text or "").lower()
+    return any(marker in low for marker in _VISIBILITY_NOTE_MARKERS)
+
+
+def _strip_duplicate_visibility_sentences(text: str) -> str:
+    """Remove user-visible visibility mismatch sentences already present in model text."""
+    if not text or not _text_contains_visibility_note(text):
+        return text or ""
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    kept: list[str] = []
+    for part in parts:
+        chunk = part.strip()
+        if not chunk:
+            continue
+        if _text_contains_visibility_note(chunk):
+            continue
+        kept.append(chunk)
+    return " ".join(kept).strip()
+
+
 def append_visibility_notes_to_reply(text: str, tool_results: list[str]) -> str:
     """Append deterministic playlist-visibility notes from tool JSON (all LLM providers)."""
-    base = (text or "").rstrip()
-    base_low = base.lower()
+    base = _strip_duplicate_visibility_sentences((text or "").rstrip())
     for note in collect_visibility_warnings(tool_results):
         if note in base:
             continue
-        if "still shows it as public" in base_low and "still shows it as public" in note.lower():
-            continue
-        if "still reports this playlist as public" in note.lower() and (
-            "private" in base_low or "public" in base_low
-        ):
+        if _text_contains_visibility_note(note) and _text_contains_visibility_note(base):
             continue
         suffix = f"\n\nNote: {note}"
         base = base + suffix
-        base_low = base.lower()
     return base
 
 

@@ -1827,6 +1827,7 @@ class SpotifyToolRunner:
         out: dict[str, Any] = {"ok": True, "updated_fields": list(body.keys())}
         if "public" in body:
             requested_public = bool(body["public"])
+            out["visibility_change_requested"] = True
             checked: dict[str, Any] | None = None
             try:
                 checked = self.client.api_get(f"/playlists/{pid}", params={"fields": "id,public,name"})
@@ -2991,6 +2992,7 @@ class SpotifyToolRunner:
         if not name:
             return json.dumps({"error": "name is required"})
         public = arguments.get("public") is True
+        explicit_visibility = "public" in arguments
         collaborative = bool(arguments.get("collaborative", False))
         if collaborative:
             public = False
@@ -3013,7 +3015,11 @@ class SpotifyToolRunner:
                 checked = self.client.api_get(f"/playlists/{pid}", params={"fields": "id,public,name"})
             except httpx.HTTPStatusError:
                 checked = None
-            if isinstance(checked, dict) and checked.get("public") is True:
+            if (
+                explicit_visibility
+                and isinstance(checked, dict)
+                and checked.get("public") is True
+            ):
                 visibility_note = (
                     "Spotify still reports this playlist as public after creation. "
                     "You may need to set visibility manually in the Spotify app."
@@ -3034,6 +3040,7 @@ class SpotifyToolRunner:
         if not public:
             mini["user_visible_visibility"] = "private"
         if visibility_note:
+            mini["visibility_change_requested"] = True
             mini["visibility_warning"] = visibility_note
         if isinstance(data.get("snapshot_id"), str):
             mini["snapshot_id"] = data["snapshot_id"]
@@ -3874,8 +3881,12 @@ class SpotifyToolRunner:
         body: dict[str, Any],
         device_id: str,
         device_note: str | None = None,
+        *,
+        prior_state: dict[str, Any] | None = None,
+        label_override: str = "",
     ) -> str:
         """Read /me/player after play; at most one replay PUT, then a clear success or failure."""
+        prior = prior_state if isinstance(prior_state, dict) else {"had_playback": False}
         if self._playback_matches(body, attempts=4, delay_s=0.35):
             payload: dict[str, Any] = {
                 "ok": True,
@@ -3900,25 +3911,12 @@ class SpotifyToolRunner:
                     "note": "Retried play once with the same album context and verified playback.",
                 }
             )
-        snapshot = self._current_playback_snapshot()
-        return json.dumps(
-            {
-                "ok": False,
-                "error": (
-                    "Spotify did not switch to the requested music after play. "
-                    "Nothing is playing on the expected context, or playback is still on the previous item."
-                ),
-                "hint": (
-                    "Open Spotify on your device, tap play on any track, then retry."
-                ),
-                "requested_body": body,
-                "current_state": snapshot,
-                "device_id": device_id or None,
-                "playback_verified": False,
-                "reconnect_spotify_unnecessary": True,
-                "sign_out_not_recommended": True,
-            }
+        payload = self._playback_failed_restore_payload(
+            body, device_id, prior, label_override=label_override
         )
+        if device_note:
+            payload["device_fallback_note"] = device_note
+        return json.dumps(payload)
 
     def _start_playback(self, arguments: dict[str, Any]) -> str:
         raw_device = str(arguments.get("device_id", "")).strip()
@@ -3948,6 +3946,8 @@ class SpotifyToolRunner:
             or body.get("uris")
             or (isinstance(body.get("offset"), dict) and body["offset"].get("uri"))
         )
+        label_override = _coerce_str(arguments.get("playback_request_label"), "")
+        prior_state = self._fetch_pre_play_restore_state()
         device_id, device_note = self._coerce_playback_device_id(raw_device)
         try:
             self._try_play(device_id, body)
@@ -3956,7 +3956,13 @@ class SpotifyToolRunner:
                 if device_note:
                     payload["device_fallback_note"] = device_note
                 return json.dumps(payload)
-            return self._playback_outcome_after_play(body, device_id, device_note)
+            return self._playback_outcome_after_play(
+                body,
+                device_id,
+                device_note,
+                prior_state=prior_state,
+                label_override=label_override,
+            )
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
             if status == 403 and _spotify_error_is_restriction_violated(e):
@@ -4026,25 +4032,22 @@ class SpotifyToolRunner:
                             }
                         )
                     snapshot = self._current_playback_snapshot()
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "error": (
-                                f"Spotify returned HTTP {status} then a retry succeeded, but the "
-                                "device is still playing the previous track. Playback did not switch."
-                            ),
-                            "hint": (
-                                "Ask the user to tap play on the intended device, or use "
-                                "spotify_transfer_playback to move control, then retry."
-                            ),
-                            "requested_body": body,
-                            "current_state": snapshot,
-                            "device_id": device_id or None,
-                            "playback_verified": False,
-                            "reconnect_spotify_unnecessary": True,
-                            "sign_out_not_recommended": True,
-                        }
+                    fail_payload = self._playback_failed_restore_payload(
+                        body,
+                        device_id,
+                        prior_state,
+                        label_override=label_override,
                     )
+                    fail_payload["error"] = (
+                        f"Spotify returned HTTP {status} then a retry succeeded, but the "
+                        "device is still playing the previous track. Playback did not switch."
+                    )
+                    fail_payload["user_message"] = self._playback_failure_user_message(
+                        self._describe_requested_play(body, label_override),
+                        prior_state,
+                    )
+                    fail_payload["current_state"] = snapshot
+                    return json.dumps(fail_payload)
                 except httpx.HTTPStatusError as e2:
                     if e2.response.status_code in (500, 502, 503, 504):
                         confirmed = self._playback_matches(body)
@@ -4193,6 +4196,121 @@ class SpotifyToolRunner:
             "device_is_restricted": (device.get("is_restricted") if isinstance(device, dict) else None),
         }
 
+    def _fetch_pre_play_restore_state(self) -> dict[str, Any]:
+        """Snapshot playback before a play attempt (for restore if the request never takes)."""
+        try:
+            ps = self.client.api_get("/me/player")
+        except httpx.HTTPStatusError:
+            return {"had_playback": False}
+        if not isinstance(ps, dict):
+            return {"had_playback": False}
+        ctx = ps.get("context") if isinstance(ps.get("context"), dict) else {}
+        item = ps.get("item") if isinstance(ps.get("item"), dict) else {}
+        context_uri = (ctx.get("uri") or "").strip() if isinstance(ctx, dict) else ""
+        item_uri = (item.get("uri") or "").strip() if isinstance(item, dict) else ""
+        item_name = (item.get("name") or "").strip() if isinstance(item, dict) else ""
+        if not context_uri and item_uri:
+            context_uri = item_uri
+        progress_raw = ps.get("progress_ms")
+        progress_ms = progress_raw if isinstance(progress_raw, int) else 0
+        is_playing = ps.get("is_playing") is True
+        had_playback = bool(item_uri) and (is_playing or progress_ms > 0 or bool(context_uri))
+        return {
+            "had_playback": had_playback,
+            "is_playing": is_playing,
+            "context_uri": context_uri or None,
+            "item_uri": item_uri or None,
+            "item_name": item_name or None,
+            "progress_ms": progress_ms,
+        }
+
+    def _build_restore_play_body(self, prior: dict[str, Any]) -> dict[str, Any] | None:
+        if not prior.get("had_playback"):
+            return None
+        item_uri = prior.get("item_uri")
+        if not isinstance(item_uri, str) or not item_uri.strip():
+            return None
+        ctx = prior.get("context_uri") or item_uri
+        body: dict[str, Any] = {
+            "context_uri": str(ctx).strip(),
+            "offset": {"uri": item_uri.strip()},
+        }
+        progress = prior.get("progress_ms")
+        if isinstance(progress, int) and progress >= 0:
+            body["position_ms"] = progress
+        return body
+
+    def _restore_prior_playback(
+        self, prior: dict[str, Any], device_id: str
+    ) -> dict[str, Any] | None:
+        body = self._build_restore_play_body(prior)
+        if not body:
+            return None
+        try:
+            self._try_play(device_id, body)
+        except httpx.HTTPStatusError:
+            pass
+        if not prior.get("is_playing"):
+            pause_path = "/me/player/pause"
+            if device_id:
+                pause_path = f"{pause_path}?device_id={device_id}"
+            try:
+                self.client.api_put(pause_path)
+            except httpx.HTTPStatusError:
+                pass
+        return body
+
+    def _describe_requested_play(self, body: dict[str, Any], label_override: str = "") -> str:
+        if label_override.strip():
+            return label_override.strip()
+        ctx = (body.get("context_uri") or "").strip() if isinstance(body, dict) else ""
+        if ctx.startswith("spotify:playlist:"):
+            return "that playlist"
+        if ctx.startswith("spotify:album:"):
+            return "that album"
+        if ctx.startswith("spotify:artist:"):
+            return "that artist"
+        return "that track"
+
+    def _playback_failure_user_message(self, requested_label: str, prior: dict[str, Any]) -> str:
+        if prior.get("had_playback"):
+            prev = prior.get("item_name")
+            if not isinstance(prev, str) or not prev.strip():
+                prev = "your previous track"
+            return (
+                f"Spotify wouldn't play {requested_label} on this device, "
+                f"so I went back to {prev}."
+            )
+        return f"Spotify wouldn't play {requested_label} on this device."
+
+    def _playback_failed_restore_payload(
+        self,
+        body: dict[str, Any],
+        device_id: str,
+        prior_state: dict[str, Any],
+        *,
+        label_override: str = "",
+    ) -> dict[str, Any]:
+        requested_label = self._describe_requested_play(body, label_override)
+        restore_body = self._restore_prior_playback(prior_state, device_id)
+        user_message = self._playback_failure_user_message(requested_label, prior_state)
+        snapshot = self._current_playback_snapshot()
+        return {
+            "ok": False,
+            "error": user_message,
+            "user_message": user_message,
+            "hint": "Open Spotify on your device, tap play on any track, then retry.",
+            "requested_body": body,
+            "prior_state": prior_state,
+            "restore_body": restore_body,
+            "playback_restored": restore_body is not None,
+            "current_state": snapshot,
+            "device_id": device_id or None,
+            "playback_verified": False,
+            "reconnect_spotify_unnecessary": True,
+            "sign_out_not_recommended": True,
+        }
+
     def _player_needs_artist_play_fallback(self) -> bool:
         try:
             state = self.client.api_get("/me/player") or {}
@@ -4261,43 +4379,34 @@ class SpotifyToolRunner:
                 },
                 ensure_ascii=False,
             )
+        artist_name = top_data.get("artist_name") if isinstance(top_data, dict) else None
+        if not isinstance(artist_name, str) or not artist_name.strip():
+            artist_name = str(raw_ref).strip()
         play_args: dict[str, Any] = dict(play_body)
         device_id = _coerce_str(arguments.get("device_id"))
         if device_id:
             play_args["device_id"] = device_id
+        play_args["playback_request_label"] = artist_name
         play_raw = self._start_playback(play_args)
         try:
             play_result = json.loads(play_raw)
         except (json.JSONDecodeError, ValueError):
             play_result = {"ok": False, "raw": play_raw}
         play_ok = isinstance(play_result, dict) and play_result.get("ok") is True
-        queued: list[str] = []
-        if play_ok and play_result.get("playback_verified") is not False:
-            for tr in track_dicts[1:5]:
-                uri = tr.get("uri")
-                if not isinstance(uri, str) or not uri.strip():
-                    continue
-                params: dict[str, str] = {"uri": uri.strip()}
-                if device_id:
-                    params["device_id"] = device_id
-                try:
-                    self.client.api_post("/me/player/queue", params=params)
-                    queued.append(uri.strip())
-                except httpx.HTTPStatusError:
-                    break
-        artist_name = top_data.get("artist_name") if isinstance(top_data, dict) else None
-        if not isinstance(artist_name, str) or not artist_name.strip():
-            artist_name = str(raw_ref).strip()
         summary: dict[str, Any] = {
             "artist_id": cid,
             "artist_name": artist_name,
             "play_body": play_body,
-            "queued_uris": queued,
             "playback": play_result,
             "ok": play_ok,
         }
         if not play_ok:
-            summary["error"] = _PLAYBACK_START_FAILED_USER_MESSAGE
+            user_msg = play_result.get("user_message") if isinstance(play_result, dict) else None
+            if isinstance(user_msg, str) and user_msg.strip():
+                summary["user_message"] = user_msg.strip()
+                summary["error"] = user_msg.strip()
+            else:
+                summary["error"] = _PLAYBACK_START_FAILED_USER_MESSAGE
         return _compact(summary)
 
     def _play_playlist(self, arguments: dict[str, Any]) -> str:
@@ -4403,6 +4512,9 @@ class SpotifyToolRunner:
         device_id = _coerce_str(arguments.get("device_id"))
         if device_id:
             play_args["device_id"] = device_id
+        label = _coerce_str(arguments.get("playback_request_label"), "")
+        if label:
+            play_args["playback_request_label"] = label
 
         play_raw = self._start_playback(play_args)
         try:
@@ -4423,7 +4535,12 @@ class SpotifyToolRunner:
         play_ok = isinstance(play_result, dict) and play_result.get("ok") is True
         if not play_ok:
             summary["ok"] = False
-            summary["error"] = _PLAYBACK_START_FAILED_USER_MESSAGE
+            user_msg = play_result.get("user_message") if isinstance(play_result, dict) else None
+            if isinstance(user_msg, str) and user_msg.strip():
+                summary["user_message"] = user_msg.strip()
+                summary["error"] = user_msg.strip()
+            else:
+                summary["error"] = _PLAYBACK_START_FAILED_USER_MESSAGE
             return _compact(summary)
 
         # Apply repeat if requested.

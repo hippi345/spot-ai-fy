@@ -22,7 +22,15 @@ def format_play_artist_reply(artist_name: str, raw: str) -> str:
         return f"I could not start playback for {artist_name} just now."
     if data.get("ok") is True:
         return f"Playing {artist_name} on Spotify."
-    err = str(data.get("error") or data.get("user_message") or "")
+    err = str(
+        data.get("user_message")
+        or data.get("error")
+        or (data.get("playback") or {}).get("user_message")
+        or (data.get("playback") or {}).get("error")
+        or ""
+    )
+    if err.startswith("Spotify wouldn't play"):
+        return err
     if err and "playback.error" not in err and "playback.detail" not in err:
         return f"I could not start playback for {artist_name}: {err}"
     return (

@@ -169,23 +169,18 @@ def test_r11_item1_at_most_two_play_puts_and_no_transfer(
 
 
 @respx.mock
-def test_r11_item1_queue_only_after_confirmed_play(data_dir, signed_in_tokens) -> None:
+def test_r11_item1_artist_play_makes_zero_queue_calls(data_dir, signed_in_tokens) -> None:
     artist_id = "1111111111111111111111"
     track_ids = [f"{i:022d}" for i in range(4)]
     _mock_artist_top_track_search(artist_id, "Radiohead", track_ids)
-    play_n = {"n": 0}
     queue_n = {"n": 0}
-
-    def play_handler(_request: httpx.Request) -> httpx.Response:
-        play_n["n"] += 1
-        return httpx.Response(204)
 
     def queue_handler(_request: httpx.Request) -> httpx.Response:
         queue_n["n"] += 1
         return httpx.Response(204)
 
     respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        side_effect=play_handler
+        return_value=httpx.Response(204)
     )
     respx.post(url__regex=r"https://api\.spotify\.com/v1/me/player/queue.*").mock(
         side_effect=queue_handler
@@ -203,8 +198,35 @@ def test_r11_item1_queue_only_after_confirmed_play(data_dir, signed_in_tokens) -
     runner = SpotifyToolRunner(settings=Settings())
     runner.run("spotify_play_artist", {"artist_name": "Radiohead"})
     runner.close()
-    assert play_n["n"] >= 1
-    assert queue_n["n"] == 3
+    assert queue_n["n"] == 0
+
+
+@respx.mock
+def test_r11_item1_two_artist_plays_leave_queue_untouched(data_dir, signed_in_tokens) -> None:
+    queue_n = {"n": 0}
+
+    def queue_handler(_request: httpx.Request) -> httpx.Response:
+        queue_n["n"] += 1
+        return httpx.Response(204)
+
+    respx.post(url__regex=r"https://api\.spotify\.com/v1/me/player/queue.*").mock(
+        side_effect=queue_handler
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(
+            200,
+            json={"is_playing": True, "context": {"uri": "spotify:album:x"}, "item": {"uri": "spotify:track:y"}},
+        )
+    )
+    runner = SpotifyToolRunner(settings=Settings())
+    for name, aid in (("Radiohead", "aaaaaaaaaaaaaaaaaaaaaa"), ("Drake", "bbbbbbbbbbbbbbbbbbbbbb")):
+        _mock_artist_top_track_search(aid, name, [f"{aid[0]}{'0' * 21}"])
+        runner.run("spotify_play_artist", {"artist_name": name})
+    runner.close()
+    assert queue_n["n"] == 0
 
 
 @respx.mock
@@ -352,6 +374,7 @@ def test_r11_item3_create_visibility_note_once() -> None:
         {
             "id": "aaaaaaaaaaaaaaaaaaaaaa",
             "public": False,
+            "visibility_change_requested": True,
             "visibility_warning": (
                 "Spotify still reports this playlist as public after creation. "
                 "You may need to set visibility manually in the Spotify app."
