@@ -16,13 +16,14 @@ from spot_backend.config import Settings
 from spot_backend.gemini_llm import gemini_intent_allowed_function_names, run_chat_turn_gemini
 from spot_backend.prompt_intent import SPOTIFY_MUTATING_TOOL_NAMES, prompt_is_informational
 from spot_backend.spotify_tools import SpotifyToolRunner
-from spot_backend.token_store import DeviceSelection, save_device
 from tests.recheck_helpers import (
     FakeOllamaStream,
     gemini_candidates_payload,
     gemini_stop_candidate,
     make_gemini_post_recorder,
+    mock_player_album_context_playing,
     run_playback_restriction_violated,
+    run_unknown_device_playback_fallback,
 )
 
 HOW_TO_PHRASES = (
@@ -195,15 +196,7 @@ def test_r5_item2_ollama_promise_nudge_then_search_and_play(data_dir, signed_in_
     respx.get(f"https://api.spotify.com/v1/albums/{good_album}").mock(
         return_value=httpx.Response(200, json={"id": good_album})
     )
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(204)
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(
-            200,
-            json={"is_playing": True, "context": {"uri": f"spotify:album:{good_album}"}},
-        )
-    )
+    mock_player_album_context_playing(good_album)
     streams = [
         FakeOllamaStream(
             [
@@ -271,12 +264,7 @@ def test_r5_item2_gemini_promise_nudge_then_search_and_play(data_dir, signed_in_
     respx.get(f"https://api.spotify.com/v1/albums/{good}").mock(
         return_value=httpx.Response(200, json={"id": good})
     )
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(204)
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(200, json={"is_playing": True, "context": {"uri": f"spotify:album:{good}"}})
-    )
+    mock_player_album_context_playing(good)
     seq = {"n": 0}
     tools_run: list[str] = []
 
@@ -359,34 +347,12 @@ def test_r5_item3_gemini_how_to_play_artist_does_not_search(data_dir, signed_in_
 @respx.mock
 def test_r5_item4_unknown_device_id_falls_back_to_saved_device(data_dir, signed_in_tokens) -> None:
     settings = Settings()
-    save_device(settings.resolved_device_path, DeviceSelection(device_id="real_device_abc"))
-    active = "real_device_abc"
-    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "devices": [
-                    {"id": active, "is_active": True, "is_restricted": False, "name": "Desk"},
-                ]
-            },
-        )
+    data, play_requests = run_unknown_device_playback_fallback(
+        saved_device_id="real_device_abc",
+        settings=settings,
     )
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(204)
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(200, json={"is_playing": True})
-    )
-    runner = SpotifyToolRunner(settings=settings)
-    raw = runner.run(
-        "spotify_start_resume_playback",
-        {"device_id": "device_123"},
-    )
-    runner.close()
-    data = json.loads(raw)
     assert data.get("ok") is True
     assert "device_123" in (data.get("device_fallback_note") or "")
-    play_requests = [c.request for c in respx.calls if "player/play" in str(c.request.url)]
     assert play_requests
     assert "device_id=real_device_abc" in str(play_requests[-1].url) or "real_device_abc" in str(
         play_requests[-1].url

@@ -52,14 +52,36 @@ _FC_SYNTAX_SCRUB = re.compile(
     r"\bspotify_[a-z0-9_]+\s*\(\s*[^)]*\)",
     re.I,
 )
-_CODE_SPAN_SCRUB = re.compile(r"`[^`]*`")
+_CODE_SPAN_RE = re.compile(r"`([^`]*)`")
 _TOOL_PARAMETER_SCRUB = re.compile(
     r"\b(?:the\s+)?[`']?(?:Spotify|spotify)[`']?\s+tool\b",
     re.I,
 )
-_PARAMETER_WORD_SCRUB = re.compile(
-    r"\b(?:set|change)\s+the\s+[`']?[a-z_]+[`']?\s+parameter\b",
+_PARAMETER_DOC_SCRUB = re.compile(
+    r"\b(?:set|change)\s+the\s+(?:[`']?[a-z_][a-z0-9_]*[`']?\s+)?parameter\s+to\b[^.]*",
     re.I,
+)
+_PARAM_LIKE_SPAN = frozenset(
+    {
+        "public",
+        "private",
+        "device_id",
+        "playlist_id",
+        "query",
+        "state",
+        "volume_percent",
+        "position_ms",
+        "track_id",
+        "album_id",
+        "artist_id",
+        "uri",
+        "uris",
+        "context_uri",
+        "offset",
+        "limit",
+        "types",
+        "market",
+    }
 )
 
 PROMISE_AFTER_ID_ERROR_NUDGE = (
@@ -105,15 +127,31 @@ def append_visibility_notes_to_reply(text: str, tool_results: list[str]) -> str:
     return base
 
 
+def _scrub_inline_code_span(match: re.Match[str]) -> str:
+    """Drop backticks; remove span content only for tool/parameter/JSON-like internals."""
+    inner = match.group(1)
+    stripped = inner.strip()
+    if not stripped:
+        return ""
+    if re.fullmatch(r"spotify_[a-z0-9_]+", stripped, re.I):
+        return "Spotify"
+    if stripped.lower() in ("spotify", "true", "false", "null"):
+        return "" if stripped.lower() in ("true", "false", "null") else "Spotify"
+    if re.fullmatch(r"[a-z][a-z0-9_]*", stripped) and stripped.lower() in _PARAM_LIKE_SPAN:
+        return ""
+    if stripped.startswith(("{", "[", '"')) or re.search(r'"\s*:\s*', stripped):
+        return ""
+    return inner
+
+
 def scrub_internal_tool_references(text: str) -> str:
     """Remove internal spotify_* tool names and function-call syntax from user-visible replies."""
-    out = _CODE_SPAN_SCRUB.sub("", text or "")
+    out = _CODE_SPAN_RE.sub(_scrub_inline_code_span, text or "")
     out = _FC_SYNTAX_SCRUB.sub("", out)
     out = _TOOL_NAME_SCRUB.sub("Spotify", out)
     out = _TOOL_PARAMETER_SCRUB.sub("Spotify", out)
-    out = _PARAMETER_WORD_SCRUB.sub("", out)
+    out = _PARAMETER_DOC_SCRUB.sub("", out)
     out = re.sub(r"\bSpotify\s+Spotify\b", "Spotify", out)
-    out = re.sub(r"\bparameter[s]?\b", "", out, flags=re.I)
     out = re.sub(r"\s{2,}", " ", out)
     return out.strip()
 

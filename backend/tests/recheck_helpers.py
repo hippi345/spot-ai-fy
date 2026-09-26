@@ -96,6 +96,57 @@ def run_artist_latest_album_tool(artist_id: str, items: list[dict[str, Any]]) ->
     return json.loads(raw)
 
 
+def mock_spotify_active_device(device_id: str, *, name: str = "Desk") -> None:
+    """Register GET /me/player/devices with one active, unrestricted device."""
+    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "devices": [
+                    {
+                        "id": device_id,
+                        "is_active": True,
+                        "is_restricted": False,
+                        "name": name,
+                    },
+                ]
+            },
+        )
+    )
+
+
+def mock_spotify_idle_player_state(*, player_json: dict[str, Any] | None = None) -> None:
+    """Minimal mocks for a successful play + idle player poll."""
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(200, json=player_json or {"is_playing": True})
+    )
+
+
+def run_unknown_device_playback_fallback(
+    *,
+    saved_device_id: str,
+    unknown_device_id: str = "device_123",
+    settings: Any | None = None,
+) -> tuple[dict[str, Any], list[Any]]:
+    """Playback with bogus device_id falls back to saved/active device (r5/r6 device tests)."""
+    from spot_backend.config import Settings
+    from spot_backend.spotify_tools import SpotifyToolRunner
+    from spot_backend.token_store import DeviceSelection, save_device
+
+    cfg = settings or Settings()
+    save_device(cfg.resolved_device_path, DeviceSelection(device_id=saved_device_id))
+    mock_spotify_active_device(saved_device_id)
+    mock_spotify_idle_player_state()
+    runner = SpotifyToolRunner(settings=cfg)
+    raw = runner.run("spotify_start_resume_playback", {"device_id": unknown_device_id})
+    runner.close()
+    play_requests = [c.request for c in respx.calls if "player/play" in str(c.request.url)]
+    return json.loads(raw), play_requests
+
+
 def run_playback_restriction_violated(track_id: str, *, album_id: str = "aaaaaaaaaaaaaaaaaaaaaa") -> dict[str, Any]:
     from spot_backend.config import Settings
     from spot_backend.spotify_tools import SpotifyToolRunner
@@ -112,16 +163,7 @@ def run_playback_restriction_violated(track_id: str, *, album_id: str = "aaaaaaa
     respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player(\?.*)?$").mock(
         return_value=httpx.Response(204)
     )
-    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "devices": [
-                    {"id": "retry_device_1", "is_restricted": False, "is_active": True, "name": "Desk"},
-                ]
-            },
-        )
-    )
+    mock_spotify_active_device("retry_device_1")
     respx.get("https://api.spotify.com/v1/me/player").mock(return_value=httpx.Response(200, json={}))
     runner = SpotifyToolRunner(settings=Settings())
     runner._session_known_ids.add(track_id)
@@ -256,26 +298,18 @@ def run_create_playlist_private_flow(
 
 
 def mock_player_album_context_playing(album_id: str) -> None:
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(204)
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(
-            200,
-            json={"is_playing": True, "context": {"uri": f"spotify:album:{album_id}"}, "item": {}},
-        )
+    mock_spotify_idle_player_state(
+        player_json={
+            "is_playing": True,
+            "context": {"uri": f"spotify:album:{album_id}"},
+            "item": {},
+        },
     )
 
 
 def mock_player_track_playing(track_id: str) -> None:
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(204)
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(
-            200,
-            json={"is_playing": True, "item": {"uri": f"spotify:track:{track_id}"}},
-        )
+    mock_spotify_idle_player_state(
+        player_json={"is_playing": True, "item": {"uri": f"spotify:track:{track_id}"}},
     )
 
 

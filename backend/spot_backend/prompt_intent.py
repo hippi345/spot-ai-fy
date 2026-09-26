@@ -44,14 +44,39 @@ _INFORMATIONAL_RE = re.compile(
     r"(?:"
     r"\bhow\s+(?:do|can|should|would)\s+i\b"
     r"|"
+    r"\bhow\s+would\s+i\b"
+    r"|"
+    r"\bhow\s+(?:does|do)\s+\w"
+    r"|"
+    r"\bwhat(?:'s|s| is)\s+the\s+way\s+to\b"
+    r"|"
     r"\bwhat\s+(?:does|is|are)\b"
+    r"|"
+    r"\bis\s+there\s+a\s+way\s+to\b"
+    r"|"
+    r"\bcan\s+you\s+explain\s+how\b"
+    r"|"
+    r"\bcan\s+you\s+explain\b"
+    r"|"
+    r"\bexplain\s+how\b"
     r"|"
     r"\bexplain\b"
     r"|"
     r"\btell\s+me\s+(?:how|about)\b"
     r"|"
-    r"\bcan\s+you\s+explain\b"
+    r"\bwhat\s+do\s+i\s+say\s+to\b"
+    r"|"
+    r"\bwhat\s+should\s+i\s+(?:type|say|tell)\b"
     r")",
+    re.I,
+)
+
+# Direct commands — not informational even if they mention "how" elsewhere.
+_ACTION_IMPERATIVE_RE = re.compile(
+    r"^\s*(?:"
+    r"play|pause|resume|skip|previous|shuffle|repeat|like|save|follow|unfollow|"
+    r"add|delete|remove|make|turn|queue|stop"
+    r")\b",
     re.I,
 )
 
@@ -66,12 +91,9 @@ def prompt_is_informational(user_text: str) -> bool:
     t = (user_text or "").strip()
     if not t:
         return False
-    if not _INFORMATIONAL_RE.search(t):
+    if _ACTION_IMPERATIVE_RE.match(t):
         return False
-    # Direct play commands disguised as questions are still informational (how to play).
-    if re.match(r"^\s*play\s+", t, re.I) and not _INFORMATIONAL_RE.search(t):
-        return False
-    return True
+    return bool(_INFORMATIONAL_RE.search(t))
 
 
 def prompt_is_multi_step(user_text: str) -> bool:
