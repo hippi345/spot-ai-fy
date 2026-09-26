@@ -4,18 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
-_DEFAULT_SESSION_KEY = "__default__"
-
 _store: dict[str, dict[str, Any]] = {}
 
 
-def _key(conversation_id: str | None) -> str:
+def _key(conversation_id: str | None) -> str | None:
     cid = (conversation_id or "").strip()
-    return cid if cid else _DEFAULT_SESSION_KEY
+    return cid if cid else None
 
 
 def load_last_library_mutation(conversation_id: str | None) -> dict[str, Any] | None:
-    mut = _store.get(_key(conversation_id))
+    key = _key(conversation_id)
+    if key is None:
+        return None
+    mut = _store.get(key)
     return mut if isinstance(mut, dict) else None
 
 
@@ -24,10 +25,13 @@ def record_library_mutation(
     segment: str,
     ids: list[str],
 ) -> None:
+    key = _key(conversation_id)
+    if key is None:
+        return
     clean = [i for i in ids if isinstance(i, str) and i.strip()]
     if not clean:
         return
-    _store[_key(conversation_id)] = {"segment": segment, "ids": clean}
+    _store[key] = {"segment": segment, "ids": clean}
 
 
 def last_saved_track_ids(conversation_id: str | None) -> list[str]:
@@ -42,4 +46,6 @@ def last_saved_track_ids(conversation_id: str | None) -> list[str]:
 
 def clear_session(conversation_id: str | None) -> None:
     """Test helper — drop stored mutation for a conversation key."""
-    _store.pop(_key(conversation_id), None)
+    key = _key(conversation_id)
+    if key is not None:
+        _store.pop(key, None)

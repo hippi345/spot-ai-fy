@@ -6,7 +6,6 @@ import json
 import re
 
 from spot_backend.deterministic_chat_types import DeterministicChatResult
-from spot_backend.library_mutation_store import last_saved_track_ids
 from spot_backend.play_artist import format_play_artist_reply, play_artist_tool_step
 from spot_backend.play_artist_intent import extract_play_artist_name
 from spot_backend.prompt_intent import prompt_requests_recent_listening_history
@@ -79,7 +78,9 @@ def try_deterministic_chat_reply(
     steps: list[tuple[str, dict, str]] = []
 
     if _UNDO_RE.match(t):
-        track_ids = last_saved_track_ids(conversation_id or runner.conversation_id)
+        track_ids = runner.last_saved_track_ids_for_undo(
+            conversation_id or runner.conversation_id
+        )
         if not track_ids:
             return DeterministicChatResult(_NOTHING_TO_UNDO, [])
         tid = track_ids[-1]

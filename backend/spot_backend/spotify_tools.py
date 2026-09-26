@@ -695,6 +695,21 @@ class SpotifyToolRunner:
         if isinstance(prior, dict):
             self._last_library_mutation = prior
 
+    def last_saved_track_ids_for_undo(self, conversation_id: str | None = None) -> list[str]:
+        """Track ids to unsave for undo — persisted session first, else this runner's last save."""
+        from spot_backend.library_mutation_store import last_saved_track_ids
+
+        cid = (conversation_id or self.conversation_id or "").strip() or None
+        stored = last_saved_track_ids(cid)
+        if stored:
+            return stored
+        mut = self._last_library_mutation
+        if isinstance(mut, dict) and mut.get("segment") == "track":
+            ids = mut.get("ids")
+            if isinstance(ids, list):
+                return [str(i) for i in ids if str(i).strip()]
+        return []
+
     def note_session_playlist_id(self, playlist_id: str) -> None:
         pid = (playlist_id or "").strip()
         if _looks_like_spotify_catalog_id(pid):

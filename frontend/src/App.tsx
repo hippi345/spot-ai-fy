@@ -2,6 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { SetupWizard } from "./SetupWizard";
 import { fetchSetupStatus, type SetupStatus } from "./lib/api";
+import {
+  buildChatStreamRequestBody,
+  loadChatSession,
+  saveChatSession,
+  startNewChatSession,
+} from "./lib/chatSession";
 import { FRIENDLY_SPOTIFY_GUIDANCE, isUnpersistedAssistantFallback } from "./lib/chatMessages";
 import { isChatBlockedBySetup } from "./lib/setupGate";
 import {
@@ -127,7 +133,11 @@ export function App() {
 
   const [sending, setSending] = useState(false);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [conversationId, setConversationId] = useState<string>(() => loadChatSession().conversationId);
+
+  const [messages, setMessages] = useState<ChatMessage[]>(() =>
+    loadChatSession().messages.map((m) => ({ role: m.role, text: m.text })),
+  );
 
   const [traceSteps, setTraceSteps] = useState<TraceStep[]>([]);
 
@@ -170,6 +180,23 @@ export function App() {
     });
     return () => window.cancelAnimationFrame(id);
   }, [messages.length, liveReply, sending, traceSteps.length]);
+
+  useEffect(() => {
+    saveChatSession({
+      conversationId,
+      messages: messages.map((m) => ({ role: m.role, text: m.text })),
+    });
+  }, [conversationId, messages]);
+
+  const beginNewChat = useCallback(() => {
+    const fresh = startNewChatSession();
+    setConversationId(fresh.conversationId);
+    setMessages([]);
+    setLiveReply("");
+    setTraceSteps([]);
+    setError(null);
+    setInput("");
+  }, []);
 
   const [llm, setLlm] = useState<LlmStatus | null>(null);
 
@@ -780,7 +807,7 @@ export function App() {
 
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
 
-        body: JSON.stringify({ message: text, history: historyPayload }),
+        body: JSON.stringify(buildChatStreamRequestBody(text, historyPayload, conversationId)),
 
         signal: controller.signal,
 
@@ -1077,7 +1104,7 @@ export function App() {
 
     setDeviceId("");
 
-    setMessages([]);
+    beginNewChat();
 
     setBanner("Signed out.");
 
@@ -1209,6 +1236,15 @@ export function App() {
             Chat
 
           </h2>
+
+          <button
+            type="button"
+            className="secondary"
+            onClick={beginNewChat}
+            disabled={sending}
+          >
+            New chat
+          </button>
 
         </div>
 
