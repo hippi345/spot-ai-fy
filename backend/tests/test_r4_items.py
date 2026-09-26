@@ -30,6 +30,7 @@ from spot_backend.spotify_tools import SpotifyToolRunner, collect_catalog_ids_fr
 from tests.recheck_helpers import (
     gemini_any_pause_then_auto_text_handler,
     make_gemini_post_recorder,
+    run_artist_null_context_playback,
     run_playback_restriction_violated,
 )
 
@@ -109,33 +110,7 @@ def test_r4_item2_gemini_like_intent_includes_playback_state() -> None:
 @respx.mock
 def test_r4_item3_artist_playback_null_context_matches(data_dir, signed_in_tokens) -> None:
     artist_id = "aaaaaaaaaaaaaaaaaaaaaa"
-    respx.get(f"https://api.spotify.com/v1/artists/{artist_id}").mock(
-        return_value=httpx.Response(200, json={"id": artist_id, "name": "Artist"})
-    )
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(204)
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "is_playing": True,
-                "context": None,
-                "item": {
-                    "uri": "spotify:track:cccccccccccccccccccccc",
-                    "artists": [{"id": artist_id, "name": "Artist"}],
-                },
-            },
-        )
-    )
-    runner = SpotifyToolRunner(settings=Settings())
-    runner._session_known_ids.add(artist_id)
-    raw = runner.run(
-        "spotify_start_resume_playback",
-        {"context_uri": f"spotify:artist:{artist_id}"},
-    )
-    runner.close()
-    data = json.loads(raw)
+    data = run_artist_null_context_playback(artist_id)
     assert data.get("ok") is True
     assert data.get("playback_verified") is True
 

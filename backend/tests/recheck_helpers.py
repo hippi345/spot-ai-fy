@@ -158,3 +158,144 @@ def install_cpu_only_ollama_profile_mocks(monkeypatch) -> None:
     monkeypatch.setattr(httpx, "get", fake_get)
     monkeypatch.setattr(httpx, "post", fake_post)
     monkeypatch.setattr(time, "perf_counter", lambda: 0.0)
+
+
+def install_cpu_profile_http_mocks(
+    monkeypatch,
+    *,
+    size_vram: int = 0,
+    perf_steps: list[float] | None = None,
+    http_calls: list[str] | None = None,
+) -> None:
+    import time
+
+    steps = iter(perf_steps or [0.0])
+    fallback = perf_steps[-1] if perf_steps else 0.0
+
+    def fake_get(url, *args, **kwargs):
+        if http_calls is not None:
+            http_calls.append(str(url))
+        req = httpx.Request("GET", str(url))
+        if str(url).endswith("/api/ps"):
+            return httpx.Response(
+                200,
+                json={"models": [{"name": "qwen3:4b-instruct", "size_vram": size_vram}]},
+                request=req,
+            )
+        raise AssertionError(url)
+
+    def fake_post(url, *args, **kwargs):
+        if http_calls is not None:
+            http_calls.append(str(url))
+        req = httpx.Request("POST", str(url))
+        return httpx.Response(200, json={"response": "OK"}, request=req)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(time, "perf_counter", lambda: next(steps, fallback))
+
+
+class FakeOllamaStream:
+    """Minimal httpx stream stand-in shared by agent loop tests."""
+
+    def __init__(self, lines: list[str], status_code: int = 200) -> None:
+        self._lines = lines
+        self.status_code = status_code
+
+    def __enter__(self) -> FakeOllamaStream:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                "err",
+                request=httpx.Request("POST", "http://x"),
+                response=httpx.Response(self.status_code),
+            )
+
+    def read(self) -> bytes:
+        return b""
+
+    def iter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+def run_create_playlist_private_flow(
+    pid: str,
+    *,
+    post_public: bool,
+    get_public: bool,
+) -> tuple[dict[str, Any], bool]:
+    from spot_backend.config import Settings
+    from spot_backend.spotify_tools import SpotifyToolRunner
+
+    respx.post("https://api.spotify.com/v1/me/playlists").mock(
+        return_value=httpx.Response(200, json={"id": pid, "name": "x", "public": post_public})
+    )
+    put_route = respx.put(f"https://api.spotify.com/v1/playlists/{pid}").mock(
+        return_value=httpx.Response(200)
+    )
+    respx.get(f"https://api.spotify.com/v1/playlists/{pid}").mock(
+        return_value=httpx.Response(200, json={"id": pid, "public": get_public, "name": "x"})
+    )
+    runner = SpotifyToolRunner(settings=Settings())
+    raw = runner.run("spotify_create_playlist", {"name": "Secret"})
+    runner.close()
+    return json.loads(raw), put_route.called
+
+
+def run_artist_null_context_playback(artist_id: str) -> dict[str, Any]:
+    from spot_backend.config import Settings
+    from spot_backend.spotify_tools import SpotifyToolRunner
+
+    respx.get(f"https://api.spotify.com/v1/artists/{artist_id}").mock(
+        return_value=httpx.Response(200, json={"id": artist_id, "name": "Artist"})
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_playing": True,
+                "context": None,
+                "item": {
+                    "uri": "spotify:track:cccccccccccccccccccccc",
+                    "artists": [{"id": artist_id, "name": "Artist"}],
+                },
+            },
+        )
+    )
+    runner = SpotifyToolRunner(settings=Settings())
+    runner._session_known_ids.add(artist_id)
+    raw = runner.run(
+        "spotify_start_resume_playback",
+        {"context_uri": f"spotify:artist:{artist_id}"},
+    )
+    runner.close()
+    return json.loads(raw)
+
+
+def run_album_playlist_play(album_id: str) -> dict[str, Any]:
+    from spot_backend.config import Settings
+    from spot_backend.spotify_tools import SpotifyToolRunner
+
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(
+            200,
+            json={"is_playing": True, "context": {"uri": f"spotify:album:{album_id}"}, "item": {}},
+        )
+    )
+    runner = SpotifyToolRunner(settings=Settings())
+    runner._session_known_ids.add(album_id)
+    raw = runner.run("spotify_play_playlist", {"playlist_id": f"spotify:album:{album_id}"})
+    runner.close()
+    return json.loads(raw)

@@ -22,9 +22,11 @@ from spot_backend.setup_service import _ollama_cpu_profile
 from spot_backend.spotify_tools import SpotifyToolRunner, collect_catalog_ids_from_tool_json
 from tests.recheck_helpers import (
     gemini_thought_then_pause_then_text_handler,
+    install_cpu_profile_http_mocks,
     make_gemini_post_recorder,
     mock_artist_name_search,
     run_artist_latest_album_tool,
+    run_create_playlist_private_flow,
 )
 
 
@@ -166,19 +168,10 @@ def test_r3_item04_guard_positive_now_playing_still_detected() -> None:
 @respx.mock
 def test_r3_item05_create_playlist_always_puts_private(data_dir, signed_in_tokens) -> None:
     pid = "pppppppppppppppppppppp"
-    respx.post("https://api.spotify.com/v1/me/playlists").mock(
-        return_value=httpx.Response(200, json={"id": pid, "name": "x", "public": False})
+    _data, put_called = run_create_playlist_private_flow(
+        pid, post_public=False, get_public=False
     )
-    put_route = respx.put(f"https://api.spotify.com/v1/playlists/{pid}").mock(
-        return_value=httpx.Response(200)
-    )
-    respx.get(f"https://api.spotify.com/v1/playlists/{pid}").mock(
-        return_value=httpx.Response(200, json={"id": pid, "public": False, "name": "x"})
-    )
-    runner = SpotifyToolRunner(settings=Settings())
-    runner.run("spotify_create_playlist", {"name": "Secret"})
-    runner.close()
-    assert put_route.called
+    assert put_called
 
 
 @respx.mock
@@ -186,17 +179,9 @@ def test_r3_item05_create_playlist_visibility_warning_when_still_public(
     data_dir, signed_in_tokens,
 ) -> None:
     pid = "qqqqqqqqqqqqqqqqqqqqqq"
-    respx.post("https://api.spotify.com/v1/me/playlists").mock(
-        return_value=httpx.Response(200, json={"id": pid, "name": "x", "public": False})
+    data, _put_called = run_create_playlist_private_flow(
+        pid, post_public=False, get_public=True
     )
-    respx.put(f"https://api.spotify.com/v1/playlists/{pid}").mock(return_value=httpx.Response(200))
-    respx.get(f"https://api.spotify.com/v1/playlists/{pid}").mock(
-        return_value=httpx.Response(200, json={"id": pid, "public": True, "name": "x"})
-    )
-    runner = SpotifyToolRunner(settings=Settings())
-    raw = runner.run("spotify_create_playlist", {"name": "Secret"})
-    runner.close()
-    data = json.loads(raw)
     assert data.get("visibility_warning")
     assert data.get("public") is True
 
@@ -204,26 +189,7 @@ def test_r3_item05_create_playlist_visibility_warning_when_still_public(
 # r3_item07 — CPU profile warm-then-ps
 def test_r3_item07_cpu_profile_loaded_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
-
-    def fake_post(url, *args, **kwargs):
-        calls.append(str(url))
-        req = httpx.Request("POST", str(url))
-        return httpx.Response(200, json={"response": "OK"}, request=req)
-
-    def fake_get(url, *args, **kwargs):
-        calls.append(str(url))
-        req = httpx.Request("GET", str(url))
-        if str(url).endswith("/api/ps"):
-            return httpx.Response(
-                200,
-                json={"models": [{"name": "qwen3:4b-instruct", "size_vram": 0}]},
-                request=req,
-            )
-        raise AssertionError(url)
-
-    monkeypatch.setattr(httpx, "post", fake_post)
-    monkeypatch.setattr(httpx, "get", fake_get)
-    monkeypatch.setattr(time, "perf_counter", lambda: 0.0)
+    install_cpu_profile_http_mocks(monkeypatch, http_calls=calls)
     profile = _ollama_cpu_profile("http://127.0.0.1:11434", "qwen3:4b-instruct")
     assert profile["cpu_only"] is True
     assert profile.get("message")
@@ -231,20 +197,7 @@ def test_r3_item07_cpu_profile_loaded_cpu(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_r3_item07_cpu_profile_loaded_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_post(url, *args, **kwargs):
-        req = httpx.Request("POST", str(url))
-        return httpx.Response(200, json={"response": "OK"}, request=req)
-
-    def fake_get(url, *args, **kwargs):
-        req = httpx.Request("GET", str(url))
-        return httpx.Response(
-            200,
-            json={"models": [{"name": "qwen3:4b-instruct", "size_vram": 4_000_000_000}]},
-            request=req,
-        )
-
-    monkeypatch.setattr(httpx, "post", fake_post)
-    monkeypatch.setattr(httpx, "get", fake_get)
+    install_cpu_profile_http_mocks(monkeypatch, size_vram=4_000_000_000)
     profile = _ollama_cpu_profile("http://127.0.0.1:11434", "qwen3:4b-instruct")
     assert profile["cpu_only"] is False
     assert profile.get("message") is None

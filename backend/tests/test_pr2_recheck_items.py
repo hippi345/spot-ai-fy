@@ -26,37 +26,17 @@ from spot_backend.ollama_agent_profile import SMALL_MODEL_TOOL_NAMES
 from spot_backend.setup_service import _ollama_cpu_profile
 from spot_backend.spotify_client import DEFAULT_SCOPES
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner, _parse_spotify_context_ref
-from tests.recheck_helpers import run_playback_restriction_violated
+from tests.recheck_helpers import (
+    FakeOllamaStream,
+    install_cpu_profile_http_mocks,
+    run_album_playlist_play,
+    run_artist_null_context_playback,
+    run_create_playlist_private_flow,
+    run_playback_restriction_violated,
+)
 from spot_backend.token_store import DeviceSelection, load_device, save_device
 from spot_backend.url_safety import validate_ollama_base_url
 from fastapi.testclient import TestClient
-
-
-class _FakeOllamaStream:
-    def __init__(self, lines: list[str], status_code: int = 200) -> None:
-        self._lines = lines
-        self.status_code = status_code
-
-    def __enter__(self) -> _FakeOllamaStream:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        return None
-
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            raise httpx.HTTPStatusError(
-                "err",
-                request=httpx.Request("POST", "http://x"),
-                response=httpx.Response(self.status_code),
-            )
-
-    def read(self) -> bytes:
-        return b""
-
-    def iter_lines(self):
-        for line in self._lines:
-            yield line
 
 
 def test_item01_ollama_stream_accumulates_content_when_final_chunk_empty(
@@ -68,7 +48,7 @@ def test_item01_ollama_stream_accumulates_content_when_final_chunk_empty(
         json.dumps({"message": {"role": "assistant", "content": "world"}, "done": False}),
         json.dumps({"message": {"role": "assistant", "content": ""}, "done": True}),
     ]
-    streams = [_FakeOllamaStream(lines)]
+    streams = [FakeOllamaStream(lines)]
     bodies: list[dict[str, Any]] = []
 
     def fake_stream(_client_self, _method, _url, **kwargs):
@@ -153,20 +133,7 @@ def test_item03_restriction_violated_returns_clear_error(data_dir, signed_in_tok
 @respx.mock
 def test_item04_play_playlist_routes_album_uri(data_dir, signed_in_tokens) -> None:
     album_id = "3333333333333333333333"
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(204)
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(
-            200,
-            json={"is_playing": True, "context": {"uri": f"spotify:album:{album_id}"}, "item": {}},
-        )
-    )
-    runner = SpotifyToolRunner(settings=Settings())
-    runner._session_known_ids.add(album_id)
-    raw = runner.run("spotify_play_playlist", {"playlist_id": f"spotify:album:{album_id}"})
-    runner.close()
-    data = json.loads(raw)
+    data = run_album_playlist_play(album_id)
     assert data["context_uri"] == f"spotify:album:{album_id}"
     assert "spotify:playlist:spotify:album" not in json.dumps(data)
 
@@ -259,25 +226,7 @@ def test_item12_keepalive_sse_payload() -> None:
 
 
 def test_item13_cpu_profile_recommends_gemini_when_slow(monkeypatch: pytest.MonkeyPatch) -> None:
-    times = iter([0.0, 9.0, 9.0, 9.0])
-
-    def fake_get(url, *args, **kwargs):
-        req = httpx.Request("GET", str(url))
-        if str(url).endswith("/api/ps"):
-            return httpx.Response(
-                200,
-                json={"models": [{"name": "qwen3:4b-instruct", "size_vram": 0}]},
-                request=req,
-            )
-        raise AssertionError(url)
-
-    def fake_post(url, *args, **kwargs):
-        req = httpx.Request("POST", str(url))
-        return httpx.Response(200, json={"response": "OK"}, request=req)
-
-    monkeypatch.setattr(httpx, "get", fake_get)
-    monkeypatch.setattr(httpx, "post", fake_post)
-    monkeypatch.setattr(time, "perf_counter", lambda: next(times, 9.0))
+    install_cpu_profile_http_mocks(monkeypatch, perf_steps=[0.0, 9.0, 9.0, 9.0])
     profile = _ollama_cpu_profile("http://127.0.0.1:11434", "qwen3:4b-instruct")
     assert profile["cpu_only"] is True
     assert profile["recommend_gemini"] is True
@@ -307,7 +256,7 @@ def test_item15_delete_device_clears_saved_file(data_dir) -> None:
 @respx.mock
 def test_item18_friendly_guidance_for_nonsense(data_dir, signed_in_tokens) -> None:
     settings = Settings()
-    streams = [_FakeOllamaStream([json.dumps({"message": {"role": "assistant", "content": ""}, "done": True})])]
+    streams = [FakeOllamaStream([json.dumps({"message": {"role": "assistant", "content": ""}, "done": True})])]
 
     def fake_stream(_client_self, _method, _url, **kwargs):
         return streams[0]

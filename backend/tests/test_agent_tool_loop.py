@@ -9,33 +9,7 @@ import httpx
 from spot_backend.agent import run_chat_turn_ollama
 from spot_backend.config import Settings
 from spot_backend.spotify_tools import SpotifyToolRunner
-
-
-class _FakeOllamaStream:
-    def __init__(self, lines: list[str], status_code: int = 200) -> None:
-        self._lines = lines
-        self.status_code = status_code
-
-    def __enter__(self) -> _FakeOllamaStream:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        return None
-
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            raise httpx.HTTPStatusError(
-                "err",
-                request=httpx.Request("POST", "http://x"),
-                response=httpx.Response(self.status_code),
-            )
-
-    def read(self) -> bytes:
-        return b""
-
-    def iter_lines(self):
-        for line in self._lines:
-            yield line
+from tests.recheck_helpers import FakeOllamaStream
 
 
 def _ollama_tool_call_line(name: str, arguments: dict | None = None) -> str:
@@ -57,7 +31,7 @@ def _ollama_final_line(text: str) -> str:
 def _run_with_fake_ollama(
     settings: Settings,
     user_text: str,
-    streams: list[_FakeOllamaStream],
+    streams: list[FakeOllamaStream],
 ) -> tuple[str, list[dict[str, Any]]]:
     bodies: list[dict[str, Any]] = []
     idx = {"i": 0}
@@ -78,8 +52,8 @@ def test_agent_tool_call_then_final_answer(data_dir, signed_in_tokens) -> None:
     me_tool_result = '{"id":"testuser"}'
     final_text = "You are logged in as testuser."
     streams = [
-        _FakeOllamaStream([_ollama_tool_call_line("spotify_me")]),
-        _FakeOllamaStream([_ollama_final_line(final_text)]),
+        FakeOllamaStream([_ollama_tool_call_line("spotify_me")]),
+        FakeOllamaStream([_ollama_final_line(final_text)]),
     ]
     with patch.object(SpotifyToolRunner, "_me", return_value=me_tool_result):
         out, bodies = _run_with_fake_ollama(settings, "who am I?", streams)
@@ -106,8 +80,8 @@ def test_agent_unknown_tool_error_fed_back_to_model(data_dir, signed_in_tokens) 
     tool_result = json.dumps({"error": f"Unknown tool: {tool_name}"})
     final_text = "That tool does not exist."
     streams = [
-        _FakeOllamaStream([_ollama_tool_call_line(tool_name)]),
-        _FakeOllamaStream([_ollama_final_line(final_text)]),
+        FakeOllamaStream([_ollama_tool_call_line(tool_name)]),
+        FakeOllamaStream([_ollama_final_line(final_text)]),
     ]
     out, bodies = _run_with_fake_ollama(settings, "do something weird", streams)
 
@@ -125,8 +99,8 @@ def test_agent_dispatch_exception_fed_back_to_model(data_dir, signed_in_tokens) 
     tool_result = json.dumps({"error": "RuntimeError: boom"})
     final_text = "The search tool crashed."
     streams = [
-        _FakeOllamaStream([_ollama_tool_call_line("spotify_search", {"query": "x", "types": "track"})]),
-        _FakeOllamaStream([_ollama_final_line(final_text)]),
+        FakeOllamaStream([_ollama_tool_call_line("spotify_search", {"query": "x", "types": "track"})]),
+        FakeOllamaStream([_ollama_final_line(final_text)]),
     ]
     real_dispatch = SpotifyToolRunner._dispatch
 

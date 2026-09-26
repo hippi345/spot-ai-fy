@@ -21,10 +21,12 @@ from spot_backend.ollama_agent_profile import SMALL_MODEL_TOOL_NAMES, small_mode
 from spot_backend.setup_service import _ollama_cpu_profile
 from spot_backend.spotify_tools import SpotifyToolRunner, pick_latest_album_release
 from tests.recheck_helpers import (
+    FakeOllamaStream,
     install_cpu_only_ollama_profile_mocks,
     make_gemini_post_recorder,
     mock_artist_name_search,
     run_artist_latest_album_tool,
+    run_create_playlist_private_flow,
 )
 from fastapi.testclient import TestClient
 
@@ -170,20 +172,10 @@ def test_r2_itemD_create_playlist_forces_private_when_spotify_returns_public(
     data_dir, signed_in_tokens,
 ) -> None:
     pid = "pppppppppppppppppppppp"
-    respx.post("https://api.spotify.com/v1/me/playlists").mock(
-        return_value=httpx.Response(200, json={"id": pid, "name": "x", "public": True})
+    data, put_called = run_create_playlist_private_flow(
+        pid, post_public=True, get_public=False
     )
-    put_route = respx.put(f"https://api.spotify.com/v1/playlists/{pid}").mock(
-        return_value=httpx.Response(200)
-    )
-    respx.get(f"https://api.spotify.com/v1/playlists/{pid}").mock(
-        return_value=httpx.Response(200, json={"id": pid, "public": False, "name": "x"})
-    )
-    runner = SpotifyToolRunner(settings=Settings())
-    raw = runner.run("spotify_create_playlist", {"name": "Secret"})
-    runner.close()
-    data = json.loads(raw)
-    assert put_route.called
+    assert put_called
     assert data.get("public") is False
 
 
