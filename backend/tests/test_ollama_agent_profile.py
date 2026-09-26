@@ -34,28 +34,11 @@ def test_small_model_auto_and_override(data_dir) -> None:
 
 
 def test_small_model_tool_subset() -> None:
+    from spot_backend.ollama_agent_profile import SMALL_MODEL_TOOL_NAMES
+
     small = filter_ollama_tools(OLLAMA_TOOLS, small=True)
     names = {t["function"]["name"] for t in small}
-    assert names == {
-        "spotify_search",
-        "spotify_play_playlist",
-        "spotify_start_resume_playback",
-        "spotify_create_playlist",
-        "spotify_top_artists",
-        "spotify_top_tracks",
-        "spotify_pause",
-        "spotify_skip_next",
-        "spotify_skip_previous",
-        "spotify_add_to_queue",
-        "spotify_devices",
-        "spotify_playback_state",
-        "spotify_user_playlists",
-        "spotify_add_tracks_by_query",
-        "spotify_set_volume",
-        "spotify_set_shuffle",
-        "spotify_set_repeat",
-        "spotify_unfollow_playlist",
-    }
+    assert names == set(SMALL_MODEL_TOOL_NAMES)
 
 
 def test_small_model_prompt_under_4k_tokens() -> None:

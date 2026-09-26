@@ -22,10 +22,11 @@ jobs:
       - name: Install backend dependencies
         # Installing the real runtime deps (httpx, fastapi, pydantic, uvicorn,
         # pydantic-settings, mcp) prevents pylint from emitting E0401 import-error
-        # for every third-party module.
+        # for every third-party module. Dev deps (pytest, respx) cover test imports.
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
+          pip install -r backend/requirements-dev.txt
           pip install pylint
 
       - name: Run pylint
