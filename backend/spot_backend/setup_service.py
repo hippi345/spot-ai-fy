@@ -122,7 +122,7 @@ def _trial_settings_for_llm_test(
     provider: Literal["gemini", "ollama"],
     gemini_api_key: str | None,
     ollama_host: str | None,
-    _ollama_model: str | None,
+    ollama_model: str | None,
     data_dir,
     allow_public: bool = False,
 ) -> Settings:
