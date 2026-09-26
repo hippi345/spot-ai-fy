@@ -8,17 +8,73 @@ import httpx
 import respx
 
 
-def mock_artist_name_search(artist_id: str, name: str = "Radiohead") -> None:
+def mock_artist_name_search(
+    artist_id: str,
+    name: str = "Radiohead",
+    *,
+    extra_items: list[dict[str, Any]] | None = None,
+) -> None:
+    items = extra_items or [{"id": artist_id, "name": name, "type": "artist"}]
     respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(
         return_value=httpx.Response(
             200,
-            json={
-                "artists": {
-                    "items": [{"id": artist_id, "name": name, "type": "artist"}],
-                }
-            },
+            json={"artists": {"items": items}},
         )
     )
+
+
+def gemini_candidates_payload(*candidates: dict[str, Any]) -> dict[str, Any]:
+    return {"candidates": list(candidates)}
+
+
+def gemini_stop_candidate(*parts: dict[str, Any]) -> dict[str, Any]:
+    return {"finishReason": "STOP", "content": {"parts": list(parts)}}
+
+
+def gemini_thought_then_pause_then_text_handler(
+    bodies: list[dict[str, Any]] | None = None,
+) -> Callable[[dict[str, Any], int, httpx.Request], httpx.Response]:
+    """Shared Gemini fake POST sequence: thought → pause tool → text (r3 item03 / r4 item1)."""
+
+    def handler(_body: dict[str, Any], n: int, req: httpx.Request) -> httpx.Response:
+        if bodies is not None:
+            bodies.append(_body)
+        if n == 1:
+            payload = gemini_candidates_payload(
+                gemini_stop_candidate({"text": "thinking…", "thought": True})
+            )
+        elif n == 2:
+            payload = gemini_candidates_payload(
+                gemini_stop_candidate({"functionCall": {"name": "spotify_pause", "args": {}}})
+            )
+        else:
+            payload = gemini_candidates_payload(
+                gemini_stop_candidate({"text": "Playback is paused."})
+            )
+        return httpx.Response(200, json=payload, request=req)
+
+    return handler
+
+
+def gemini_any_pause_then_auto_text_handler(
+    pause_calls: dict[str, int],
+) -> Callable[[dict[str, Any], int, httpx.Request], httpx.Response]:
+    """Return pause on ANY rounds, plain text on AUTO (r4 item1)."""
+
+    def handler(body: dict[str, Any], _n: int, req: httpx.Request) -> httpx.Response:
+        fc_mode = (body.get("toolConfig") or {}).get("functionCallingConfig", {}).get("mode")
+        if fc_mode == "ANY":
+            pause_calls["n"] += 1
+            payload = gemini_candidates_payload(
+                gemini_stop_candidate({"functionCall": {"name": "spotify_pause", "args": {}}})
+            )
+        else:
+            payload = gemini_candidates_payload(
+                gemini_stop_candidate({"text": "Playback paused."})
+            )
+        return httpx.Response(200, json=payload, request=req)
+
+    return handler
 
 
 def make_gemini_post_recorder(

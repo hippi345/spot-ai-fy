@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from spot_backend.config import Settings
+from spot_backend.json_store import load_json_dict
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +40,7 @@ def _secrets_path(data_dir: Path) -> Path:
 
 
 def _load_json(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        return raw if isinstance(raw, dict) else {}
-    except (OSError, json.JSONDecodeError, TypeError):
-        return {}
+    return load_json_dict(path)
 
 
 def _write_json_private(path: Path, data: dict[str, Any]) -> None:

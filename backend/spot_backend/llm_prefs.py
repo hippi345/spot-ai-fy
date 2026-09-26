@@ -14,15 +14,11 @@ def _prefs_path(data_dir: Path) -> Path:
     return data_dir / _PREFS_FILE
 
 
+from spot_backend.json_store import load_json_dict
+
+
 def _load_prefs_raw(data_dir: Path) -> dict[str, Any]:
-    path = _prefs_path(data_dir)
-    if not path.is_file():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        return raw if isinstance(raw, dict) else {}
-    except (json.JSONDecodeError, OSError, TypeError):
-        return {}
+    return load_json_dict(_prefs_path(data_dir))
 
 
 def _persist_prefs(data_dir: Path, raw: dict[str, Any]) -> None:

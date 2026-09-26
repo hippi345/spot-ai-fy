@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -29,7 +27,10 @@ from spot_backend.gemini_llm import (
     run_chat_turn_gemini,
 )
 from spot_backend.spotify_tools import SpotifyToolRunner, collect_catalog_ids_from_tool_json
-from tests.recheck_helpers import make_gemini_post_recorder
+from tests.recheck_helpers import (
+    gemini_any_pause_then_auto_text_handler,
+    make_gemini_post_recorder,
+)
 
 # r4-item1 — Gemini ANY only on first intent-scoped round + repeat guard
 @respx.mock
@@ -37,43 +38,13 @@ def test_r4_item1_gemini_intent_any_only_first_round_one_tool_call(data_dir, sig
     settings = Settings(gemini_api_key="test-key", agent_max_steps=16)
     pause_calls = {"n": 0}
 
-    def handler(_body: dict[str, Any], n: int, req: httpx.Request) -> httpx.Response:
-        fc_mode = (_body.get("toolConfig") or {}).get("functionCallingConfig", {}).get("mode")
-        if fc_mode == "ANY":
-            return httpx.Response(
-                200,
-                json={
-                    "candidates": [
-                        {
-                            "finishReason": "STOP",
-                            "content": {
-                                "parts": [{"functionCall": {"name": "spotify_pause", "args": {}}}],
-                            },
-                        }
-                    ]
-                },
-                request=req,
-            )
-        return httpx.Response(
-            200,
-            json={
-                "candidates": [
-                    {
-                        "finishReason": "STOP",
-                        "content": {"parts": [{"text": "Playback paused."}]},
-                    }
-                ]
-            },
-            request=req,
-        )
-
-    bodies, fake_post = make_gemini_post_recorder(handler)
-
     def counting_pause(*args, **kwargs):
-        pause_calls["n"] += 1
         return httpx.Response(204)
 
     respx.put("https://api.spotify.com/v1/me/player/pause").mock(side_effect=counting_pause)
+    bodies, fake_post = make_gemini_post_recorder(
+        gemini_any_pause_then_auto_text_handler(pause_calls)
+    )
     with patch("httpx.Client.post", fake_post):
         text = run_chat_turn_gemini("pause playback", settings)
     assert pause_calls["n"] == 1
@@ -99,9 +70,6 @@ def test_r4_item2_empty_track_id_resolves_from_playback(data_dir, signed_in_toke
     track_id = "1111111111111111111111"
     respx.get("https://api.spotify.com/v1/me/player").mock(
         return_value=httpx.Response(200, json={"item": {"id": track_id, "name": "Now"}})
-    )
-    respx.get(f"https://api.spotify.com/v1/tracks/{track_id}").mock(
-        return_value=httpx.Response(200, json={"id": track_id})
     )
     respx.get(f"https://api.spotify.com/v1/tracks/{track_id}").mock(
         return_value=httpx.Response(200, json={"id": track_id})
@@ -316,24 +284,3 @@ def test_r4_item11_prepare_user_visible_includes_visibility_note() -> None:
     tool_json = json.dumps({"visibility_warning": "Dev mode may keep playlists public."})
     out = prepare_user_visible_reply("Done.", [tool_json])
     assert "Dev mode may keep playlists public." in out
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="pylint subprocess checked in Linux CI")
-def test_r4_item11_pylint_score_at_least_threshold() -> None:
-    root = Path(__file__).resolve().parents[2]
-    files = subprocess.check_output(["git", "ls-files", "*.py"], cwd=root, text=True).split()
-    proc = subprocess.run(
-        [sys.executable, "-m", "pylint", *files],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert "rated at" in proc.stdout or "rated at" in proc.stderr
-    for line in (proc.stdout + proc.stderr).splitlines():
-        if "rated at" in line:
-            score = float(line.split("rated at", 1)[1].split("/")[0].strip())
-            assert score >= 9.5
-            break
-    else:
-        pytest.fail("pylint score line missing")

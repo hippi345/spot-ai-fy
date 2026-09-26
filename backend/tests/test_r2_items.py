@@ -20,7 +20,11 @@ from spot_backend.gemini_llm import run_chat_turn_gemini
 from spot_backend.ollama_agent_profile import SMALL_MODEL_TOOL_NAMES, small_model_route_hint
 from spot_backend.setup_service import _ollama_cpu_profile
 from spot_backend.spotify_tools import SpotifyToolRunner, pick_latest_album_release
-from tests.recheck_helpers import install_cpu_only_ollama_profile_mocks, mock_artist_name_search
+from tests.recheck_helpers import (
+    install_cpu_only_ollama_profile_mocks,
+    make_gemini_post_recorder,
+    mock_artist_name_search,
+)
 from fastapi.testclient import TestClient
 
 
@@ -85,19 +89,18 @@ def test_r2_itemB_gemini_empty_turn_retries_then_succeeds(data_dir, signed_in_to
             ]
         },
     ]
-    call_idx = 0
+    call_idx = {"i": 0}
 
-    def fake_post(_self, url, **kwargs):
-        nonlocal call_idx
-        body = responses[min(call_idx, len(responses) - 1)]
-        call_idx += 1
-        req = httpx.Request("POST", str(url))
+    def handler(_body: dict[str, Any], _n: int, req: httpx.Request) -> httpx.Response:
+        body = responses[min(call_idx["i"], len(responses) - 1)]
+        call_idx["i"] += 1
         return httpx.Response(200, json=body, request=req)
 
+    _, fake_post = make_gemini_post_recorder(handler)
     with patch("httpx.Client.post", fake_post):
         text = run_chat_turn_gemini("hello there", settings)
     assert text == "Here is your answer."
-    assert call_idx == 2
+    assert call_idx["i"] == 2
 
 
 def test_r2_itemC_action_guard_reprompts_when_claim_without_tool(data_dir, signed_in_tokens) -> None:

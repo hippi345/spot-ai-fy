@@ -20,7 +20,11 @@ from spot_backend.gemini_llm import (
 )
 from spot_backend.setup_service import _ollama_cpu_profile
 from spot_backend.spotify_tools import SpotifyToolRunner, collect_catalog_ids_from_tool_json
-from tests.recheck_helpers import install_cpu_only_ollama_profile_mocks, mock_artist_name_search
+from tests.recheck_helpers import (
+    gemini_thought_then_pause_then_text_handler,
+    make_gemini_post_recorder,
+    mock_artist_name_search,
+)
 
 
 # r3_item01 — empty session: fake album id rejected; real id verified via GET
@@ -116,52 +120,9 @@ def test_r3_item02_collect_catalog_ids_nested() -> None:
 def test_r3_item03_gemini_empty_stop_retries_with_function_call(data_dir, signed_in_tokens) -> None:
     settings = Settings(gemini_api_key="test-key")
     bodies: list[dict[str, Any]] = []
-
-    def fake_post(_self, url, **kwargs):
-        json_body = kwargs.get("json") or {}
-        bodies.append(json_body)
-        req = httpx.Request("POST", str(url))
-        n = len(bodies)
-        if n == 1:
-            return httpx.Response(
-                200,
-                json={
-                    "candidates": [
-                        {
-                            "finishReason": "STOP",
-                            "content": {"parts": [{"text": "thinking…", "thought": True}]},
-                        }
-                    ]
-                },
-                request=req,
-            )
-        if n == 2:
-            return httpx.Response(
-                200,
-                json={
-                    "candidates": [
-                        {
-                            "finishReason": "STOP",
-                            "content": {
-                                "parts": [{"functionCall": {"name": "spotify_pause", "args": {}}}],
-                            },
-                        }
-                    ]
-                },
-                request=req,
-            )
-        return httpx.Response(
-            200,
-            json={
-                "candidates": [
-                    {
-                        "finishReason": "STOP",
-                        "content": {"parts": [{"text": "Playback is paused."}]},
-                    }
-                ]
-            },
-            request=req,
-        )
+    _, fake_post = make_gemini_post_recorder(
+        gemini_thought_then_pause_then_text_handler(bodies)
+    )
 
     respx.put("https://api.spotify.com/v1/me/player/pause").mock(return_value=httpx.Response(204))
     with patch("httpx.Client.post", fake_post):
@@ -332,18 +293,13 @@ def test_r3_item10_latest_album_skips_feature_single(data_dir, signed_in_tokens)
 def test_r3_item10_artist_search_exact_name_match(data_dir, signed_in_tokens) -> None:
     sza_id = "ssssssssssssssssssssss"
     walker_id = "wwwwwwwwwwwwwwwwwwwwww"
-    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "artists": {
-                    "items": [
-                        {"id": walker_id, "name": "Summer Walker"},
-                        {"id": sza_id, "name": "SZA"},
-                    ],
-                }
-            },
-        )
+    mock_artist_name_search(
+        sza_id,
+        "SZA",
+        extra_items=[
+            {"id": walker_id, "name": "Summer Walker"},
+            {"id": sza_id, "name": "SZA"},
+        ],
     )
     runner = SpotifyToolRunner(settings=Settings())
     cid = runner._first_artist_id_from_search("SZA", "US")
