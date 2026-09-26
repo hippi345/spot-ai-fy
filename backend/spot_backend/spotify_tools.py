@@ -1495,23 +1495,25 @@ class SpotifyToolRunner:
         )
         if not track_id:
             return json.dumps({"error": "track_id is required"})
-        max_playlists = _safe_int(arguments.get("max_playlists"), 30, lo=1, hi=60)
+        max_playlists = _safe_int(arguments.get("max_playlists"), 50, lo=1, hi=200)
         max_pages_per_playlist = _safe_int(arguments.get("max_pages_per_playlist"), 3, lo=1, hi=10)
         want_uri = f"spotify:track:{track_id}"
         matches: list[dict[str, Any]] = []
         offset = 0
-        playlists_scanned = 0
+        scanned = 0
+        pages_fetched = 0
         truncated = False
         page: dict[str, Any] = {}
-        while playlists_scanned < max_playlists:
+        while scanned < max_playlists:
             page = self.client.api_get("/me/playlists", params={"limit": 50, "offset": offset})
+            pages_fetched += 1
             if not isinstance(page, dict):
                 break
             items = page.get("items") if isinstance(page.get("items"), list) else []
             if not items:
                 break
             for pl in items:
-                if playlists_scanned >= max_playlists:
+                if scanned >= max_playlists:
                     truncated = True
                     break
                 if not isinstance(pl, dict):
@@ -1519,7 +1521,7 @@ class SpotifyToolRunner:
                 pid = pl.get("id")
                 if not isinstance(pid, str):
                     continue
-                playlists_scanned += 1
+                scanned += 1
                 name = pl.get("name")
                 owner = pl.get("owner") if isinstance(pl.get("owner"), dict) else {}
                 found = False
@@ -1529,6 +1531,7 @@ class SpotifyToolRunner:
                         f"/playlists/{pid}/items",
                         params={"limit": 100, "offset": track_offset, "fields": "items(item(id,uri)),next"},
                     )
+                    pages_fetched += 1
                     if not isinstance(tr_page, dict):
                         break
                     rows = tr_page.get("items") if isinstance(tr_page.get("items"), list) else []
@@ -1561,17 +1564,18 @@ class SpotifyToolRunner:
             if not page.get("next"):
                 break
             offset += 50
-        if isinstance(page, dict) and page.get("next") and playlists_scanned >= max_playlists:
+        if isinstance(page, dict) and page.get("next") and scanned >= max_playlists:
             truncated = True
         out: dict[str, Any] = {
             "track_id": track_id,
             "playlists": matches,
-            "playlists_scanned": playlists_scanned,
+            "scanned": scanned,
             "truncated": truncated,
+            "pages_fetched": pages_fetched,
         }
         if truncated:
             out["note"] = (
-                f"Stopped after scanning {playlists_scanned} playlists (max_playlists={max_playlists}). "
+                f"Stopped after scanning {scanned} playlists (max_playlists={max_playlists}). "
                 "Increase max_playlists or narrow with spotify_user_playlists if you need full coverage."
             )
         return json.dumps(out, ensure_ascii=False)
@@ -3598,7 +3602,7 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             "name": "spotify_playlists_containing_track",
             "description": (
                 "Composite: scan the user's owned and followed playlists for a track id. "
-                "Stops after max_playlists (default 30) with truncated=true when capped."
+                "Stops after max_playlists (default 50, max 200) with truncated=true when capped."
             ),
             "parameters": {
                 "type": "object",

@@ -12,6 +12,14 @@ import httpx
 from spot_backend.config import Settings, get_settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
 from spot_backend.llm_prefs import read_effective_llm_provider, read_effective_ollama_model
+from spot_backend.ollama_agent_profile import (
+    SMALL_MODEL_SYSTEM_PROMPT,
+    apply_ollama_request_tuning,
+    filter_ollama_tools,
+    maybe_warn_prompt_exceeds_ctx,
+    should_retry_ollama_without_think,
+    use_small_model_mode,
+)
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
 
 _SYSTEM = """You are a Spotify assistant with tools to read the user's library and control playback.
@@ -406,7 +414,11 @@ def iter_ollama_chat_events(
     runner = SpotifyToolRunner(settings=settings)
     try:
         ollama_model = read_effective_ollama_model(settings.data_dir, settings.ollama_model)
-        base_system = _SYSTEM + load_optional_agent_context_markdown(settings)
+        small_model = use_small_model_mode(settings, ollama_model)
+        base_system = (
+            SMALL_MODEL_SYSTEM_PROMPT if small_model else _SYSTEM
+        ) + load_optional_agent_context_markdown(settings)
+        active_tools = filter_ollama_tools(OLLAMA_TOOLS, small=small_model)
         messages: list[dict[str, Any]] = [{"role": "system", "content": base_system}]
         history_turns = _coerce_chat_history(history)
         hist_cap = int(getattr(settings, "ollama_history_messages", 0) or 0)
@@ -424,6 +436,8 @@ def iter_ollama_chat_events(
         ollama_options: dict[str, Any] = {}
         if settings.ollama_num_ctx and settings.ollama_num_ctx > 0:
             ollama_options["num_ctx"] = int(settings.ollama_num_ctx)
+        if int(getattr(settings, "ollama_num_thread", 0) or 0) > 0:
+            ollama_options["num_thread"] = int(settings.ollama_num_thread)
         ollama_keep_alive = (settings.ollama_keep_alive or "").strip()
         tool_result_cap = int(getattr(settings, "ollama_tool_result_max", 0) or 0)
         if tool_result_cap <= 0:
@@ -431,19 +445,11 @@ def iter_ollama_chat_events(
         steps_override = int(getattr(settings, "ollama_max_steps", 0) or 0)
         max_steps = steps_override if steps_override > 0 else int(settings.agent_max_steps)
 
-        def _apply_ollama_tuning(b: dict[str, Any]) -> dict[str, Any]:
-            if ollama_options:
-                existing = b.get("options")
-                if isinstance(existing, dict):
-                    merged = {**ollama_options, **existing}
-                else:
-                    merged = dict(ollama_options)
-                b["options"] = merged
-            if ollama_keep_alive:
-                b["keep_alive"] = ollama_keep_alive
-            return b
+        omit_think_field = False
 
         connect_bits = [ollama_model]
+        if small_model:
+            connect_bits.append("small-model-tools")
         if ollama_options.get("num_ctx"):
             connect_bits.append(f"ctx={ollama_options['num_ctx']}")
         if ollama_keep_alive:
@@ -482,12 +488,27 @@ def iter_ollama_chat_events(
                         if json_mode_patched and _json_mode_expecting_first_tool_result(messages):
                             body["format"] = "json"
                         if native_tools:
-                            body["tools"] = OLLAMA_TOOLS
-                        _apply_ollama_tuning(body)
+                            body["tools"] = active_tools
+                        apply_ollama_request_tuning(
+                            body, settings, ollama_options, omit_think_field=omit_think_field
+                        )
+                        if settings.ollama_num_ctx and settings.ollama_num_ctx > 0:
+                            maybe_warn_prompt_exceeds_ctx(
+                                messages,
+                                body.get("tools") if native_tools else None,
+                                int(settings.ollama_num_ctx),
+                            )
 
                         with client.stream("POST", url, json=body) as r:
-                            if r.status_code == 400 and native_tools:
+                            err_body = ""
+                            if r.status_code == 400:
                                 err_body = r.read().decode("utf-8", errors="replace")
+                                if should_retry_ollama_without_think(
+                                    r.status_code, err_body, body
+                                ):
+                                    omit_think_field = True
+                                    continue
+                            if r.status_code == 400 and native_tools and err_body:
                                 if _ollama_tools_unsupported_error(err_body):
                                     native_tools = False
                                     if not json_mode_patched:

@@ -172,7 +172,7 @@ Best for privacy, offline use, and "I already have a GPU / spare laptop running 
 **Tuning for CPU-only machines.** Ollama's default context is 4096 tokens, which routinely gets silently truncated by Spot-AI-fy's system prompt + history + tool results. The following knobs (all Ollama-only — they do not affect Gemini) are safe defaults on a 16 GB CPU laptop:
 
 ```ini
-OLLAMA_NUM_CTX=8192            # stop silent "truncating input prompt" warnings
+OLLAMA_NUM_CTX=16384           # default; agent prompt + tools need >8k tokens
 OLLAMA_KEEP_ALIVE=30m          # skip the cold-load penalty between prompts (can be 1–2 min on CPU)
 OLLAMA_HISTORY_MESSAGES=10     # only replay the last N UI messages each round
 OLLAMA_TOOL_RESULT_MAX=5000    # cap per-tool result bytes fed back into the prompt
@@ -228,7 +228,9 @@ All variables live in `backend/.env` (see [`backend/.env.example`](backend/.env.
 | `FRONTEND_ORIGIN` | CORS origin for the Vite dev server (default `http://localhost:5173`). |
 | `LLM_PROVIDER` | `ollama` (default, local) or `gemini` (cloud). Runtime overridable from the UI. |
 | `OLLAMA_HOST` / `OLLAMA_MODEL` | Ollama endpoint and default model tag. Model tag is overridable from the UI (dropdown is populated from `ollama list`). |
-| `OLLAMA_NUM_CTX` | Ollama context window in tokens. Default `8192` to avoid silent truncation of long prompts. Set `0` to use the model's built-in default. |
+| `OLLAMA_NUM_CTX` | Ollama context window in tokens. Default `16384` (full tool list is ~10k+ tokens). Set `0` to use the model's built-in default. |
+| `OLLAMA_THINK` | When `false` (default), sends `"think": false` to Ollama; retries once without the field if the model rejects it. |
+| `OLLAMA_NUM_THREAD` | Optional CPU thread hint (`options.num_thread`). `0` = omit. |
 | `OLLAMA_KEEP_ALIVE` | How long Ollama keeps the model resident after the last request (e.g. `30m`, `2h`, `-1` = forever). Avoids the ~100 s cold-load penalty on CPU. |
 | `OLLAMA_HISTORY_MESSAGES` | Number of previous chat messages replayed to Ollama each round. `0` = send everything the UI passed (currently up to 40). Recommended `10` for CPU. |
 | `OLLAMA_TOOL_RESULT_MAX` | Character cap on each tool result fed back into the Ollama prompt. `0` = use the built-in 12 000-char default. Recommended `5000` for CPU. |

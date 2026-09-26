@@ -28,6 +28,8 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [ollamaAllowPublic, setOllamaAllowPublic] = useState(false);
+  const [smallModelMode, setSmallModelMode] = useState<"auto" | "on" | "off">("auto");
 
   const refresh = useCallback(async () => {
     const s = await fetchSetupStatus();
@@ -35,6 +37,7 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
     setProvider(s.provider === "gemini" ? "gemini" : "ollama");
     if (s.ollama_host) setOllamaHost(s.ollama_host);
     if (s.ollama_model) setOllamaModel(s.ollama_model);
+    else if (!ollamaModel) setOllamaModel("qwen3:4b-instruct");
     if (s.gemini_model) setGeminiModel(s.gemini_model);
     if (s.setup_complete) onComplete();
     if (s.spotify_configured && s.spotify_signed_in) setStep(2);
@@ -78,7 +81,7 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
     setBusy(true);
     setError(null);
     try {
-      const out = await probeOllama(ollamaHost.trim());
+      const out = await probeOllama(ollamaHost.trim(), ollamaAllowPublic);
       setOllamaModels(out.models);
       if (!out.reachable) setError(out.error ?? "Ollama is not reachable");
       else if (out.models.length && !ollamaModel) setOllamaModel(out.models[0]);
@@ -99,6 +102,8 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
         ollama_host: provider === "ollama" ? ollamaHost.trim() : undefined,
         ollama_model: provider === "ollama" ? ollamaModel.trim() : undefined,
         gemini_model: provider === "gemini" ? geminiModel.trim() : undefined,
+        ollama_allow_public: provider === "ollama" ? ollamaAllowPublic : undefined,
+        ollama_small_model_mode: provider === "ollama" ? smallModelMode : undefined,
         test: true,
       });
       if (out.models?.length) {
@@ -199,9 +204,19 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
                   value={ollamaHost}
                   onChange={(e) => setOllamaHost(e.target.value)}
                 />
-                <button type="button" onClick={() => void detectOllama()} disabled={busy}>
-                  Detect models
-                </button>
+                <div className="btn-row">
+                  <button type="button" onClick={() => void detectOllama()} disabled={busy}>
+                    Detect models
+                  </button>
+                </div>
+                <label className="control-label">
+                  <input
+                    type="checkbox"
+                    checked={ollamaAllowPublic}
+                    onChange={(e) => setOllamaAllowPublic(e.target.checked)}
+                  />
+                  Allow Ollama on the public internet (not recommended)
+                </label>
                 <label className="control-label" htmlFor="ollama-model">Model</label>
                 {ollamaModels.length ? (
                   <select
@@ -220,9 +235,20 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
                     className="setup-input"
                     value={ollamaModel}
                     onChange={(e) => setOllamaModel(e.target.value)}
-                    placeholder="e.g. qwen2.5:3b-instruct"
+                    placeholder="e.g. qwen3:4b-instruct (lighter: qwen2.5:3b-instruct)"
                   />
                 )}
+                <label className="control-label" htmlFor="small-model-mode">Small-model tool set</label>
+                <select
+                  id="small-model-mode"
+                  value={smallModelMode}
+                  onChange={(e) => setSmallModelMode(e.target.value as "auto" | "on" | "off")}
+                  disabled={busy}
+                >
+                  <option value="auto">Auto (models under ~8B)</option>
+                  <option value="on">Always on</option>
+                  <option value="off">Off (full tool list)</option>
+                </select>
               </>
             ) : (
               <>
@@ -270,7 +296,12 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
         )}
 
         {error ? <div className="error">{error}</div> : null}
-        {status?.llm_error && step === 2 ? <p className="hint">{status.llm_error}</p> : null}
+        {step === 2 && provider === "ollama" && ollamaHost.trim() && !ollamaModel.trim() ? (
+          <p className="hint">Select or enter an Ollama model name (try Detect models).</p>
+        ) : null}
+        {status?.llm_error && step === 2 && !(provider === "ollama" && ollamaHost.trim()) ? (
+          <p className="hint">{status.llm_error}</p>
+        ) : null}
       </div>
     </div>
   );

@@ -36,12 +36,12 @@ def test_setup_spotify_app_masks_client_id(
     data_dir, client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setenv("SPOTIFY_CLIENT_ID", "")
-    r = client.post("/api/setup/spotify-app", json={"client_id": "my-secret-client-id-12345"})
+    r = client.post("/api/setup/spotify-app", json={"client_id": "b" * 32})
     assert r.status_code == 200
     body = r.json()
     assert body["spotify_client_id_masked"] == "••••••••"
-    assert "my-secret-client-id" not in r.text
-    assert "my-secret-client-id" not in caplog.text
+    assert "bbbbbbbb" not in r.text
+    assert "bbbbbbbb" not in caplog.text
 
 
 def _assert_gemini_success_followups(
@@ -237,6 +237,21 @@ def test_setup_ollama_probe_unreachable(data_dir, client: TestClient) -> None:
     assert body["reachable"] is False
     assert body["models"] == []
     assert body["error"]
+
+
+@respx.mock
+def test_setup_probe_blocks_metadata_host(data_dir, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ipaddress
+
+    monkeypatch.setattr(
+        "spot_backend.url_safety.resolve_host_ips",
+        lambda _h: [ipaddress.ip_address("169.254.169.254")],
+    )
+    r = client.get("/api/setup/ollama/probe", params={"host": "http://169.254.169.254"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["reachable"] is False
+    assert "blocked" in (body["error"] or "").lower()
 
 
 def test_write_secret_never_logged(

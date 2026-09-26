@@ -82,14 +82,17 @@ def read_setup_fields(data_dir: Path) -> dict[str, Any]:
 
 
 def write_setup_fields(data_dir: Path, patch: dict[str, Any]) -> None:
-    cur = read_setup_fields(data_dir)
-    for k, v in patch.items():
-        if v is None:
-            cur.pop(k, None)
-        else:
-            cur[k] = v
-    data_dir.mkdir(parents=True, exist_ok=True)
-    _write_json_private(_setup_path(data_dir), cur)
+    from spot_backend.data_dir_lock import data_dir_lock
+
+    with data_dir_lock(data_dir):
+        cur = read_setup_fields(data_dir)
+        for k, v in patch.items():
+            if v is None:
+                cur.pop(k, None)
+            else:
+                cur[k] = v
+        data_dir.mkdir(parents=True, exist_ok=True)
+        _write_json_private(_setup_path(data_dir), cur)
 
 
 def _keyring_get(key: str) -> str | None:
@@ -158,12 +161,19 @@ def read_secret(data_dir: Path, key: str) -> str:
 
 def write_secret(data_dir: Path, key: str, value: str) -> str:
     """Store secret; returns storage backend used: keyring | file."""
+    from spot_backend.data_dir_lock import data_dir_lock
+
     if key not in _SECRET_KEYS:
         raise ValueError(f"unknown secret key: {key}")
     v = value.strip()
     if not v:
         raise ValueError("secret value must be non-empty")
-    if _keyring_set(key, v):
+    with data_dir_lock(data_dir):
+        return _write_secret_locked(data_dir, key, v)
+
+
+def _write_secret_locked(data_dir: Path, key: str, value: str) -> str:
+    if _keyring_set(key, value):
         # Remove file copy so we don't keep duplicates.
         raw = _load_json(_secrets_path(data_dir))
         if key in raw:
@@ -173,7 +183,7 @@ def write_secret(data_dir: Path, key: str, value: str) -> str:
             elif _secrets_path(data_dir).is_file():
                 _secrets_path(data_dir).unlink()
         return "keyring"
-    _write_file_secret(data_dir, key, v)
+    _write_file_secret(data_dir, key, value)
     return "file"
 
 

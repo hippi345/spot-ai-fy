@@ -26,7 +26,9 @@ from spot_backend.secrets_store import (
     write_secret,
     write_setup_fields,
 )
+from spot_backend.spotify_setup import validate_spotify_client_id
 from spot_backend.token_store import load_tokens
+from spot_backend.url_safety import OllamaUrlNotAllowedError, validate_ollama_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +38,26 @@ def _signed_in(settings: Settings) -> bool:
     return bool(bundle and bundle.access_token)
 
 
-def _ollama_ready(settings: Settings, *, model_override: str | None = None) -> tuple[bool, str | None]:
+def _ollama_ready(
+    settings: Settings,
+    *,
+    model_override: str | None = None,
+    allow_public: bool = False,
+) -> tuple[bool, str | None]:
     host = settings.ollama_host.rstrip("/")
     model = (model_override or "").strip() or read_effective_ollama_model(
         settings.data_dir, settings.ollama_model
     )
-    if not host or not model:
-        return False, "Ollama host and model are required"
+    if not host:
+        return False, "Ollama URL is required"
+    if not model:
+        return False, "Select or enter an Ollama model name"
     try:
-        r = httpx.get(f"{host}/api/tags", timeout=5.0)
+        base = validate_ollama_base_url(host, allow_public=allow_public)
+    except OllamaUrlNotAllowedError as e:
+        return False, str(e)
+    try:
+        r = httpx.get(f"{base}/api/tags", timeout=5.0)
         r.raise_for_status()
         data = r.json()
         names = [
@@ -109,8 +122,9 @@ def _trial_settings_for_llm_test(
     provider: Literal["gemini", "ollama"],
     gemini_api_key: str | None,
     ollama_host: str | None,
-    ollama_model: str | None,
+    _ollama_model: str | None,
     data_dir,
+    allow_public: bool = False,
 ) -> Settings:
     """Build settings as if proposed values were saved (without persisting)."""
     base = merge_settings_from_store(Settings())
@@ -126,7 +140,7 @@ def _trial_settings_for_llm_test(
     else:
         host_in = (ollama_host or "").strip()
         if host_in:
-            updates["ollama_host"] = host_in.rstrip("/")
+            updates["ollama_host"] = validate_ollama_base_url(host_in, allow_public=allow_public)
     return base.model_copy(update=updates) if updates else base
 
 
@@ -172,9 +186,7 @@ def setup_status() -> dict[str, Any]:
 
 
 def save_spotify_app(client_id: str) -> dict[str, Any]:
-    cid = client_id.strip()
-    if not cid:
-        raise ValueError("client_id is required")
+    cid = validate_spotify_client_id(client_id)
     s = get_settings()
     write_setup_fields(s.data_dir, {"spotify_client_id": cid})
     logger.info("spotify app client id saved to setup.json (masked=%s)", mask_secret(cid))
@@ -217,6 +229,8 @@ def save_llm_setup(
     ollama_model: str | None = None,
     gemini_model: str | None = None,
     test: bool = True,
+    ollama_allow_public: bool = False,
+    ollama_small_model_mode: str | None = None,
 ) -> dict[str, Any]:
     s = get_settings()
     env_base = Settings()
@@ -241,15 +255,22 @@ def save_llm_setup(
             ollama_host=ollama_host,
             ollama_model=ollama_model,
             data_dir=s.data_dir,
+            allow_public=ollama_allow_public,
         )
         if provider == "gemini":
             ready, err = _gemini_ready(trial, model_override=gemini_model_eff)
         else:
-            ready, err = _ollama_ready(trial, model_override=ollama_model_eff)
+            ready, err = _ollama_ready(
+                trial, model_override=ollama_model_eff, allow_public=ollama_allow_public
+            )
         if not ready:
             raise ValueError(err or f"{provider} validation failed")
 
     write_llm_provider(s.data_dir, provider)
+    if ollama_small_model_mode:
+        from spot_backend.llm_prefs import write_ollama_small_model_mode
+
+        write_ollama_small_model_mode(s.data_dir, ollama_small_model_mode)
 
     if provider == "gemini":
         key_in = (gemini_api_key or "").strip()
@@ -261,7 +282,9 @@ def save_llm_setup(
     else:
         patch: dict[str, Any] = {}
         if ollama_host and ollama_host.strip():
-            patch["ollama_host"] = ollama_host.strip().rstrip("/")
+            patch["ollama_host"] = validate_ollama_base_url(
+                ollama_host.strip(), allow_public=ollama_allow_public
+            )
         if patch:
             write_setup_fields(s.data_dir, patch)
         if ollama_model_eff:
@@ -298,10 +321,11 @@ def save_llm_setup(
     return out
 
 
-def probe_ollama(host: str) -> dict[str, Any]:
-    base = host.strip().rstrip("/")
-    if not base:
-        raise ValueError("host is required")
+def probe_ollama(host: str, *, allow_public: bool = False) -> dict[str, Any]:
+    try:
+        base = validate_ollama_base_url(host, allow_public=allow_public)
+    except OllamaUrlNotAllowedError as e:
+        return {"reachable": False, "models": [], "error": str(e)}
     try:
         r = httpx.get(f"{base}/api/tags", timeout=5.0)
         r.raise_for_status()

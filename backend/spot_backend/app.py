@@ -77,7 +77,7 @@ class GeminiModelBody(BaseModel):
 
 
 class SpotifyAppSetupBody(BaseModel):
-    client_id: str = Field(..., min_length=1, max_length=200)
+    client_id: str = Field(default="", max_length=200)
 
 
 class LlmSetupBody(BaseModel):
@@ -86,6 +86,8 @@ class LlmSetupBody(BaseModel):
     ollama_host: str | None = Field(default=None, max_length=500)
     ollama_model: str | None = Field(default=None, max_length=200)
     gemini_model: str | None = Field(default=None, max_length=200)
+    ollama_allow_public: bool = False
+    ollama_small_model_mode: Literal["auto", "on", "off"] | None = None
     test: bool = True
 
 
@@ -112,14 +114,16 @@ def api_setup_llm(body: LlmSetupBody) -> dict[str, Any]:
             ollama_model=body.ollama_model,
             gemini_model=body.gemini_model,
             test=body.test,
+            ollama_allow_public=body.ollama_allow_public,
+            ollama_small_model_mode=body.ollama_small_model_mode,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.get("/api/setup/ollama/probe")
-def api_setup_ollama_probe(host: str) -> dict[str, Any]:
-    return probe_ollama(host)
+def api_setup_ollama_probe(host: str, allow_public: bool = False) -> dict[str, Any]:
+    return probe_ollama(host, allow_public=allow_public)
 
 
 @app.get("/login")

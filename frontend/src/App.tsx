@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { SetupWizard } from "./SetupWizard";
-import { fetchSetupStatus } from "./lib/api";
+import { fetchSetupStatus, type SetupStatus } from "./lib/api";
 import { isChatBlockedBySetup } from "./lib/setupGate";
 
 
@@ -187,12 +187,14 @@ export function App() {
 
   const [geminiCustomModel, setGeminiCustomModel] = useState("");
 
-  const [setupComplete, setSetupComplete] = useState(true);
+  const [setupComplete, setSetupComplete] = useState(false);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
 
   const refreshSetup = useCallback(async () => {
     try {
       const s = await fetchSetupStatus();
+      setSetupStatus(s);
       const ready = !isChatBlockedBySetup(s) && s.spotify_configured;
       setSetupComplete(ready);
       if (!ready) setShowSetupWizard(true);
@@ -1086,12 +1088,14 @@ export function App() {
   const showTracePanel = llm?.provider === "ollama" && traceSteps.length > 0;
 
   const statusChips = useMemo(() => {
-    const spotifyLabel = `Spotify — ${session?.signed_in ? "Connected" : "Not connected"}`;
+    let spotifyLabel = "Spotify — Not connected";
+    if (session?.signed_in) spotifyLabel = "Spotify — Connected";
+    else if (setupStatus?.spotify_configured) spotifyLabel = "Spotify — Client ID saved, sign in to connect";
     const llmName = llm?.provider === "gemini" ? "Gemini" : "Ollama";
-    const llmConnected = Boolean(llm?.reachable);
+    const llmConnected = Boolean(setupStatus?.llm_ready ?? llm?.reachable);
     const llmLabel = `${llmName} — ${llmConnected ? "Connected" : "Not connected"}`;
     return `${spotifyLabel} · ${llmLabel}`;
-  }, [session?.signed_in, llm?.provider, llm?.reachable]);
+  }, [session?.signed_in, llm?.provider, llm?.reachable, setupStatus]);
 
 
 
@@ -1109,11 +1113,14 @@ export function App() {
 
         </div>
 
-        <p className="status-chips" aria-live="polite">
-
-          {statusChips}
-
-        </p>
+        <div className="app-header-actions">
+          <p className="status-chips" aria-live="polite">
+            {statusChips}
+          </p>
+          <button type="button" className="header-setup-btn" onClick={() => setShowSetupWizard(true)}>
+            Setup
+          </button>
+        </div>
 
       </header>
 
@@ -1570,7 +1577,7 @@ export function App() {
 
                     {" "}
 
-                    — {llm.provider === "gemini" ? "Check GEMINI_MODEL." : `Try: ollama pull ${llm.configured_model || "gemma2:2b"}`}
+                    — {llm.provider === "gemini" ? "Check GEMINI_MODEL." : `Try: ollama pull ${llm.configured_model || "qwen3:4b-instruct"}`}
 
                   </span>
 

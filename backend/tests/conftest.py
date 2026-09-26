@@ -13,7 +13,7 @@ from spot_backend.token_store import TokenBundle, save_tokens
 def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolated DATA_DIR; never touches ~/.spot_ai_fy."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "test-spotify-client-id")
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "a" * 32)
     monkeypatch.setenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8765/callback")
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:11434")

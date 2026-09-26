@@ -27,6 +27,13 @@ def _load_prefs_raw(data_dir: Path) -> dict[str, Any]:
 
 def _persist_prefs(data_dir: Path, raw: dict[str, Any]) -> None:
     """Write normalized prefs, or remove the file if nothing to store."""
+    from spot_backend.data_dir_lock import data_dir_lock
+
+    with data_dir_lock(data_dir):
+        _persist_prefs_unlocked(data_dir, raw)
+
+
+def _persist_prefs_unlocked(data_dir: Path, raw: dict[str, Any]) -> None:
     clean: dict[str, Any] = {}
     p = str(raw.get("provider", "")).strip().lower()
     if p in ("ollama", "gemini"):
@@ -37,6 +44,9 @@ def _persist_prefs(data_dir: Path, raw: dict[str, Any]) -> None:
     gm = raw.get("gemini_model")
     if isinstance(gm, str) and gm.strip():
         clean["gemini_model"] = gm.strip()
+    sm = raw.get("ollama_small_model")
+    if isinstance(sm, str) and sm.strip().lower() in ("auto", "on", "off"):
+        clean["ollama_small_model"] = sm.strip().lower()
     path = _prefs_path(data_dir)
     if not clean:
         if path.is_file():
@@ -61,7 +71,7 @@ def read_effective_ollama_model(data_dir: Path, env_model: str) -> str:
     om = raw.get("ollama_model")
     if isinstance(om, str) and om.strip():
         return om.strip()
-    return (env_model or "gemma2:2b").strip()
+    return (env_model or "qwen3:4b-instruct").strip()
 
 
 def write_llm_provider(data_dir: Path, provider: str) -> None:
@@ -129,3 +139,19 @@ def ollama_model_override_active(data_dir: Path) -> bool:
 def gemini_model_override_active(data_dir: Path) -> bool:
     gm = _load_prefs_raw(data_dir).get("gemini_model")
     return isinstance(gm, str) and bool(gm.strip())
+
+
+def read_ollama_small_model_mode(data_dir: Path) -> str:
+    raw = _load_prefs_raw(data_dir).get("ollama_small_model")
+    if isinstance(raw, str) and raw.strip().lower() in ("auto", "on", "off"):
+        return raw.strip().lower()
+    return "auto"
+
+
+def write_ollama_small_model_mode(data_dir: Path, mode: str) -> None:
+    m = mode.strip().lower()
+    if m not in ("auto", "on", "off"):
+        raise ValueError("ollama_small_model must be auto, on, or off")
+    raw = _load_prefs_raw(data_dir)
+    raw["ollama_small_model"] = m
+    _persist_prefs(data_dir, raw)

@@ -4,6 +4,7 @@ jobs = 0
 ignore-paths = [
     "backend/\\.venv/.*",
     "frontend/.*",
+    "backend/scripts/.*",
 ]
 
 [tool.pylint."messages control"]

@@ -106,6 +106,8 @@ def test_playlists_containing_track_truncated(data_dir, signed_in_tokens) -> Non
     )
     data = json.loads(raw)
     assert data["truncated"] is True
+    assert data["scanned"] == 1
+    assert data["pages_fetched"] >= 1
     assert len(data["playlists"]) == 1
     runner.close()
 

@@ -63,6 +63,8 @@ export async function saveLlmSetup(body: {
   ollama_host?: string;
   ollama_model?: string;
   gemini_model?: string;
+  ollama_allow_public?: boolean;
+  ollama_small_model_mode?: "auto" | "on" | "off";
   test?: boolean;
 }): Promise<{ reachable?: boolean; models?: string[] }> {
   return readJson(
@@ -74,11 +76,15 @@ export async function saveLlmSetup(body: {
   );
 }
 
-export async function probeOllama(host: string): Promise<{
+export async function probeOllama(
+  host: string,
+  allowPublic = false,
+): Promise<{
   reachable: boolean;
   models: string[];
   error: string | null;
 }> {
   const q = new URLSearchParams({ host });
+  if (allowPublic) q.set("allow_public", "true");
   return readJson(await apiFetch(`/api/setup/ollama/probe?${q.toString()}`));
 }
