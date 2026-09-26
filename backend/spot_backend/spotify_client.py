@@ -52,10 +52,36 @@ class SpotifyAuthError(RuntimeError):
     pass
 
 
+class SpotifyRateLimitError(RuntimeError):
+    """Spotify returned 429 twice; message includes Retry-After seconds for the user."""
+
+
+_SPOTIFY_RATE_LIMIT_MAX_SLEEP_SECONDS = 5.0
+
+
+def _retry_after_seconds(response: httpx.Response) -> int:
+    raw = (response.headers.get("Retry-After") or "1").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 1
+
+
+def _rate_limit_sleep_seconds(response: httpx.Response) -> float:
+    return min(float(_retry_after_seconds(response)), _SPOTIFY_RATE_LIMIT_MAX_SLEEP_SECONDS)
+
+
+def _rate_limit_user_message(response: httpx.Response) -> str:
+    n = _retry_after_seconds(response)
+    return f"Spotify rate limited, try again in {n} s"
+
+
 class SpotifyClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self._http = httpx.Client(timeout=30.0)
+        # Injectable for tests (defaults to real sleep between 429 retries).
+        self._rate_limit_sleep = time.sleep
 
     def close(self) -> None:
         self._http.close()
@@ -155,17 +181,45 @@ class SpotifyClient:
         save_tokens(self.settings.resolved_token_path, bundle)
         return bundle
 
-    def api_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    def _api_url(self, path: str) -> str:
+        return path if path.startswith("http") else f"{API}{path}"
+
+    def _authorized_request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        def _do(access_token: str) -> httpx.Response:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            kw: dict[str, Any] = {"headers": headers}
+            if params is not None:
+                kw["params"] = params
+            if json_body is not None:
+                kw["json"] = json_body
+            return self._http.request(method, url, **kw)
+
         token = self.ensure_fresh_access_token()
-        url = path if path.startswith("http") else f"{API}{path}"
-        r = self._http.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
-        if r.status_code == 401:
-            b = self.load_bundle()
-            if b and b.refresh_token:
-                self._refresh(b)
+        response = _do(token)
+        if response.status_code == 401:
+            bundle = self.load_bundle()
+            if bundle and bundle.refresh_token:
+                self._refresh(bundle)
+                token = self.ensure_fresh_access_token()
+                response = _do(token)
+        if response.status_code == 429:
+            self._rate_limit_sleep(_rate_limit_sleep_seconds(response))
             token = self.ensure_fresh_access_token()
-            r = self._http.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
-        r.raise_for_status()
+            response = _do(token)
+            if response.status_code == 429:
+                raise SpotifyRateLimitError(_rate_limit_user_message(response))
+        response.raise_for_status()
+        return response
+
+    def api_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        r = self._authorized_request("GET", self._api_url(path), params=params)
         return _parse_json_or_none(r)
 
     def api_put(
@@ -174,45 +228,11 @@ class SpotifyClient:
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        token = self.ensure_fresh_access_token()
-        url = path if path.startswith("http") else f"{API}{path}"
-        headers = {"Authorization": f"Bearer {token}"}
-        kw: dict[str, Any] = {"headers": headers}
-        if params is not None:
-            kw["params"] = params
-        if json_body is not None:
-            kw["json"] = json_body
-        r = self._http.put(url, **kw)
-        if r.status_code == 401:
-            b = self.load_bundle()
-            if b and b.refresh_token:
-                self._refresh(b)
-            token = self.ensure_fresh_access_token()
-            headers = {"Authorization": f"Bearer {token}"}
-            kw = {"headers": headers}
-            if params is not None:
-                kw["params"] = params
-            if json_body is not None:
-                kw["json"] = json_body
-            r = self._http.put(url, **kw)
-        r.raise_for_status()
+        r = self._authorized_request("PUT", self._api_url(path), json_body=json_body, params=params)
         return _parse_json_or_none(r)
 
     def api_post(self, path: str, json_body: dict[str, Any] | None = None, params: dict[str, Any] | None = None) -> Any:
-        token = self.ensure_fresh_access_token()
-        url = path if path.startswith("http") else f"{API}{path}"
-        r = self._http.post(
-            url, json=json_body, params=params, headers={"Authorization": f"Bearer {token}"}
-        )
-        if r.status_code == 401:
-            b = self.load_bundle()
-            if b and b.refresh_token:
-                self._refresh(b)
-            token = self.ensure_fresh_access_token()
-            r = self._http.post(
-                url, json=json_body, params=params, headers={"Authorization": f"Bearer {token}"}
-            )
-        r.raise_for_status()
+        r = self._authorized_request("POST", self._api_url(path), json_body=json_body, params=params)
         return _parse_json_or_none(r)
 
     def api_delete(
@@ -221,26 +241,5 @@ class SpotifyClient:
         # Use .request("DELETE", ...) rather than .delete(...) because httpx >= 0.28 removed
         # body kwargs (json=/data=/content=) from the convenience .delete() method. Spotify's
         # DELETE /playlists/{id}/items requires a JSON body, so we must send it via request().
-        token = self.ensure_fresh_access_token()
-        url = path if path.startswith("http") else f"{API}{path}"
-        headers = {"Authorization": f"Bearer {token}"}
-        kw: dict[str, Any] = {"headers": headers}
-        if params is not None:
-            kw["params"] = params
-        if json_body is not None:
-            kw["json"] = json_body
-        r = self._http.request("DELETE", url, **kw)
-        if r.status_code == 401:
-            b = self.load_bundle()
-            if b and b.refresh_token:
-                self._refresh(b)
-            token = self.ensure_fresh_access_token()
-            headers = {"Authorization": f"Bearer {token}"}
-            kw = {"headers": headers}
-            if params is not None:
-                kw["params"] = params
-            if json_body is not None:
-                kw["json"] = json_body
-            r = self._http.request("DELETE", url, **kw)
-        r.raise_for_status()
+        r = self._authorized_request("DELETE", self._api_url(path), json_body=json_body, params=params)
         return _parse_json_or_none(r)
