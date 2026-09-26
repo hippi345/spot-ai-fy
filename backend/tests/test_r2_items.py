@@ -61,6 +61,9 @@ def test_r2_itemA_follow_artist_uses_me_library_put(data_dir, signed_in_tokens) 
 @respx.mock
 def test_r2_itemA_unsave_tracks_uses_me_library_delete(data_dir, signed_in_tokens) -> None:
     track_id = "3333333333333333333333"
+    respx.get(f"https://api.spotify.com/v1/tracks/{track_id}").mock(
+        return_value=httpx.Response(200, json={"id": track_id})
+    )
     route = respx.delete("https://api.spotify.com/v1/me/library").mock(
         return_value=httpx.Response(200)
     )

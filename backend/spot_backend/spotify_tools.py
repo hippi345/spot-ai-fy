@@ -177,6 +177,22 @@ _THIS_PLAYBACK_MARKERS = frozenset(
     }
 )
 
+_UNDO_LIBRARY_MARKERS = frozenset(
+    {
+        "that",
+        "that track",
+        "that song",
+        "that album",
+        "undo that",
+        "the last one",
+    }
+)
+
+_PLAYLIST_VISIBILITY_MISMATCH_NOTE = (
+    "Spotify still reports this playlist with the previous visibility after the update. "
+    "You may need to set visibility manually in the Spotify app."
+)
+
 
 def _parse_spotify_context_ref(raw: str) -> tuple[str, str] | None:
     """Return (playlist|album|artist|track, bare_id) or None when malformed."""
@@ -655,6 +671,7 @@ class SpotifyToolRunner:
         self.client = client or SpotifyClient(settings=settings or get_settings())
         self.settings = self.client.settings
         self._session_known_ids: set[str] = set()
+        self._last_library_mutation: dict[str, Any] | None = None
 
     def close(self) -> None:
         self.client.close()
@@ -1364,7 +1381,57 @@ class SpotifyToolRunner:
         if not aid:
             return json.dumps({"error": "album_id is required"})
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
-        return _compact(self.client.api_get(f"/albums/{aid}", params={"market": market}))
+        data = self.client.api_get(f"/albums/{aid}", params={"market": market})
+        if isinstance(data, dict):
+            items, total, truncated = self._fetch_album_tracks_paginated(aid, market=market, cap=50)
+            if items:
+                track_block: dict[str, Any] = {
+                    "items": items,
+                    "total": total if total is not None else len(items),
+                    "limit": len(items),
+                    "offset": 0,
+                }
+                if truncated:
+                    track_block["truncated"] = True
+                    track_block["note"] = (
+                        f"Album has more than {len(items)} tracks; only the first {len(items)} are listed."
+                    )
+                data["tracks"] = track_block
+        return _compact(data, limit=8000)
+
+    def _fetch_album_tracks_paginated(
+        self, album_id: str, *, market: str, cap: int = 50
+    ) -> tuple[list[Any], int | None, bool]:
+        """Page GET /albums/{id}/tracks until cap or no next page."""
+        collected: list[Any] = []
+        total: int | None = None
+        offset = 0
+        truncated = False
+        while len(collected) < cap:
+            page_limit = min(50, cap - len(collected))
+            page = self.client.api_get(
+                f"/albums/{album_id}/tracks",
+                params={"limit": page_limit, "offset": offset, "market": market},
+            )
+            if not isinstance(page, dict):
+                break
+            if total is None and isinstance(page.get("total"), int):
+                total = page["total"]
+            batch = page.get("items")
+            if not isinstance(batch, list) or not batch:
+                break
+            collected.extend(batch)
+            offset += len(batch)
+            next_url = page.get("next")
+            if not next_url or len(collected) >= cap:
+                if next_url and len(collected) >= cap:
+                    truncated = True
+                break
+            if isinstance(total, int) and offset >= total:
+                break
+        if isinstance(total, int) and total > len(collected):
+            truncated = truncated or total > len(collected)
+        return collected, total, truncated
 
     def _get_track(self, arguments: dict[str, Any]) -> str:
         tid = _normalize_spotify_id(_pick_arg(arguments, "track_id", "trackId", "id"), "track")
@@ -1583,7 +1650,21 @@ class SpotifyToolRunner:
                 {"error": "Provide at least one of: name, description, public, collaborative (non-null)."}
             )
         self.client.api_put(f"/playlists/{pid}", json_body=body)
-        return json.dumps({"ok": True, "updated_fields": list(body.keys())})
+        out: dict[str, Any] = {"ok": True, "updated_fields": list(body.keys())}
+        if "public" in body:
+            requested_public = bool(body["public"])
+            checked: dict[str, Any] | None = None
+            try:
+                checked = self.client.api_get(f"/playlists/{pid}", params={"fields": "id,public,name"})
+            except httpx.HTTPStatusError:
+                checked = None
+            if isinstance(checked, dict) and checked.get("public") is not requested_public:
+                out["ok"] = False
+                out["visibility_mismatch"] = True
+                out["requested_public"] = requested_public
+                out["actual_public"] = checked.get("public")
+                out["visibility_warning"] = _PLAYLIST_VISIBILITY_MISMATCH_NOTE
+        return json.dumps(out, ensure_ascii=False)
 
     def _remove_playlist_tracks(self, arguments: dict[str, Any]) -> str:
         pid = _normalize_spotify_id(
@@ -1722,6 +1803,12 @@ class SpotifyToolRunner:
             return err
         if not pid:
             return json.dumps({"error": "playlist_id is required"})
+        ok, verify_err = self._verify_catalog_id_on_spotify("playlist", pid)
+        if not ok:
+            return json.dumps(
+                {"ok": False, "error": verify_err or f"Unknown playlist id {pid!r}"},
+                ensure_ascii=False,
+            )
         self.client.api_delete(f"/playlists/{pid}/followers")
         return json.dumps({"ok": True, "playlist_id": pid})
 
@@ -1820,14 +1907,34 @@ class SpotifyToolRunner:
                 return verify_err or f"Spotify has no {segment} with id {bare!r}"
         return None
 
+    def _verify_library_segment_ids_strict(self, segment: str, ids: list[str]) -> str | None:
+        for bare in ids:
+            ok, verify_err = self._verify_catalog_id_on_spotify(segment, bare)
+            if not ok:
+                return verify_err or f"Spotify has no {segment} with id {bare!r}"
+        return None
+
+    def _record_library_mutation(self, segment: str, ids: list[str]) -> None:
+        clean = [i for i in ids if isinstance(i, str) and i.strip()]
+        if clean:
+            self._last_library_mutation = {"segment": segment, "ids": clean}
+
     def _resolve_library_segment_ids(
         self, arguments: dict[str, Any], segment: str, *keys: str
     ) -> list[str]:
         for key in keys:
             raw = arguments.get(key)
-            if isinstance(raw, str) and raw.strip().lower() in _THIS_PLAYBACK_MARKERS:
-                cid = self._playback_catalog_id(segment)
-                return [cid] if cid else []
+            if isinstance(raw, str):
+                low = raw.strip().lower()
+                if low in _UNDO_LIBRARY_MARKERS:
+                    mut = self._last_library_mutation
+                    if isinstance(mut, dict) and mut.get("segment") == segment:
+                        ids = mut.get("ids")
+                        if isinstance(ids, list) and ids:
+                            return [str(i) for i in ids if str(i).strip()]
+                if low in _THIS_PLAYBACK_MARKERS:
+                    cid = self._playback_catalog_id(segment)
+                    return [cid] if cid else []
             if isinstance(raw, str) and not raw.strip():
                 cid = self._playback_catalog_id(segment)
                 return [cid] if cid else []
@@ -1851,6 +1958,7 @@ class SpotifyToolRunner:
                 ensure_ascii=False,
             )
         self._library_put_uris([f"spotify:track:{i}" for i in ids])
+        self._record_library_mutation("track", ids)
         return json.dumps({"ok": True, "saved_track_ids": ids})
 
     def _unsave_tracks(self, arguments: dict[str, Any]) -> str:
@@ -1859,6 +1967,12 @@ class SpotifyToolRunner:
             return json.dumps({"error": "track_id or track_ids is required"})
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 track ids per call"})
+        verify_err = self._verify_library_segment_ids_strict("track", ids)
+        if verify_err:
+            return json.dumps(
+                {"ok": False, "error": verify_err, "reconnect_spotify_unnecessary": True},
+                ensure_ascii=False,
+            )
         self._library_delete_uris([f"spotify:track:{i}" for i in ids])
         return json.dumps({"ok": True, "removed_track_ids": ids})
 
@@ -1880,6 +1994,7 @@ class SpotifyToolRunner:
                 ensure_ascii=False,
             )
         self._library_put_uris([f"spotify:album:{i}" for i in ids])
+        self._record_library_mutation("album", ids)
         return json.dumps({"ok": True, "saved_album_ids": ids})
 
     def _unsave_albums(self, arguments: dict[str, Any]) -> str:
@@ -1888,6 +2003,12 @@ class SpotifyToolRunner:
             return json.dumps({"error": "album_id or album_ids is required"})
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 album ids per call"})
+        verify_err = self._verify_library_segment_ids_strict("album", ids)
+        if verify_err:
+            return json.dumps(
+                {"ok": False, "error": verify_err, "reconnect_spotify_unnecessary": True},
+                ensure_ascii=False,
+            )
         self._library_delete_uris([f"spotify:album:{i}" for i in ids])
         return json.dumps({"ok": True, "removed_album_ids": ids})
 
@@ -1914,14 +2035,21 @@ class SpotifyToolRunner:
                 ensure_ascii=False,
             )
         self._library_put_uris([f"spotify:artist:{i}" for i in ids])
+        self._record_library_mutation("artist", ids)
         return json.dumps({"ok": True, "followed_artist_ids": ids})
 
     def _unfollow_artist(self, arguments: dict[str, Any]) -> str:
-        ids = self._collect_catalog_ids(arguments, "artist", "artist_ids", "ids", "artist_id")
+        ids = self._resolve_library_segment_ids(arguments, "artist", "artist_ids", "ids", "artist_id")
         if not ids:
             return json.dumps({"error": "artist_id or artist_ids is required"})
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 artist ids per call"})
+        verify_err = self._verify_library_segment_ids_strict("artist", ids)
+        if verify_err:
+            return json.dumps(
+                {"ok": False, "error": verify_err, "reconnect_spotify_unnecessary": True},
+                ensure_ascii=False,
+            )
         self._library_delete_uris([f"spotify:artist:{i}" for i in ids])
         return json.dumps({"ok": True, "unfollowed_artist_ids": ids})
 

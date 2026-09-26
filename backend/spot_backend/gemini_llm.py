@@ -380,6 +380,21 @@ def _gemini_generation_config_for_model(model: str) -> dict[str, Any]:
     return cfg
 
 
+def apply_gemini_function_calling_tools(
+    body: dict[str, Any],
+    *,
+    decls: list[dict[str, Any]],
+    fc_cfg: dict[str, Any],
+) -> None:
+    """Gemini rejects toolConfig without non-empty functionDeclarations (HTTP 400)."""
+    if decls:
+        body["tools"] = [{"functionDeclarations": decls}]
+        body["toolConfig"] = {"functionCallingConfig": fc_cfg}
+    else:
+        body.pop("tools", None)
+        body.pop("toolConfig", None)
+
+
 def _log_gemini_empty_candidate(data: dict[str, Any], cand: dict[str, Any], *, label: str) -> None:
     pf = data.get("promptFeedback")
     safety = cand.get("safetyRatings")
@@ -480,9 +495,7 @@ def run_chat_turn_gemini(
                     "contents": contents,
                     "generationConfig": _gemini_generation_config_for_model(model),
                 }
-                if decls:
-                    body["tools"] = [{"functionDeclarations": decls}]
-                body["toolConfig"] = {"functionCallingConfig": fc_cfg}
+                apply_gemini_function_calling_tools(body, decls=decls, fc_cfg=fc_cfg)
 
                 resp = _gemini_post_with_retry(client, url, params=params, json_body=body)
                 data = resp.json()
@@ -510,7 +523,7 @@ def run_chat_turn_gemini(
                         retry_fc: dict[str, Any] = {"mode": "ANY" if retry_any else "AUTO"}
                         if intent_tools:
                             retry_fc["allowedFunctionNames"] = intent_tools
-                        body["toolConfig"] = {"functionCallingConfig": retry_fc}
+                        apply_gemini_function_calling_tools(body, decls=decls, fc_cfg=retry_fc)
                         logger.info(
                             "gemini_empty_turn_retry finish_reason=%s remaining=%s",
                             fr,

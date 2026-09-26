@@ -430,7 +430,7 @@ def test_r5_item7_intent_repeat_modes() -> None:
 def test_r5_item8_gemini_function_calling_mode_in_payload(data_dir, signed_in_tokens) -> None:
     settings = Settings(gemini_api_key="k")
     cases = [
-        ("how do I save a playlist?", "AUTO"),
+        ("how do I save a playlist?", None),
         ("pause", "ANY"),
         ("add a track then play my workout playlist", "AUTO"),
     ]
@@ -449,8 +449,11 @@ def test_r5_item8_gemini_function_calling_mode_in_payload(data_dir, signed_in_to
         _, fake_post = make_gemini_post_recorder(handler)
         with patch("httpx.Client.post", fake_post):
             run_chat_turn_gemini(user_text, settings)
-        mode = (bodies[0].get("toolConfig") or {}).get("functionCallingConfig", {}).get("mode")
-        assert mode == expected_mode, user_text
+        if expected_mode is None:
+            assert "toolConfig" not in bodies[0], user_text
+        else:
+            mode = (bodies[0].get("toolConfig") or {}).get("functionCallingConfig", {}).get("mode")
+            assert mode == expected_mode, user_text
 
 
 # r5-item9 — sixteen short commands → exactly one tool call each

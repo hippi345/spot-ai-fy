@@ -40,7 +40,8 @@ SPOTIFY_MUTATING_TOOL_NAMES: frozenset[str] = frozenset(
     agent_tool_names() - SPOTIFY_READ_ONLY_TOOL_NAMES
 )
 
-_INFORMATIONAL_RE = re.compile(
+# How-to / advice / explanation — informational unless a leading action imperative wins.
+_HOW_TO_ADVICE_RE = re.compile(
     r"(?:"
     r"\bhow\s+(?:do|can|should|would)\s+i\b"
     r"|"
@@ -48,9 +49,21 @@ _INFORMATIONAL_RE = re.compile(
     r"|"
     r"\bhow\s+(?:does|do)\s+\w"
     r"|"
-    r"\bwhat(?:'s|s| is)\s+the\s+way\s+to\b"
+    r"\bwhat(?:'s|s| is)\s+the\s+(?:best\s+)?way\s+to\b"
+    r"|"
+    r"\bwhat\s+is\s+the\s+way\s+to\b"
     r"|"
     r"\bwhat\s+(?:does|is|are)\b"
+    r"|"
+    r"\bwhere\s+(?:do|can)\s+i\s+(?:find|get|see)\b"
+    r"|"
+    r"\bcould\s+you\s+walk\s+me\s+through\b"
+    r"|"
+    r"\bwalk\s+me\s+through\b"
+    r"|"
+    r"\bhelp\s+me\s+understand\b"
+    r"|"
+    r"\bany\s+tips\s+for\b"
     r"|"
     r"\bis\s+there\s+a\s+way\s+to\b"
     r"|"
@@ -71,6 +84,20 @@ _INFORMATIONAL_RE = re.compile(
     re.I,
 )
 
+# Live catalog / library lookups — allow tools even when phrased as questions.
+_CATALOG_DATA_QUESTION_RE = re.compile(
+    r"(?:"
+    r"\bwhat(?:'s|s| is)\s+(?:on|playing|in)\b"
+    r"|"
+    r"\bwhat\s+(?:songs?|tracks?|albums?|artists?|playlists?)\s+(?:are|is)\b"
+    r"|"
+    r"\bwhich\s+(?:songs?|tracks?|albums?|artists?|playlists?)\b"
+    r"|"
+    r"\bwhat\s+did\s+i\s+(?:just\s+)?play\b"
+    r")",
+    re.I,
+)
+
 # Direct commands — not informational even if they mention "how" elsewhere.
 _ACTION_IMPERATIVE_RE = re.compile(
     r"^\s*(?:"
@@ -87,13 +114,15 @@ _MULTI_STEP_RE = re.compile(
 
 
 def prompt_is_informational(user_text: str) -> bool:
-    """How-to / explanatory questions — must not run mutating Spotify tools."""
+    """How-to / advice / explanation — read-only tools only; no mutations."""
     t = (user_text or "").strip()
     if not t:
         return False
     if _ACTION_IMPERATIVE_RE.match(t):
         return False
-    return bool(_INFORMATIONAL_RE.search(t))
+    if _CATALOG_DATA_QUESTION_RE.search(t):
+        return False
+    return bool(_HOW_TO_ADVICE_RE.search(t))
 
 
 def prompt_is_multi_step(user_text: str) -> bool:
@@ -176,6 +205,7 @@ INFORMATIONAL / HOW-TO TURN (no Spotify mutations):
 - The user is asking how something works, not asking you to do it now.
 - Do NOT call tools that create, edit, play, pause, queue, save, follow, shuffle, repeat, or otherwise change Spotify state.
 - Answer in everyday language: what to type in this chat, or where to tap in the Spotify desktop/mobile app.
+- To save a track to Liked Songs in the Spotify app: tap the heart icon, or use '+' / Add to Liked Songs. That action is Spotify's "like". Never tell the user liking is impossible or that the app lacks a heart / save control.
 - Never mention internal tool names, function names, parameters, or code spans in your reply.
 """
 
