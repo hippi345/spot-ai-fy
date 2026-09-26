@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { SetupWizard } from "./SetupWizard";
+import { fetchSetupStatus } from "./lib/api";
+
 
 
 type Session = {
@@ -183,7 +186,19 @@ export function App() {
 
   const [geminiCustomModel, setGeminiCustomModel] = useState("");
 
+  const [setupComplete, setSetupComplete] = useState(true);
+  const [showSetupWizard, setShowSetupWizard] = useState(false);
 
+  const refreshSetup = useCallback(async () => {
+    try {
+      const s = await fetchSetupStatus();
+      setSetupComplete(s.setup_complete);
+      if (!s.setup_complete) setShowSetupWizard(true);
+    } catch {
+      setSetupComplete(false);
+      setShowSetupWizard(true);
+    }
+  }, []);
 
   const refreshLlm = useCallback(async () => {
 
@@ -575,7 +590,9 @@ export function App() {
 
     void refreshLlm();
 
-  }, [refreshSession, refreshLlm]);
+    void refreshSetup();
+
+  }, [refreshSession, refreshLlm, refreshSetup]);
 
 
 
@@ -1116,9 +1133,23 @@ export function App() {
 
       ) : null}
 
+      {showSetupWizard ? (
+        <SetupWizard
+          allowDismiss={setupComplete}
+          onDismiss={() => setShowSetupWizard(false)}
+          onComplete={() => {
+            setSetupComplete(true);
+            setShowSetupWizard(false);
+            void refreshLlm();
+            void refreshSession();
+          }}
+        />
+      ) : null}
 
-
-      <section className="panel chat-panel" aria-labelledby="chat-heading">
+      <section
+        className={`panel chat-panel${setupComplete ? "" : " chat-panel--blocked"}`}
+        aria-labelledby="chat-heading"
+      >
 
         <div className="chat-panel-head">
 
@@ -1213,7 +1244,7 @@ export function App() {
 
           onChange={(e) => setInput(e.target.value)}
 
-          disabled={sending}
+          disabled={sending || !setupComplete}
 
           rows={3}
 
@@ -1221,7 +1252,11 @@ export function App() {
 
         <div className="btn-row">
 
-          <button type="button" onClick={() => void sendChat()} disabled={sending || !input.trim()}>
+          <button
+            type="button"
+            onClick={() => void sendChat()}
+            disabled={sending || !input.trim() || !setupComplete}
+          >
 
             {sending ? "Working…" : "Send"}
 
@@ -1556,6 +1591,24 @@ export function App() {
             </div>
 
           ) : null}
+
+
+
+          <div className="settings-block">
+
+            <div className="settings-block-head">
+
+              <span className="badge">Setup</span>
+
+            </div>
+
+            <button type="button" onClick={() => setShowSetupWizard(true)}>
+
+              Open setup wizard
+
+            </button>
+
+          </div>
 
 
 

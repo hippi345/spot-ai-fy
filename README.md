@@ -74,9 +74,6 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-Copy-Item .env.example .env
-notepad .env   # paste your SPOTIFY_CLIENT_ID (and GEMINI_API_KEY if using Gemini)
-
 uvicorn spot_backend.app:app --host 127.0.0.1 --port 8765 --reload
 ```
 
@@ -88,11 +85,10 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env
-${EDITOR:-nano} .env
-
 uvicorn spot_backend.app:app --host 127.0.0.1 --port 8765 --reload
 ```
+
+Optional: copy `backend/.env.example` to `backend/.env` if you prefer configuring via environment variables instead of the in-app wizard.
 
 ### 2. Frontend
 
@@ -102,7 +98,14 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173), click **Connect Spotify**, pick a playback device, and start chatting.
+Open [http://localhost:5173](http://localhost:5173). The **first-time setup wizard** walks you through:
+
+1. **Spotify** — copy the redirect URI into your [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) app, paste the Client ID, then **Connect Spotify**.
+2. **LLM** — choose **Gemini** (API key) or **Ollama** (URL + model). The backend validates the provider before saving.
+
+When setup is complete, pick a playback device in settings and start chatting. Reopen setup anytime from **Model & Spotify → Open setup wizard**.
+
+Set `VITE_API_BASE_URL` when the UI should call a non-proxied API host (defaults to same-origin / Vite proxy).
 
 The Vite dev server proxies `/api/*`, `/login`, and `/logout` to the backend on port 8765. Spotify’s OAuth redirect still hits `http://127.0.0.1:8765/callback` directly (register that URI on the Spotify dashboard).
 
@@ -201,9 +204,20 @@ The agent loop depends on tool calling — it needs a model that will either emi
 
 > **Heads up** — OpenAI (GPT-*), Anthropic (Claude), and OpenAI-compatible proxies like OpenRouter / Groq / Together are not wired up yet. See [Roadmap](#roadmap) below.
 
+## Configuration precedence
+
+Settings can come from the in-app setup wizard (stored under `DATA_DIR`) or from `backend/.env`. When both exist, **environment variables / `.env` always win**:
+
+1. **Environment variables** and `backend/.env` (highest — keeps existing deployments working)
+2. **OS keychain** (`keyring`) for secrets such as `GEMINI_API_KEY` when the wizard saves them
+3. **`secrets.json`** in `DATA_DIR` (mode `0600`) when no keychain backend is available
+4. **`setup.json`** in `DATA_DIR` for non-secret fields (Spotify Client ID, Ollama host)
+
+Secrets are never logged or returned from API responses (masked placeholders only).
+
 ## Environment variables
 
-All variables live in `backend/.env` (see [`backend/.env.example`](backend/.env.example) for the annotated template). Only `SPOTIFY_CLIENT_ID` is strictly required.
+All variables live in `backend/.env` (see [`backend/.env.example`](backend/.env.example) for the annotated template). Nothing is strictly required if you use the setup wizard; `SPOTIFY_CLIENT_ID` (or wizard step 1) is required before Spotify login.
 
 | Variable | Purpose |
 | --- | --- |

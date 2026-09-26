@@ -375,6 +375,46 @@ _MODIFY_PLAYLIST_SCOPES = ("playlist-modify-public", "playlist-modify-private")
 _READ_PLAYLIST_SCOPES = ("playlist-read-private", "playlist-read-collaborative")
 _USER_TOP_SCOPES = ("user-top-read",)
 _USER_FOLLOW_READ_SCOPES = ("user-follow-read",)
+_USER_LIBRARY_READ_SCOPES = ("user-library-read",)
+_USER_LIBRARY_MODIFY_SCOPES = ("user-library-modify",)
+_USER_RECENTLY_PLAYED_SCOPES = ("user-read-recently-played",)
+_USER_FOLLOW_MODIFY_SCOPES = ("user-follow-modify",)
+_USER_PLAYBACK_READ_SCOPES = ("user-read-playback-state",)
+
+_SCOPE_FEATURE_LABELS: dict[str, str] = {
+    "playlist-modify-public": "editing public playlists",
+    "playlist-modify-private": "editing private playlists",
+    "playlist-read-private": "reading private playlists",
+    "playlist-read-collaborative": "reading collaborative playlists",
+    "user-top-read": "your top artists and tracks",
+    "user-follow-read": "artists you follow",
+    "user-library-read": "your saved albums and liked tracks",
+    "user-library-modify": "saving or removing tracks and albums in your library",
+    "user-read-recently-played": "recently played history",
+    "user-follow-modify": "following or unfollowing artists",
+    "user-read-playback-state": "reading the playback queue",
+}
+
+_TOOL_FEATURE_NAMES: dict[str, str] = {
+    "spotify_recently_played": "recently played history",
+    "spotify_save_tracks": "saving tracks to your library",
+    "spotify_unsave_tracks": "removing saved tracks",
+    "spotify_save_albums": "saving albums to your library",
+    "spotify_unsave_albums": "removing saved albums",
+    "spotify_saved_albums": "your saved albums",
+    "spotify_follow_artist": "following artists",
+    "spotify_unfollow_artist": "unfollowing artists",
+    "spotify_get_queue": "the playback queue",
+    "spotify_playlists_containing_track": "searching your playlists for a track",
+}
+
+
+def _reconnect_for_scopes(missing: list[str]) -> str:
+    labels = [_SCOPE_FEATURE_LABELS.get(s, s) for s in missing]
+    if len(labels) == 1:
+        return f"Reconnect Spotify to enable {labels[0]}."
+    return f"Reconnect Spotify to enable: {', '.join(labels)}."
+
 
 _TOOL_REQUIRED_SCOPES: dict[str, tuple[str, ...]] = {
     "spotify_add_tracks_to_playlist": _MODIFY_PLAYLIST_SCOPES,
@@ -390,6 +430,17 @@ _TOOL_REQUIRED_SCOPES: dict[str, tuple[str, ...]] = {
     "spotify_top_artists": _USER_TOP_SCOPES,
     "spotify_top_tracks": _USER_TOP_SCOPES,
     "spotify_followed_artists": _USER_FOLLOW_READ_SCOPES,
+    "spotify_user_saved_tracks": _USER_LIBRARY_READ_SCOPES,
+    "spotify_recently_played": _USER_RECENTLY_PLAYED_SCOPES,
+    "spotify_save_tracks": _USER_LIBRARY_MODIFY_SCOPES,
+    "spotify_unsave_tracks": _USER_LIBRARY_MODIFY_SCOPES,
+    "spotify_save_albums": _USER_LIBRARY_MODIFY_SCOPES,
+    "spotify_unsave_albums": _USER_LIBRARY_MODIFY_SCOPES,
+    "spotify_saved_albums": _USER_LIBRARY_READ_SCOPES,
+    "spotify_follow_artist": _USER_FOLLOW_MODIFY_SCOPES,
+    "spotify_unfollow_artist": _USER_FOLLOW_MODIFY_SCOPES,
+    "spotify_get_queue": _USER_PLAYBACK_READ_SCOPES,
+    "spotify_playlists_containing_track": _READ_PLAYLIST_SCOPES,
 }
 
 
@@ -534,7 +585,36 @@ class SpotifyToolRunner:
             out["is_owned"] = out["me_id"] == out["owner_id"]
         return out
 
+    def _precheck_scopes(self, name: str) -> str | None:
+        required = _TOOL_REQUIRED_SCOPES.get(name)
+        if required is None:
+            return None
+        granted = self.client.get_token_scopes()
+        if not granted:
+            return None
+        missing = _missing_any_of(granted, required)
+        if not missing:
+            return None
+        msg = _reconnect_for_scopes(missing)
+        return json.dumps(
+            {
+                "error": msg,
+                "reconnect_spotify_message": msg,
+                "feature": _TOOL_FEATURE_NAMES.get(name, "this feature"),
+                "missing_scopes": missing,
+                "granted_scopes": sorted(granted),
+                "stale_scopes_need_reauth": True,
+                "suggest_sign_out_of_spotify": True,
+                "sign_out_not_recommended": False,
+                "reauth_may_resolve": True,
+            },
+            ensure_ascii=False,
+        )
+
     def run(self, name: str, arguments: dict[str, Any]) -> str:
+        pre = self._precheck_scopes(name)
+        if pre:
+            return pre
         try:
             return self._dispatch(name, arguments)
         except SpotifyAuthError as e:
@@ -705,6 +785,10 @@ class SpotifyToolRunner:
                 err["required_any_of_scopes"] = list(required_any_of)
                 err["missing_scopes"] = missing
                 if missing:
+                    reconnect_msg = _reconnect_for_scopes(missing)
+                    err["error"] = reconnect_msg
+                    err["reconnect_spotify_message"] = reconnect_msg
+                    err["feature"] = _TOOL_FEATURE_NAMES.get(name, "this feature")
                     err["stale_scopes_need_reauth"] = True
                     err["suggest_sign_out_of_spotify"] = True
                     err["sign_out_not_recommended"] = False
@@ -793,6 +877,26 @@ class SpotifyToolRunner:
                 return self._unfollow_playlist(arguments)
             case "spotify_user_saved_tracks":
                 return self._user_saved_tracks(arguments)
+            case "spotify_recently_played":
+                return self._recently_played(arguments)
+            case "spotify_save_tracks":
+                return self._save_tracks(arguments)
+            case "spotify_unsave_tracks":
+                return self._unsave_tracks(arguments)
+            case "spotify_save_albums":
+                return self._save_albums(arguments)
+            case "spotify_unsave_albums":
+                return self._unsave_albums(arguments)
+            case "spotify_saved_albums":
+                return self._saved_albums(arguments)
+            case "spotify_follow_artist":
+                return self._follow_artist(arguments)
+            case "spotify_unfollow_artist":
+                return self._unfollow_artist(arguments)
+            case "spotify_get_queue":
+                return self._get_queue()
+            case "spotify_playlists_containing_track":
+                return self._playlists_containing_track(arguments)
             case "spotify_top_artists":
                 return self._top_artists(arguments)
             case "spotify_top_tracks":
@@ -1279,6 +1383,198 @@ class SpotifyToolRunner:
         if isinstance(data, dict):
             data = _shrink_saved_tracks_page(data)
         return _compact(data, limit=8000)
+
+    def _collect_catalog_ids(self, arguments: dict[str, Any], segment: str, *keys: str) -> list[str]:
+        out: list[str] = []
+        for key in keys:
+            raw = arguments.get(key)
+            if raw is None:
+                continue
+            if isinstance(raw, str):
+                tid = _normalize_spotify_id(raw, segment)
+                if tid:
+                    out.append(tid)
+            elif isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, str):
+                        tid = _normalize_spotify_id(item, segment)
+                        if tid:
+                            out.append(tid)
+        # dedupe preserve order
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for i in out:
+            if i not in seen:
+                seen.add(i)
+                uniq.append(i)
+        return uniq
+
+    def _recently_played(self, arguments: dict[str, Any]) -> str:
+        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        after = _pick_arg(arguments, "after", "cursor")
+        params: dict[str, Any] = {"limit": limit}
+        if after:
+            params["after"] = after
+        before = _pick_arg(arguments, "before")
+        if before:
+            params["before"] = before
+        data = self.client.api_get("/me/player/recently-played", params=params)
+        return _compact(data, limit=8000)
+
+    def _save_tracks(self, arguments: dict[str, Any]) -> str:
+        ids = self._collect_catalog_ids(arguments, "track", "track_ids", "ids", "track_id")
+        if not ids:
+            return json.dumps({"error": "track_id or track_ids is required"})
+        if len(ids) > 50:
+            return json.dumps({"error": "At most 50 track ids per call"})
+        self.client.api_put("/me/tracks", params={"ids": ",".join(ids)})
+        return json.dumps({"ok": True, "saved_track_ids": ids})
+
+    def _unsave_tracks(self, arguments: dict[str, Any]) -> str:
+        ids = self._collect_catalog_ids(arguments, "track", "track_ids", "ids", "track_id")
+        if not ids:
+            return json.dumps({"error": "track_id or track_ids is required"})
+        if len(ids) > 50:
+            return json.dumps({"error": "At most 50 track ids per call"})
+        self.client.api_delete("/me/tracks", params={"ids": ",".join(ids)})
+        return json.dumps({"ok": True, "removed_track_ids": ids})
+
+    def _save_albums(self, arguments: dict[str, Any]) -> str:
+        ids = self._collect_catalog_ids(arguments, "album", "album_ids", "ids", "album_id")
+        if not ids:
+            return json.dumps({"error": "album_id or album_ids is required"})
+        if len(ids) > 50:
+            return json.dumps({"error": "At most 50 album ids per call"})
+        self.client.api_put("/me/albums", params={"ids": ",".join(ids)})
+        return json.dumps({"ok": True, "saved_album_ids": ids})
+
+    def _unsave_albums(self, arguments: dict[str, Any]) -> str:
+        ids = self._collect_catalog_ids(arguments, "album", "album_ids", "ids", "album_id")
+        if not ids:
+            return json.dumps({"error": "album_id or album_ids is required"})
+        if len(ids) > 50:
+            return json.dumps({"error": "At most 50 album ids per call"})
+        self.client.api_delete("/me/albums", params={"ids": ",".join(ids)})
+        return json.dumps({"ok": True, "removed_album_ids": ids})
+
+    def _saved_albums(self, arguments: dict[str, Any]) -> str:
+        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
+        market = _normalize_market(_pick_arg(arguments, "market", "country"))
+        data = self.client.api_get(
+            "/me/albums",
+            params={"limit": limit, "offset": offset, "market": market},
+        )
+        return _compact(data, limit=8000)
+
+    def _follow_artist(self, arguments: dict[str, Any]) -> str:
+        ids = self._collect_catalog_ids(arguments, "artist", "artist_ids", "ids", "artist_id")
+        if not ids:
+            return json.dumps({"error": "artist_id or artist_ids is required"})
+        if len(ids) > 50:
+            return json.dumps({"error": "At most 50 artist ids per call"})
+        self.client.api_put("/me/following", params={"type": "artist", "ids": ",".join(ids)})
+        return json.dumps({"ok": True, "followed_artist_ids": ids})
+
+    def _unfollow_artist(self, arguments: dict[str, Any]) -> str:
+        ids = self._collect_catalog_ids(arguments, "artist", "artist_ids", "ids", "artist_id")
+        if not ids:
+            return json.dumps({"error": "artist_id or artist_ids is required"})
+        if len(ids) > 50:
+            return json.dumps({"error": "At most 50 artist ids per call"})
+        self.client.api_delete("/me/following", params={"type": "artist", "ids": ",".join(ids)})
+        return json.dumps({"ok": True, "unfollowed_artist_ids": ids})
+
+    def _get_queue(self) -> str:
+        data = self.client.api_get("/me/player/queue")
+        return _compact(data, limit=8000)
+
+    def _playlists_containing_track(self, arguments: dict[str, Any]) -> str:
+        track_id = _normalize_spotify_id(
+            _pick_arg(arguments, "track_id", "trackId", "id", "uri"), "track"
+        )
+        if not track_id:
+            return json.dumps({"error": "track_id is required"})
+        max_playlists = _safe_int(arguments.get("max_playlists"), 30, lo=1, hi=60)
+        max_pages_per_playlist = _safe_int(arguments.get("max_pages_per_playlist"), 3, lo=1, hi=10)
+        want_uri = f"spotify:track:{track_id}"
+        matches: list[dict[str, Any]] = []
+        offset = 0
+        playlists_scanned = 0
+        truncated = False
+        page: dict[str, Any] = {}
+        while playlists_scanned < max_playlists:
+            page = self.client.api_get("/me/playlists", params={"limit": 50, "offset": offset})
+            if not isinstance(page, dict):
+                break
+            items = page.get("items") if isinstance(page.get("items"), list) else []
+            if not items:
+                break
+            for pl in items:
+                if playlists_scanned >= max_playlists:
+                    truncated = True
+                    break
+                if not isinstance(pl, dict):
+                    continue
+                pid = pl.get("id")
+                if not isinstance(pid, str):
+                    continue
+                playlists_scanned += 1
+                name = pl.get("name")
+                owner = pl.get("owner") if isinstance(pl.get("owner"), dict) else {}
+                found = False
+                track_offset = 0
+                for _ in range(max_pages_per_playlist):
+                    tr_page = self.client.api_get(
+                        f"/playlists/{pid}/items",
+                        params={"limit": 100, "offset": track_offset, "fields": "items(item(id,uri)),next"},
+                    )
+                    if not isinstance(tr_page, dict):
+                        break
+                    rows = tr_page.get("items") if isinstance(tr_page.get("items"), list) else []
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        item = row.get("item") if isinstance(row.get("item"), dict) else row.get("track")
+                        if not isinstance(item, dict):
+                            continue
+                        iid = item.get("id")
+                        uri = item.get("uri")
+                        if iid == track_id or uri == want_uri:
+                            found = True
+                            break
+                    if found:
+                        break
+                    if not tr_page.get("next"):
+                        break
+                    track_offset += 100
+                if found:
+                    matches.append(
+                        {
+                            "playlist_id": pid,
+                            "name": name,
+                            "owner_id": owner.get("id") if isinstance(owner, dict) else None,
+                        }
+                    )
+            if truncated:
+                break
+            if not page.get("next"):
+                break
+            offset += 50
+        if isinstance(page, dict) and page.get("next") and playlists_scanned >= max_playlists:
+            truncated = True
+        out: dict[str, Any] = {
+            "track_id": track_id,
+            "playlists": matches,
+            "playlists_scanned": playlists_scanned,
+            "truncated": truncated,
+        }
+        if truncated:
+            out["note"] = (
+                f"Stopped after scanning {playlists_scanned} playlists (max_playlists={max_playlists}). "
+                "Increase max_playlists or narrow with spotify_user_playlists if you need full coverage."
+            )
+        return json.dumps(out, ensure_ascii=False)
 
     @staticmethod
     def _coerce_time_range(raw: Any) -> str:
@@ -3168,6 +3464,150 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {"limit": {"type": "integer"}, "offset": {"type": "integer"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_recently_played",
+            "description": (
+                "Return the user's recently played tracks (up to 50). Requires scope "
+                "user-read-recently-played — if missing, tell the user to reconnect Spotify."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "1-50, default 20."},
+                    "after": {"type": "string", "description": "Unix ms timestamp cursor."},
+                    "before": {"type": "string", "description": "Unix ms timestamp cursor."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_save_tracks",
+            "description": "Save (like) one or more tracks to the user's library. Requires user-library-modify.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_id": {"type": "string"},
+                    "track_ids": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_unsave_tracks",
+            "description": "Remove saved (liked) tracks from the user's library. Requires user-library-modify.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_id": {"type": "string"},
+                    "track_ids": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_save_albums",
+            "description": "Save albums to the user's library. Requires user-library-modify.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "album_id": {"type": "string"},
+                    "album_ids": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_unsave_albums",
+            "description": "Remove saved albums from the user's library. Requires user-library-modify.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "album_id": {"type": "string"},
+                    "album_ids": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_saved_albums",
+            "description": "List albums saved in the user's library (paginated). Requires user-library-read.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer"},
+                    "offset": {"type": "integer"},
+                    "market": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_follow_artist",
+            "description": "Follow one or more artists. Requires user-follow-modify.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artist_id": {"type": "string"},
+                    "artist_ids": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_unfollow_artist",
+            "description": "Unfollow artists. Requires user-follow-modify.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artist_id": {"type": "string"},
+                    "artist_ids": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_get_queue",
+            "description": "Read the current playback queue (now playing + up next). Requires user-read-playback-state.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_playlists_containing_track",
+            "description": (
+                "Composite: scan the user's owned and followed playlists for a track id. "
+                "Stops after max_playlists (default 30) with truncated=true when capped."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_id": {"type": "string"},
+                    "max_playlists": {"type": "integer"},
+                    "max_pages_per_playlist": {"type": "integer"},
+                },
+                "required": ["track_id"],
             },
         },
     },

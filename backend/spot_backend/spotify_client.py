@@ -35,7 +35,8 @@ DEFAULT_SCOPES = (
     "playlist-read-private playlist-read-collaborative "
     "playlist-modify-public playlist-modify-private "
     "user-read-playback-state user-modify-playback-state user-library-read "
-    "user-top-read user-follow-read"
+    "user-library-modify user-read-recently-played "
+    "user-top-read user-follow-read user-follow-modify"
 )
 
 

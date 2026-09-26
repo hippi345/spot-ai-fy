@@ -26,6 +26,7 @@ from spot_backend.llm_prefs import (
 )
 from spot_backend.pkce import new_pkce_params
 from spot_backend.spotify_client import DEFAULT_SCOPES, SpotifyAuthError, SpotifyClient
+from spot_backend.setup_service import probe_ollama, save_llm_setup, save_spotify_app, setup_status
 from spot_backend.token_store import DeviceSelection, load_device, load_tokens, save_device
 
 app = FastAPI(title="Spot-AI-fy API")
@@ -75,6 +76,52 @@ class GeminiModelBody(BaseModel):
     model: str = Field(..., min_length=1, max_length=200)
 
 
+class SpotifyAppSetupBody(BaseModel):
+    client_id: str = Field(..., min_length=1, max_length=200)
+
+
+class LlmSetupBody(BaseModel):
+    provider: Literal["ollama", "gemini"]
+    gemini_api_key: str | None = Field(default=None, max_length=500)
+    ollama_host: str | None = Field(default=None, max_length=500)
+    ollama_model: str | None = Field(default=None, max_length=200)
+    gemini_model: str | None = Field(default=None, max_length=200)
+    test: bool = True
+
+
+@app.get("/api/setup/status")
+def api_setup_status() -> dict[str, Any]:
+    return setup_status()
+
+
+@app.post("/api/setup/spotify-app")
+def api_setup_spotify_app(body: SpotifyAppSetupBody) -> dict[str, Any]:
+    try:
+        return save_spotify_app(body.client_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.post("/api/setup/llm")
+def api_setup_llm(body: LlmSetupBody) -> dict[str, Any]:
+    try:
+        return save_llm_setup(
+            provider=body.provider,
+            gemini_api_key=body.gemini_api_key,
+            ollama_host=body.ollama_host,
+            ollama_model=body.ollama_model,
+            gemini_model=body.gemini_model,
+            test=body.test,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.get("/api/setup/ollama/probe")
+def api_setup_ollama_probe(host: str) -> dict[str, Any]:
+    return probe_ollama(host)
+
+
 @app.get("/login")
 def login() -> RedirectResponse:
     s = get_settings()
@@ -82,9 +129,8 @@ def login() -> RedirectResponse:
         raise HTTPException(
             status_code=400,
             detail=(
-                "SPOTIFY_CLIENT_ID is not set. Put it in backend/.env (gitignored) — "
-                "see backend/.env.example — or export it, then restart the API. "
-                "Do not commit credentials to GitHub."
+                "Spotify is not configured yet. Complete step 1 in the setup wizard (Spotify Client ID) "
+                "or set SPOTIFY_CLIENT_ID in backend/.env — see backend/.env.example."
             ),
         )
     verifier, challenge, state = new_pkce_params()
@@ -347,7 +393,7 @@ def llm_status() -> dict[str, Any]:
         out["gemini_model_ui_override"] = gemini_model_override_active(s.data_dir)
         key = (s.gemini_api_key or "").strip()
         if not key:
-            out["error"] = "GEMINI_API_KEY is not set in backend/.env"
+            out["error"] = "Gemini API key is not configured. Use the setup wizard or set GEMINI_API_KEY in backend/.env."
             return out
         try:
             # pageSize=200 so the UI can list every model the key can access.

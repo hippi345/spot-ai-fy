@@ -79,4 +79,6 @@ class Settings(BaseSettings):
 
 
 def get_settings() -> Settings:
-    return Settings()
+    from spot_backend.secrets_store import merge_settings_from_store
+
+    return merge_settings_from_store(Settings())

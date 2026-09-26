@@ -130,3 +130,49 @@ def test_spotify_search_429_retry_succeeds(data_dir, signed_in_tokens) -> None:
         assert calls["n"] == 2
     finally:
         runner.close()
+
+
+@respx.mock
+def test_spotify_429_missing_retry_after_defaults_to_one_second(data_dir, signed_in_tokens) -> None:
+    settings = Settings()
+    client = SpotifyClient(settings=settings)
+    slept: list[float] = []
+    client._rate_limit_sleep = lambda seconds: slept.append(seconds)
+    calls = {"n": 0}
+
+    def search_handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, json={"error": {"status": 429, "message": "rate"}})
+        return httpx.Response(200, json={"tracks": {"items": []}})
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search.*").mock(side_effect=search_handler)
+
+    client.api_get("/search", params={"q": "a", "type": "track", "limit": 1})
+    assert slept == [1.0]
+    client.close()
+
+
+@respx.mock
+def test_spotify_429_non_numeric_retry_after_defaults_to_one_second(data_dir, signed_in_tokens) -> None:
+    settings = Settings()
+    client = SpotifyClient(settings=settings)
+    slept: list[float] = []
+    client._rate_limit_sleep = lambda seconds: slept.append(seconds)
+    calls = {"n": 0}
+
+    def search_handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "soon"},
+                json={"error": {"status": 429, "message": "rate"}},
+            )
+        return httpx.Response(200, json={"tracks": {"items": []}})
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search.*").mock(side_effect=search_handler)
+
+    client.api_get("/search", params={"q": "a", "type": "track", "limit": 1})
+    assert slept == [1.0]
+    client.close()
