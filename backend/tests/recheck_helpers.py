@@ -248,6 +248,63 @@ def run_create_playlist_private_flow(
     return json.loads(raw), put_route.called
 
 
+def mock_player_album_context_playing(album_id: str) -> None:
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(
+            200,
+            json={"is_playing": True, "context": {"uri": f"spotify:album:{album_id}"}, "item": {}},
+        )
+    )
+
+
+def mock_player_track_playing(track_id: str) -> None:
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(
+            200,
+            json={"is_playing": True, "item": {"uri": f"spotify:track:{track_id}"}},
+        )
+    )
+
+
+def run_verified_album_context_playback(album_id: str) -> dict[str, Any]:
+    from spot_backend.config import Settings
+    from spot_backend.spotify_tools import SpotifyToolRunner
+
+    respx.get(f"https://api.spotify.com/v1/albums/{album_id}").mock(
+        return_value=httpx.Response(200, json={"id": album_id, "name": "OK"})
+    )
+    mock_player_album_context_playing(album_id)
+    runner = SpotifyToolRunner(settings=Settings())
+    raw = runner.run("spotify_start_resume_playback", {"context_uri": f"spotify:album:{album_id}"})
+    runner.close()
+    return json.loads(raw)
+
+
+def devices_api_get(
+    *,
+    spotify_response: httpx.Response | None = None,
+    side_effect: BaseException | None = None,
+) -> httpx.Response:
+    """Call GET /api/devices after mocking Spotify's devices route (r2/pr2 dedupe)."""
+    route = respx.get("https://api.spotify.com/v1/me/player/devices")
+    if side_effect is not None:
+        route.mock(side_effect=side_effect)
+    else:
+        route.mock(return_value=spotify_response or httpx.Response(500, json={"error": "boom"}))
+    from spot_backend.app import app
+
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+    return client.get("/api/devices")
+
+
 def run_artist_null_context_playback(artist_id: str) -> dict[str, Any]:
     from spot_backend.config import Settings
     from spot_backend.spotify_tools import SpotifyToolRunner
@@ -285,15 +342,7 @@ def run_album_playlist_play(album_id: str) -> dict[str, Any]:
     from spot_backend.config import Settings
     from spot_backend.spotify_tools import SpotifyToolRunner
 
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(204)
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(
-            200,
-            json={"is_playing": True, "context": {"uri": f"spotify:album:{album_id}"}, "item": {}},
-        )
-    )
+    mock_player_album_context_playing(album_id)
     runner = SpotifyToolRunner(settings=Settings())
     runner._session_known_ids.add(album_id)
     raw = runner.run("spotify_play_playlist", {"playlist_id": f"spotify:album:{album_id}"})

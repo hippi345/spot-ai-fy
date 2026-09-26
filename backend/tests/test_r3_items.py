@@ -21,12 +21,15 @@ from spot_backend.gemini_llm import (
 from spot_backend.setup_service import _ollama_cpu_profile
 from spot_backend.spotify_tools import SpotifyToolRunner, collect_catalog_ids_from_tool_json
 from tests.recheck_helpers import (
+    devices_api_get,
     gemini_thought_then_pause_then_text_handler,
     install_cpu_profile_http_mocks,
     make_gemini_post_recorder,
     mock_artist_name_search,
+    mock_player_track_playing,
     run_artist_latest_album_tool,
     run_create_playlist_private_flow,
+    run_verified_album_context_playback,
 )
 
 
@@ -52,22 +55,7 @@ def test_r3_item01_empty_session_fake_album_id_rejected(data_dir, signed_in_toke
 @respx.mock
 def test_r3_item01_empty_session_real_album_verified_via_get(data_dir, signed_in_tokens) -> None:
     album_id = "aaaaaaaaaaaaaaaaaaaaaa"
-    respx.get(f"https://api.spotify.com/v1/albums/{album_id}").mock(
-        return_value=httpx.Response(200, json={"id": album_id, "name": "OK"})
-    )
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(204)
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(
-            200,
-            json={"is_playing": True, "context": {"uri": f"spotify:album:{album_id}"}, "item": {}},
-        )
-    )
-    runner = SpotifyToolRunner(settings=Settings())
-    raw = runner.run("spotify_start_resume_playback", {"context_uri": f"spotify:album:{album_id}"})
-    runner.close()
-    data = json.loads(raw)
+    data = run_verified_album_context_playback(album_id)
     assert data.get("ok") is True or "context_uri" in data
 
 
@@ -89,15 +77,7 @@ def test_r3_item02_top_tracks_then_play_without_catalog_get(data_dir, signed_in_
             },
         )
     )
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(204)
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(
-            200,
-            json={"is_playing": True, "item": {"uri": f"spotify:track:{track_id}"}},
-        )
-    )
+    mock_player_track_playing(track_id)
     runner = SpotifyToolRunner(settings=Settings())
     runner.run("spotify_artist_top_tracks", {"artist_id": artist_id})
     assert track_id in runner._session_known_ids

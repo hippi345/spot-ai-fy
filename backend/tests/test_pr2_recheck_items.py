@@ -28,6 +28,7 @@ from spot_backend.spotify_client import DEFAULT_SCOPES
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner, _parse_spotify_context_ref
 from tests.recheck_helpers import (
     FakeOllamaStream,
+    devices_api_get,
     install_cpu_profile_http_mocks,
     run_album_playlist_play,
     run_artist_null_context_playback,
@@ -235,11 +236,7 @@ def test_item13_cpu_profile_recommends_gemini_when_slow(monkeypatch: pytest.Monk
 
 @respx.mock
 def test_item14_devices_endpoint_friendly_error(data_dir, signed_in_tokens) -> None:
-    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
-        return_value=httpx.Response(500, json={"error": "boom"})
-    )
-    client = TestClient(app)
-    r = client.get("/api/devices")
+    r = devices_api_get(spotify_response=httpx.Response(500, json={"error": "boom"}))
     assert r.status_code == 502
     assert "Could not list Spotify devices" in r.json()["detail"]
 

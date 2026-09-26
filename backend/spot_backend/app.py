@@ -24,6 +24,11 @@ from spot_backend.llm_prefs import (
     write_llm_provider,
     write_ollama_model_override,
 )
+from spot_backend.llm_provider_lists import (
+    fetch_gemini_chat_model_names,
+    fetch_ollama_model_names,
+    ollama_model_name_matches_installed,
+)
 from spot_backend.pkce import new_pkce_params
 from spot_backend.spotify_client import DEFAULT_SCOPES, SpotifyAuthError, SpotifyClient
 from spot_backend.setup_service import probe_ollama, save_llm_setup, save_spotify_app, setup_status
@@ -454,28 +459,7 @@ def llm_status() -> dict[str, Any]:
             out["error"] = "Gemini API key is not configured. Use the setup wizard or set GEMINI_API_KEY in backend/.env."
             return out
         try:
-            # pageSize=200 so the UI can list every model the key can access.
-            r = httpx.get(
-                "https://generativelanguage.googleapis.com/v1beta/models",
-                params={"key": key, "pageSize": 200},
-                timeout=10.0,
-            )
-            r.raise_for_status()
-            data = r.json()
-            # Keep only text-generation capable models so the dropdown is useful for chat.
-            names: list[str] = []
-            for m in data.get("models", []):
-                if not isinstance(m, dict):
-                    continue
-                full = str(m.get("name", ""))
-                if not full:
-                    continue
-                methods = m.get("supportedGenerationMethods") or []
-                if isinstance(methods, list) and "generateContent" not in methods:
-                    continue
-                short = full.split("/", 1)[1] if full.startswith("models/") else full
-                names.append(short)
-            names.sort()
+            names = fetch_gemini_chat_model_names(key, page_size=200, timeout=10.0)
             out["reachable"] = True
             out["models"] = names
             want = effective_gemini.strip().lower()
@@ -495,22 +479,10 @@ def llm_status() -> dict[str, Any]:
     out["configured_model"] = effective_ollama
     out["ollama_model_ui_override"] = ollama_model_override_active(s.data_dir)
     try:
-        r = httpx.get(f"{base}/api/tags", timeout=5.0)
-        r.raise_for_status()
-        data = r.json()
-        names = [
-            str(m["name"])
-            for m in data.get("models", [])
-            if isinstance(m, dict) and m.get("name") is not None
-        ]
-        want = effective_ollama.strip().lower()
-        want_base = want.split(":", 1)[0]
+        names = fetch_ollama_model_names(base, timeout=5.0)
         out["reachable"] = True
         out["models"] = names
-        out["model_installed"] = any(
-            isinstance(n, str) and (n.lower() == want or n.lower().split(":", 1)[0] == want_base)
-            for n in names
-        )
+        out["model_installed"] = ollama_model_name_matches_installed(names, effective_ollama)
     except httpx.RequestError as e:
         out["error"] = str(e)
     except httpx.HTTPStatusError as e:

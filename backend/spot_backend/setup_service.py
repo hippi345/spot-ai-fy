@@ -9,6 +9,11 @@ from typing import Any, Literal
 import httpx
 
 from spot_backend.config import Settings, get_settings
+from spot_backend.llm_provider_lists import (
+    fetch_gemini_chat_model_names,
+    fetch_ollama_model_names,
+    ollama_model_name_matches_installed,
+)
 from spot_backend.llm_prefs import (
     read_effective_gemini_model,
     read_effective_llm_provider,
@@ -58,21 +63,8 @@ def _ollama_ready(
     except OllamaUrlNotAllowedError as e:
         return False, str(e)
     try:
-        r = httpx.get(f"{base}/api/tags", timeout=5.0)
-        r.raise_for_status()
-        data = r.json()
-        names = [
-            str(m["name"])
-            for m in data.get("models", [])
-            if isinstance(m, dict) and m.get("name") is not None
-        ]
-        want = model.strip().lower()
-        want_base = want.split(":", 1)[0]
-        installed = any(
-            isinstance(n, str) and (n.lower() == want or n.lower().split(":", 1)[0] == want_base)
-            for n in names
-        )
-        if not installed:
+        names = fetch_ollama_model_names(base, timeout=5.0)
+        if not ollama_model_name_matches_installed(names, model):
             return False, f"Model {model!r} is not installed on Ollama at {host}"
         return True, None
     except httpx.RequestError as e:
@@ -89,25 +81,7 @@ def _gemini_ready(settings: Settings, *, model_override: str | None = None) -> t
         settings.data_dir, settings.gemini_model
     )
     try:
-        r = httpx.get(
-            "https://generativelanguage.googleapis.com/v1beta/models",
-            params={"key": key, "pageSize": 10},
-            timeout=10.0,
-        )
-        r.raise_for_status()
-        data = r.json()
-        names: list[str] = []
-        for m in data.get("models", []):
-            if not isinstance(m, dict):
-                continue
-            full = str(m.get("name", ""))
-            if not full:
-                continue
-            methods = m.get("supportedGenerationMethods") or []
-            if isinstance(methods, list) and "generateContent" not in methods:
-                continue
-            short = full.split("/", 1)[1] if full.startswith("models/") else full
-            names.append(short)
+        names = fetch_gemini_chat_model_names(key, page_size=10, timeout=10.0)
         want = model.strip().lower()
         if names and not any(n.lower() == want for n in names):
             return False, f"Model {model!r} is not available for this API key"
@@ -268,27 +242,7 @@ def save_spotify_app(client_id: str) -> dict[str, Any]:
 
 
 def _list_gemini_models(api_key: str) -> list[str]:
-    r = httpx.get(
-        "https://generativelanguage.googleapis.com/v1beta/models",
-        params={"key": api_key, "pageSize": 200},
-        timeout=10.0,
-    )
-    r.raise_for_status()
-    data = r.json()
-    names: list[str] = []
-    for m in data.get("models", []):
-        if not isinstance(m, dict):
-            continue
-        full = str(m.get("name", ""))
-        if not full:
-            continue
-        methods = m.get("supportedGenerationMethods") or []
-        if isinstance(methods, list) and "generateContent" not in methods:
-            continue
-        short = full.split("/", 1)[1] if full.startswith("models/") else full
-        names.append(short)
-    names.sort()
-    return names
+    return fetch_gemini_chat_model_names(api_key, page_size=200, timeout=10.0)
 
 
 def save_llm_setup(
@@ -380,14 +334,7 @@ def save_llm_setup(
         out["reachable"] = True
         out["error"] = None
         host = merged.ollama_host.rstrip("/")
-        r = httpx.get(f"{host}/api/tags", timeout=5.0)
-        r.raise_for_status()
-        data = r.json()
-        out["models"] = [
-            str(m["name"])
-            for m in data.get("models", [])
-            if isinstance(m, dict) and m.get("name") is not None
-        ]
+        out["models"] = fetch_ollama_model_names(host, timeout=5.0)
         model_for_probe = ollama_model_eff or read_effective_ollama_model(
             s.data_dir, merged.ollama_model
         )
@@ -402,14 +349,7 @@ def probe_ollama(host: str, *, allow_public: bool = False) -> dict[str, Any]:
     except OllamaUrlNotAllowedError as e:
         return {"reachable": False, "models": [], "error": str(e)}
     try:
-        r = httpx.get(f"{base}/api/tags", timeout=5.0)
-        r.raise_for_status()
-        data = r.json()
-        models = [
-            str(m["name"])
-            for m in data.get("models", [])
-            if isinstance(m, dict) and m.get("name") is not None
-        ]
+        models = fetch_ollama_model_names(base, timeout=5.0)
         return {"reachable": True, "models": models, "error": None}
     except httpx.RequestError as e:
         return {"reachable": False, "models": [], "error": str(e)}

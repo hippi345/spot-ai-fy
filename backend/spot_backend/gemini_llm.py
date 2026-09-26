@@ -555,11 +555,13 @@ def run_chat_turn_gemini(
                             args = raw_args
                         sig = gemini_tool_call_signature(name, args)
                         if gemini_should_block_repeated_tool_call(last_tool_signature, name, args):
-                            return prepare_user_visible_reply(
-                                "I already ran that Spotify action once this turn. "
-                                "Check Spotify or try rephrasing if something still looks wrong.",
-                                tool_results,
+                            repeat_reply = (
+                                last_tool_result
+                                if last_tool_result
+                                else "I already ran that Spotify action once this turn. "
+                                "Check Spotify or try rephrasing if something still looks wrong."
                             )
+                            return prepare_user_visible_reply(repeat_reply, tool_results)
                         if emit:
                             emit({"type": "tool_start", "name": name})
                         result = runner.run(name, args)

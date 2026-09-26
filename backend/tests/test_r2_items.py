@@ -14,7 +14,6 @@ from spot_backend.action_claim_guard import (
     tool_result_succeeded,
 )
 from spot_backend.agent import iter_ollama_chat_events
-from spot_backend.app import app
 from spot_backend.config import Settings
 from spot_backend.gemini_llm import run_chat_turn_gemini
 from spot_backend.ollama_agent_profile import SMALL_MODEL_TOOL_NAMES, small_model_route_hint
@@ -22,14 +21,13 @@ from spot_backend.setup_service import _ollama_cpu_profile
 from spot_backend.spotify_tools import SpotifyToolRunner, pick_latest_album_release
 from tests.recheck_helpers import (
     FakeOllamaStream,
+    devices_api_get,
     install_cpu_only_ollama_profile_mocks,
     make_gemini_post_recorder,
     mock_artist_name_search,
     run_artist_latest_album_tool,
     run_create_playlist_private_flow,
 )
-from fastapi.testclient import TestClient
-
 
 @respx.mock
 def test_r2_itemA_save_tracks_uses_me_library_put(data_dir, signed_in_tokens) -> None:
@@ -220,19 +218,13 @@ def test_r2_itemK_artist_latest_album_tool(data_dir, signed_in_tokens) -> None:
 
 @respx.mock
 def test_r2_itemL_devices_maps_spotify_500_to_502(data_dir, signed_in_tokens) -> None:
-    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
-        return_value=httpx.Response(500, json={"error": "boom"})
-    )
-    client = TestClient(app)
-    r = client.get("/api/devices")
+    r = devices_api_get(spotify_response=httpx.Response(500, json={"error": "boom"}))
     assert r.status_code == 502
 
 
 @respx.mock
 def test_r2_itemL_devices_maps_network_error_to_503(data_dir, signed_in_tokens) -> None:
-    respx.get("https://api.spotify.com/v1/me/player/devices").mock(side_effect=httpx.ConnectError("down"))
-    client = TestClient(app)
-    r = client.get("/api/devices")
+    r = devices_api_get(side_effect=httpx.ConnectError("down"))
     assert r.status_code == 503
 
 
