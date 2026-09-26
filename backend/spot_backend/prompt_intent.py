@@ -40,47 +40,55 @@ SPOTIFY_MUTATING_TOOL_NAMES: frozenset[str] = frozenset(
     agent_tool_names() - SPOTIFY_READ_ONLY_TOOL_NAMES
 )
 
-# How-to / advice / explanation — informational unless a leading action imperative wins.
-_HOW_TO_ADVICE_RE = re.compile(
-    r"(?:"
-    r"\bhow\s+(?:do|can|should|would)\s+i\b"
-    r"|"
-    r"\bhow\s+would\s+i\b"
-    r"|"
-    r"\bhow\s+(?:does|do)\s+\w"
-    r"|"
-    r"\bwhat(?:'s|s| is)\s+the\s+(?:best\s+)?way\s+to\b"
-    r"|"
-    r"\bwhat\s+is\s+the\s+way\s+to\b"
-    r"|"
-    r"\bwhat\s+(?:does|is|are)\b"
-    r"|"
-    r"\bwhere\s+(?:do|can)\s+i\s+(?:find|get|see)\b"
-    r"|"
-    r"\bcould\s+you\s+walk\s+me\s+through\b"
-    r"|"
-    r"\bwalk\s+me\s+through\b"
-    r"|"
-    r"\bhelp\s+me\s+understand\b"
-    r"|"
-    r"\bany\s+tips\s+for\b"
-    r"|"
-    r"\bis\s+there\s+a\s+way\s+to\b"
-    r"|"
-    r"\bcan\s+you\s+explain\s+how\b"
-    r"|"
-    r"\bcan\s+you\s+explain\b"
-    r"|"
-    r"\bexplain\s+how\b"
-    r"|"
-    r"\bexplain\b"
-    r"|"
-    r"\btell\s+me\s+(?:how|about)\b"
-    r"|"
-    r"\bwhat\s+do\s+i\s+say\s+to\b"
-    r"|"
-    r"\bwhat\s+should\s+i\s+(?:type|say|tell)\b"
-    r")",
+# Longer tokens first so e.g. "unlike" wins over "like".
+_ACTION_VERBS: tuple[str, ...] = (
+    "unfollow",
+    "unlike",
+    "previous",
+    "transfer",
+    "shuffle",
+    "resume",
+    "repeat",
+    "rename",
+    "remove",
+    "create",
+    "delete",
+    "follow",
+    "switch",
+    "queue",
+    "start",
+    "pause",
+    "play",
+    "save",
+    "like",
+    "skip",
+    "next",
+    "make",
+    "turn",
+    "undo",
+    "stop",
+    "add",
+    "set",
+    "put",
+)
+
+_ACTION_VERB_ALT = "|".join(_ACTION_VERBS)
+
+_LEADING_ACTION_REQUEST_RE = re.compile(
+    rf"^\s*(?:please\s+|hey\s+|ok(?:ay)?\s+)?(?:{_ACTION_VERB_ALT})\b",
+    re.I,
+)
+
+_POLITE_ACTION_REQUEST_RE = re.compile(
+    rf"(?:"
+    rf"(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:{_ACTION_VERB_ALT})\b"
+    rf"|"
+    rf"^\s*please\s+(?:{_ACTION_VERB_ALT})\b"
+    rf"|"
+    rf"^\s*i\s+(?:want|would\s+like|'d\s+like)\s+(?:you\s+to\s+)?(?:{_ACTION_VERB_ALT})\b"
+    rf"|"
+    rf"^\s*let'?s\s+(?:{_ACTION_VERB_ALT})\b"
+    rf")",
     re.I,
 )
 
@@ -98,12 +106,25 @@ _CATALOG_DATA_QUESTION_RE = re.compile(
     re.I,
 )
 
-# Direct commands — not informational even if they mention "how" elsewhere.
-_ACTION_IMPERATIVE_RE = re.compile(
-    r"^\s*(?:"
-    r"play|pause|resume|skip|previous|shuffle|repeat|like|save|follow|unfollow|"
-    r"add|delete|remove|make|turn|queue|stop"
-    r")\b",
+_QUESTION_START_RE = re.compile(
+    r"^\s*(?:what|where|when|why|how|which|who|can|could|should|would|is|are|do|does|did|any)\b",
+    re.I,
+)
+
+_ADVICE_EXPLANATION_RE = re.compile(
+    r"(?:"
+    r"\bexplain\b"
+    r"|"
+    r"\bhelp\s+me\s+understand\b"
+    r"|"
+    r"\btips\b"
+    r"|"
+    r"\bwalk\s+me\s+through\b"
+    r"|"
+    r"\btell\s+me\s+(?:how|about)\b"
+    r"|"
+    r"\bbest\s+way\b"
+    r")",
     re.I,
 )
 
@@ -113,16 +134,39 @@ _MULTI_STEP_RE = re.compile(
 )
 
 
+def _prompt_has_action_request(text: str) -> bool:
+    """True when the user is asking the agent to perform a Spotify action now."""
+    t = text.strip()
+    if not t:
+        return False
+    if _LEADING_ACTION_REQUEST_RE.match(t):
+        return True
+    return bool(_POLITE_ACTION_REQUEST_RE.search(t))
+
+
+def _prompt_is_question_form(text: str) -> bool:
+    t = text.strip()
+    if not t:
+        return False
+    if t.endswith("?"):
+        return True
+    return bool(_QUESTION_START_RE.match(t))
+
+
+def _prompt_is_advice_or_explanation(text: str) -> bool:
+    return bool(_ADVICE_EXPLANATION_RE.search(text))
+
+
 def prompt_is_informational(user_text: str) -> bool:
-    """How-to / advice / explanation — read-only tools only; no mutations."""
+    """Questions and advice without an action request → read-only / no mutations."""
     t = (user_text or "").strip()
     if not t:
         return False
-    if _ACTION_IMPERATIVE_RE.match(t):
+    if _prompt_has_action_request(t):
         return False
     if _CATALOG_DATA_QUESTION_RE.search(t):
         return False
-    return bool(_HOW_TO_ADVICE_RE.search(t))
+    return _prompt_is_question_form(t) or _prompt_is_advice_or_explanation(t)
 
 
 def prompt_is_multi_step(user_text: str) -> bool:

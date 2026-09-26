@@ -198,6 +198,38 @@ def test_r7_item4_action_phrasings_still_not_informational(phrase: str) -> None:
     assert prompt_is_informational(phrase) is False
 
 
+R7_STRUCTURAL_HELD_OUT_INFORMATIONAL = (
+    "why does shuffle keep repeating the same songs?",
+    "is it possible to share a playlist with a friend?",
+    "when should I use smart shuffle?",
+    "does Spotify let me hide a song?",
+    "who can see my private playlists?",
+    "tell me about crossfade",
+    "should I use the queue or a playlist for a party?",
+    "explain the difference between liking and saving an album",
+    "can playlists be collaborative?",
+    "is there any limit on playlist size?",
+)
+
+R7_POLITE_ACTION_NOT_INFORMATIONAL = (
+    "can you play Radiohead?",
+    "could you pause the music?",
+    "would you skip this song?",
+    "will you add this to my Road Trip playlist?",
+    "please like this song",
+    "can you make my playlist Chill private?",
+)
+
+
+@pytest.mark.parametrize(
+    "phrase,expect_informational",
+    tuple((p, True) for p in R7_STRUCTURAL_HELD_OUT_INFORMATIONAL)
+    + tuple((p, False) for p in R7_POLITE_ACTION_NOT_INFORMATIONAL),
+)
+def test_r7_item4_structural_held_out(phrase: str, expect_informational: bool) -> None:
+    assert prompt_is_informational(phrase) is expect_informational
+
+
 def test_r7_item5_informational_guidance_mentions_heart_like_not_contradiction() -> None:
     low = INFORMATIONAL_REPLY_SYSTEM_SUFFIX.lower()
     assert "heart" in low
