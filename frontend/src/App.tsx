@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { SetupWizard } from "./SetupWizard";
 import { fetchSetupStatus } from "./lib/api";
+import { isChatBlockedBySetup } from "./lib/setupGate";
 
 
 
@@ -192,8 +193,9 @@ export function App() {
   const refreshSetup = useCallback(async () => {
     try {
       const s = await fetchSetupStatus();
-      setSetupComplete(s.setup_complete);
-      if (!s.setup_complete) setShowSetupWizard(true);
+      const ready = !isChatBlockedBySetup(s) && s.spotify_configured;
+      setSetupComplete(ready);
+      if (!ready) setShowSetupWizard(true);
     } catch {
       setSetupComplete(false);
       setShowSetupWizard(true);

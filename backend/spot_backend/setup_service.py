@@ -36,9 +36,11 @@ def _signed_in(settings: Settings) -> bool:
     return bool(bundle and bundle.access_token)
 
 
-def _ollama_ready(settings: Settings) -> tuple[bool, str | None]:
+def _ollama_ready(settings: Settings, *, model_override: str | None = None) -> tuple[bool, str | None]:
     host = settings.ollama_host.rstrip("/")
-    model = read_effective_ollama_model(settings.data_dir, settings.ollama_model)
+    model = (model_override or "").strip() or read_effective_ollama_model(
+        settings.data_dir, settings.ollama_model
+    )
     if not host or not model:
         return False, "Ollama host and model are required"
     try:
@@ -65,11 +67,13 @@ def _ollama_ready(settings: Settings) -> tuple[bool, str | None]:
         return False, f"HTTP {e.response.status_code}"
 
 
-def _gemini_ready(settings: Settings) -> tuple[bool, str | None]:
+def _gemini_ready(settings: Settings, *, model_override: str | None = None) -> tuple[bool, str | None]:
     key = (settings.gemini_api_key or "").strip()
     if not key:
         return False, "Gemini API key is not configured"
-    model = read_effective_gemini_model(settings.data_dir, settings.gemini_model)
+    model = (model_override or "").strip() or read_effective_gemini_model(
+        settings.data_dir, settings.gemini_model
+    )
     try:
         r = httpx.get(
             "https://generativelanguage.googleapis.com/v1beta/models",
@@ -98,6 +102,32 @@ def _gemini_ready(settings: Settings) -> tuple[bool, str | None]:
         return False, str(e)
     except httpx.HTTPStatusError as e:
         return False, f"HTTP {e.response.status_code}: {(e.response.text or '')[:200]}"
+
+
+def _trial_settings_for_llm_test(
+    *,
+    provider: Literal["gemini", "ollama"],
+    gemini_api_key: str | None,
+    ollama_host: str | None,
+    ollama_model: str | None,
+    data_dir,
+) -> Settings:
+    """Build settings as if proposed values were saved (without persisting)."""
+    base = merge_settings_from_store(Settings())
+    updates: dict[str, Any] = {}
+    if provider == "gemini":
+        key_in = (gemini_api_key or "").strip()
+        if key_in:
+            updates["gemini_api_key"] = key_in
+        elif not (base.gemini_api_key or "").strip():
+            existing = read_secret(data_dir, "gemini_api_key")
+            if existing:
+                updates["gemini_api_key"] = existing
+    else:
+        host_in = (ollama_host or "").strip()
+        if host_in:
+            updates["ollama_host"] = host_in.rstrip("/")
+    return base.model_copy(update=updates) if updates else base
 
 
 def setup_status() -> dict[str, Any]:
@@ -155,6 +185,30 @@ def save_spotify_app(client_id: str) -> dict[str, Any]:
     }
 
 
+def _list_gemini_models(api_key: str) -> list[str]:
+    r = httpx.get(
+        "https://generativelanguage.googleapis.com/v1beta/models",
+        params={"key": api_key, "pageSize": 200},
+        timeout=10.0,
+    )
+    r.raise_for_status()
+    data = r.json()
+    names: list[str] = []
+    for m in data.get("models", []):
+        if not isinstance(m, dict):
+            continue
+        full = str(m.get("name", ""))
+        if not full:
+            continue
+        methods = m.get("supportedGenerationMethods") or []
+        if isinstance(methods, list) and "generateContent" not in methods:
+            continue
+        short = full.split("/", 1)[1] if full.startswith("models/") else full
+        names.append(short)
+    names.sort()
+    return names
+
+
 def save_llm_setup(
     *,
     provider: Literal["gemini", "ollama"],
@@ -165,6 +219,36 @@ def save_llm_setup(
     test: bool = True,
 ) -> dict[str, Any]:
     s = get_settings()
+    env_base = Settings()
+    gemini_model_eff = (gemini_model or "").strip() or None
+    ollama_model_eff = (ollama_model or "").strip() or None
+
+    if provider == "gemini":
+        key_in = (gemini_api_key or "").strip()
+        if not key_in and not gemini_key_configured(s.data_dir, env_base.gemini_api_key):
+            raise ValueError("gemini_api_key is required when switching to Gemini")
+    else:
+        if not (ollama_host or "").strip() and not read_setup_fields(s.data_dir).get("ollama_host"):
+            if not (env_base.ollama_host or "").strip():
+                raise ValueError("ollama_host is required when switching to Ollama")
+        if not ollama_model_eff and not read_effective_ollama_model(s.data_dir, env_base.ollama_model):
+            raise ValueError("ollama_model is required when switching to Ollama")
+
+    if test:
+        trial = _trial_settings_for_llm_test(
+            provider=provider,
+            gemini_api_key=gemini_api_key,
+            ollama_host=ollama_host,
+            ollama_model=ollama_model,
+            data_dir=s.data_dir,
+        )
+        if provider == "gemini":
+            ready, err = _gemini_ready(trial, model_override=gemini_model_eff)
+        else:
+            ready, err = _ollama_ready(trial, model_override=ollama_model_eff)
+        if not ready:
+            raise ValueError(err or f"{provider} validation failed")
+
     write_llm_provider(s.data_dir, provider)
 
     if provider == "gemini":
@@ -172,18 +256,16 @@ def save_llm_setup(
         if key_in:
             backend = write_secret(s.data_dir, "gemini_api_key", key_in)
             logger.info("gemini api key stored via %s", backend)
-        elif not gemini_key_configured(s.data_dir, Settings().gemini_api_key):
-            raise ValueError("gemini_api_key is required when switching to Gemini")
-        if gemini_model and gemini_model.strip():
-            write_gemini_model_override(s.data_dir, gemini_model.strip())
+        if gemini_model_eff:
+            write_gemini_model_override(s.data_dir, gemini_model_eff)
     else:
         patch: dict[str, Any] = {}
         if ollama_host and ollama_host.strip():
             patch["ollama_host"] = ollama_host.strip().rstrip("/")
         if patch:
             write_setup_fields(s.data_dir, patch)
-        if ollama_model and ollama_model.strip():
-            write_ollama_model_override(s.data_dir, ollama_model.strip())
+        if ollama_model_eff:
+            write_ollama_model_override(s.data_dir, ollama_model_eff)
 
     merged = merge_settings_from_store(Settings())
     out: dict[str, Any] = {
@@ -198,38 +280,12 @@ def save_llm_setup(
         return out
 
     if provider == "gemini":
-        ready, err = _gemini_ready(merged)
-        out["reachable"] = ready
-        out["error"] = err
-        if not ready:
-            raise ValueError(err or "Gemini test failed")
-        r = httpx.get(
-            "https://generativelanguage.googleapis.com/v1beta/models",
-            params={"key": merged.gemini_api_key, "pageSize": 200},
-            timeout=10.0,
-        )
-        r.raise_for_status()
-        data = r.json()
-        names: list[str] = []
-        for m in data.get("models", []):
-            if not isinstance(m, dict):
-                continue
-            full = str(m.get("name", ""))
-            if not full:
-                continue
-            methods = m.get("supportedGenerationMethods") or []
-            if isinstance(methods, list) and "generateContent" not in methods:
-                continue
-            short = full.split("/", 1)[1] if full.startswith("models/") else full
-            names.append(short)
-        names.sort()
-        out["models"] = names
+        out["reachable"] = True
+        out["error"] = None
+        out["models"] = _list_gemini_models(merged.gemini_api_key)
     else:
-        ready, err = _ollama_ready(merged)
-        out["reachable"] = ready
-        out["error"] = err
-        if not ready:
-            raise ValueError(err or "Ollama test failed")
+        out["reachable"] = True
+        out["error"] = None
         host = merged.ollama_host.rstrip("/")
         r = httpx.get(f"{host}/api/tags", timeout=5.0)
         r.raise_for_status()

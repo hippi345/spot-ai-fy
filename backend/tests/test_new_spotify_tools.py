@@ -48,6 +48,17 @@ def test_recently_played_ok(data_dir, signed_in_tokens) -> None:
 
 
 @respx.mock
+def test_save_tracks_missing_library_modify_scope(data_dir) -> None:
+    runner = _runner_with_scope("user-read-private user-library-read")
+    raw = runner.run("spotify_save_tracks", {"track_ids": ["1111111111111111111111"]})
+    data = json.loads(raw)
+    assert data["error"] == (
+        "Reconnect Spotify to enable saving or removing tracks and albums in your library."
+    )
+    runner.close()
+
+
+@respx.mock
 def test_save_tracks(data_dir, signed_in_tokens) -> None:
     route = respx.put(url__regex=r"https://api\.spotify\.com/v1/me/tracks.*").mock(
         return_value=httpx.Response(200, json={})

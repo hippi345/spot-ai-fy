@@ -3,11 +3,10 @@
  * Set VITE_API_BASE_URL to talk to a remote API; otherwise same-origin / Vite proxy.
  */
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
-
 export function apiUrl(path: string): string {
+  const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
   const normalized = path.startsWith("/") ? path : `/${path}`;
-  return API_BASE ? `${API_BASE}${normalized}` : normalized;
+  return apiBase ? `${apiBase}${normalized}` : normalized;
 }
 
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {

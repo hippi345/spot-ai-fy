@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import stat
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,8 @@ _SETUP_FILE = "setup.json"
 _SECRETS_FILE = "secrets.json"
 
 _SECRET_KEYS = frozenset({"gemini_api_key"})
+
+_PRIVATE_FILE_MODE = stat.S_IRUSR | stat.S_IWUSR
 
 
 def _setup_path(data_dir: Path) -> Path:
@@ -46,12 +49,32 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _write_json_private(path: Path, data: dict[str, Any]) -> None:
+    """Write JSON atomically with private mode from file creation (never world-readable)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    payload = json.dumps(data, indent=2).encode("utf-8")
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
+        try:
+            os.fchmod(fd, _PRIVATE_FILE_MODE)
+        except (OSError, AttributeError):
+            pass
+        os.write(fd, payload)
+        os.close(fd)
+        fd = -1
+        os.replace(tmp_name, str(path))
+        tmp_name = ""
+        try:
+            os.chmod(path, _PRIVATE_FILE_MODE)
+        except OSError:
+            pass
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
 
 
 def read_setup_fields(data_dir: Path) -> dict[str, Any]:
