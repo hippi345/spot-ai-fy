@@ -143,6 +143,9 @@ def test_play_playlist_returns_playback_summary(data_dir, signed_in_tokens) -> N
 
     respx.put("https://api.spotify.com/v1/me/player/play").mock(return_value=httpx.Response(204))
     respx.get("https://api.spotify.com/v1/me/player").mock(side_effect=player_state)
+    respx.get(f"https://api.spotify.com/v1/playlists/{pid}").mock(
+        return_value=httpx.Response(200, json={"id": pid, "name": "List"})
+    )
 
     runner = _runner(data_dir, signed_in_tokens)
     try:

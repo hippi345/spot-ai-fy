@@ -4,6 +4,7 @@ jobs = 0
 ignore-paths = [
     "backend/\\.venv/.*",
     "frontend/.*",
+    "backend/scripts/.*",
 ]
 
 [tool.pylint."messages control"]
@@ -60,6 +61,9 @@ max-line-length = 140
 [tool.pytest.ini_options]
 pythonpath = ["backend"]
 testpaths = ["backend/tests"]
+markers = [
+    "no_catalog_get_stub: disable default Spotify catalog GET stubs for this test",
+]
 
 [tool.pylint.reports]
 # Require at least this score, so accidental regressions still fail CI even

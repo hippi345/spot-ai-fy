@@ -4,12 +4,36 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
+from spot_backend.action_claim_guard import (
+    action_claim_honest_fallback,
+    action_claim_reprompt,
+    record_successful_tool,
+    reply_claims_unbacked_action,
+)
 from spot_backend.config import Settings
+from spot_backend.chat_messages import (
+    PROMISE_AFTER_ID_ERROR_NUDGE,
+    assistant_reply_is_promise_only,
+    prepare_user_visible_reply,
+    tool_result_is_rejected_or_invalid_id,
+)
+from spot_backend.deterministic_chat import gemini_deterministic_shortcut_reply
+from spot_backend.chat_tool_state import seed_runner_from_chat_history
+from spot_backend.gemini_nudge import should_send_gemini_tool_nudge
+from spot_backend.prompt_intent import (
+    gemini_declarations_for_prompt,
+    gemini_should_use_any_first_round,
+    informational_system_suffix,
+    prompt_is_informational,
+    refused_mutating_tool_result,
+    spotify_tool_is_mutating,
+)
 from spot_backend.context_loader import load_optional_agent_context_markdown
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
 
@@ -108,6 +132,7 @@ Rules:
   * Editing someone else's playlist — NOT supported by the Web API. Offer spotify_duplicate_playlist to copy it into a new playlist the user owns; the new playlist is fully writable for spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks / etc.
 - The user selects an active device in the UI; omit device_id unless you must override it.
 - After tools return, give a short natural language summary for the user.
+- Never mention internal tool or function names (spotify_* identifiers) to the user — describe actions in plain language only.
 
 High-level natural language: infer the user's goal and run the right tool sequence yourself (no need to ask for technical ids first). Examples: "add John Mayer to my Workout playlist" → spotify_user_playlists to find Workout's id, spotify_search for tracks, spotify_add_tracks_to_playlist. "Create a chill mix with …" → spotify_create_playlist then search then add. "What's on my running list?" → user_playlists / get_playlist / playlist_tracks. "My liked songs" → spotify_user_saved_tracks. "My top artists / favorite artists / who do I listen to most" → spotify_top_artists. "My top songs / most played tracks" → spotify_top_tracks. "Artists I follow" → spotify_followed_artists. "Show me <user_id>'s playlists" → spotify_user_public_playlists. "Find me a playlist about <description>" → spotify_search_playlists, then optionally spotify_follow_playlist or spotify_play_playlist. "Copy <someone else's playlist> so I can edit it" → spotify_duplicate_playlist, then edit with spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks on the new id. "Most popular album" → search + get_album / artist_top_tracks and explain the metric. On tool errors, read detail/hint and retry with a corrected plan when possible.
 For create-then-add-then-play: playlist_id = create response `id` or `playlist_id_for_add_tracks`. Pass search results as `tracks` (array of tracks.items objects), or the whole search `tracks` object `{items: [...]}` — the server unwraps `items`. Start playback with context_uri `spotify:playlist:<id>`. On add failure: obey suggest_sign_out_of_spotify; if false, retry tools — never sign-out advice. Do not say "usually permissions." """
@@ -258,6 +283,159 @@ def _user_message_wants_spotify_data(text: str) -> bool:
     )
 
 
+def _gemini_candidate_has_tool_or_text(cand: dict[str, Any]) -> tuple[bool, bool]:
+    """Return (has_function_call, has_visible_text)."""
+    c_content = cand.get("content")
+    if not isinstance(c_content, dict):
+        return False, False
+    parts = c_content.get("parts")
+    if not isinstance(parts, list):
+        parts = []
+    has_fc = False
+    has_text = False
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        fc = part.get("functionCall")
+        if isinstance(fc, dict) and fc.get("name"):
+            has_fc = True
+        text_val = part.get("text")
+        if (
+            isinstance(text_val, str)
+            and text_val.strip()
+            and not bool(part.get("thought"))
+        ):
+            has_text = True
+    return has_fc, has_text
+
+
+def _gemini_finish_reason_is_empty(fr: Any) -> bool:
+    if fr in ("MALFORMED_FUNCTION_CALL", "OTHER"):
+        return True
+    return False
+
+
+def gemini_candidate_is_effectively_empty(cand: dict[str, Any]) -> bool:
+    """True when the model returned no tool call and no user-visible text."""
+    fr = cand.get("finishReason")
+    has_fc, has_visible = _gemini_candidate_has_tool_or_text(cand)
+    if _gemini_finish_reason_is_empty(fr):
+        return True
+    if fr == "STOP" and not has_fc and not has_visible:
+        return True
+    return not has_fc and not has_visible
+
+
+def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
+    """Restrict ANY-mode tool calls for obvious single-intent control commands."""
+    from spot_backend.play_artist_intent import extract_play_artist_name
+
+    t = (user_text or "").strip().lower()
+    if not t:
+        return None
+    artist = extract_play_artist_name(user_text)
+    if artist:
+        return ["spotify_play_artist"]
+    if re.fullmatch(r"play\s*", t) or t in ("play", "resume"):
+        return ["spotify_start_resume_playback"]
+    if re.search(r"\bshuffle\s+(?:on|off)\b", t) or re.fullmatch(r"shuffle(?:\s+on)?", t):
+        return ["spotify_set_shuffle"]
+    if re.search(r"\brepeat\s+(?:off|track|context|album|playlist)\b", t) or t == "repeat":
+        return ["spotify_set_repeat"]
+    if re.search(r"\b(pause|stop playback)\b", t):
+        return ["spotify_pause"]
+    if re.search(r"\b(resume|unpause|continue playing)\b", t):
+        return ["spotify_start_resume_playback", "spotify_play_playlist"]
+    if re.search(r"\b(skip next|next song|skip)\b", t) and "playlist" not in t:
+        return ["spotify_skip_next"]
+    if re.search(r"\b(previous|go back|last song)\b", t):
+        return ["spotify_skip_previous"]
+    if re.search(r"\b(volume|louder|quieter|turn (it )?(up|down))\b", t):
+        return ["spotify_set_volume"]
+    if re.search(r"\b(what'?s playing|now playing|current(ly)? playing|what song)\b", t):
+        return ["spotify_playback_state"]
+    if re.search(
+        r"\b(recently played|listening history|what did i (just )?play|"
+        r"what have i been listening to|been listening to lately|listening to lately)\b",
+        t,
+    ):
+        return ["spotify_recently_played"]
+    if re.search(r"\b(like this|save this|add to (my )?library)\b", t):
+        return [
+            "spotify_playback_state",
+            "spotify_save_tracks",
+            "spotify_save_albums",
+            "spotify_follow_playlist",
+            "spotify_follow_artist",
+        ]
+    return None
+
+
+def gemini_tool_call_signature(name: str, args: dict[str, Any]) -> str:
+    return f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}"
+
+
+def gemini_should_block_repeated_tool_call(
+    last_signature: str | None,
+    name: str,
+    args: dict[str, Any],
+) -> bool:
+    sig = gemini_tool_call_signature(name, args)
+    return last_signature is not None and sig == last_signature
+
+
+def _gemini_generation_config_for_model(model: str) -> dict[str, Any]:
+    cfg: dict[str, Any] = {"maxOutputTokens": 8192}
+    low = model.lower()
+    if "2.5" in low or "thinking" in low:
+        cfg["thinkingConfig"] = {"includeThoughts": False, "thinkingBudget": 1024}
+    return cfg
+
+
+def apply_gemini_function_calling_tools(
+    body: dict[str, Any],
+    *,
+    decls: list[dict[str, Any]],
+    fc_cfg: dict[str, Any],
+) -> None:
+    """Gemini rejects toolConfig without non-empty functionDeclarations (HTTP 400)."""
+    if decls:
+        body["tools"] = [{"functionDeclarations": decls}]
+        body["toolConfig"] = {"functionCallingConfig": fc_cfg}
+    else:
+        body.pop("tools", None)
+        body.pop("toolConfig", None)
+
+
+def build_gemini_generate_content_body(
+    *,
+    system_text: str,
+    user_prompt: str,
+    decls: list[dict[str, Any]],
+    fc_mode: str = "AUTO",
+) -> dict[str, Any]:
+    """Shared generateContent body shape for chat and diagnostics."""
+    body: dict[str, Any] = {
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+    }
+    apply_gemini_function_calling_tools(body, decls=decls, fc_cfg={"mode": fc_mode})
+    return body
+
+
+def _log_gemini_empty_candidate(data: dict[str, Any], cand: dict[str, Any], *, label: str) -> None:
+    pf = data.get("promptFeedback")
+    safety = cand.get("safetyRatings")
+    logger.debug(
+        "gemini_%s finish_reason=%s prompt_feedback=%s safety_ratings=%s parts=%s",
+        label,
+        cand.get("finishReason"),
+        json.dumps(pf)[:800] if pf is not None else None,
+        json.dumps(safety)[:800] if safety is not None else None,
+        json.dumps((cand.get("content") or {}).get("parts"))[:1500],
+    )
+
+
 _GEMINI_TOOL_NUDGE = (
     "Spot-AI-fy: You did not call any Spotify tools yet. The user question requires live Spotify data. "
     "Decompose high-level requests: playlist by name → spotify_user_playlists; artist/tracks → spotify_search; "
@@ -270,6 +448,9 @@ def run_chat_turn_gemini(
     user_text: str,
     settings: Settings,
     history: list[dict[str, str]] | None = None,
+    *,
+    emit: Callable[[dict[str, Any]], None] | None = None,
+    conversation_id: str | None = None,
 ) -> str:
     from spot_backend.agent import _coerce_chat_history
 
@@ -281,10 +462,23 @@ def run_chat_turn_gemini(
 
     model = read_effective_gemini_model(settings.data_dir, settings.gemini_model) or _DEFAULT_GEMINI_MODEL
     declarations = _openai_tools_to_gemini_declarations(OLLAMA_TOOLS)
-    runner = SpotifyToolRunner(settings=settings)
-    full_system = _SYSTEM + load_optional_agent_context_markdown(settings)
-
+    runner = SpotifyToolRunner(settings=settings, conversation_id=conversation_id)
     hist = _coerce_chat_history(history)
+    seed_runner_from_chat_history(runner, hist, conversation_id=conversation_id)
+    shortcut_reply = gemini_deterministic_shortcut_reply(
+        user_text,
+        runner,
+        conversation_id=conversation_id,
+        emit=emit,
+    )
+    if shortcut_reply is not None:
+        runner.close()
+        return shortcut_reply
+    informational_turn = prompt_is_informational(user_text)
+    full_system = _SYSTEM + load_optional_agent_context_markdown(settings)
+    if informational_turn:
+        full_system = full_system + informational_system_suffix(user_text)
+
     contents: list[dict[str, Any]] = []
     for turn in hist:
         gem_role = "user" if turn["role"] == "user" else "model"
@@ -297,6 +491,15 @@ def run_chat_turn_gemini(
     params = {"key": key}
 
     had_tool_results = False
+    successful_tools: set[str] = set()
+    tool_results: list[str] = []
+    last_tool_signature: str | None = None
+    last_tool_result: str | None = None
+    action_claim_reprompted = False
+    promise_nudge_used = False
+    tool_nudge_used = False
+    first_text_answer: str | None = None
+    empty_turn_retries = 3
     # Gemini 2.5-flash with our 40-tool catalog is *unreliable* in AUTO function-
     # calling mode — measured empty-content rate is 12/15 (80%) even with a
     # short system prompt. ANY mode forces the model to emit a tool call, which
@@ -313,16 +516,27 @@ def run_chat_turn_gemini(
     try:
         with httpx.Client(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
             for _ in range(settings.agent_max_steps):
-                if wants_spotify and not had_tool_results:
-                    fc_mode = "ANY"
-                else:
-                    fc_mode = "AUTO"
+                intent_tools = gemini_intent_allowed_function_names(user_text)
+                use_any = gemini_should_use_any_first_round(
+                    user_text,
+                    had_tool_results=had_tool_results,
+                    intent_tools=intent_tools,
+                    wants_spotify=wants_spotify,
+                )
+                fc_mode = "ANY" if use_any else "AUTO"
+                fc_cfg: dict[str, Any] = {"mode": fc_mode}
+                if fc_mode == "ANY" and intent_tools:
+                    fc_cfg["allowedFunctionNames"] = intent_tools
+                decls = gemini_declarations_for_prompt(
+                    declarations,
+                    informational=informational_turn,
+                )
                 body: dict[str, Any] = {
                     "systemInstruction": {"parts": [{"text": full_system}]},
                     "contents": contents,
-                    "tools": [{"functionDeclarations": declarations}],
-                    "toolConfig": {"functionCallingConfig": {"mode": fc_mode}},
+                    "generationConfig": _gemini_generation_config_for_model(model),
                 }
+                apply_gemini_function_calling_tools(body, decls=decls, fc_cfg=fc_cfg)
 
                 resp = _gemini_post_with_retry(client, url, params=params, json_body=body)
                 data = resp.json()
@@ -337,6 +551,30 @@ def run_chat_turn_gemini(
                     return "Unexpected Gemini response shape."
 
                 fr = cand.get("finishReason")
+                if gemini_candidate_is_effectively_empty(cand):
+                    _log_gemini_empty_candidate(data, cand, label="empty_turn")
+                    if empty_turn_retries > 0:
+                        empty_turn_retries -= 1
+                        retry_any = gemini_should_use_any_first_round(
+                            user_text,
+                            had_tool_results=had_tool_results,
+                            intent_tools=intent_tools,
+                            wants_spotify=wants_spotify,
+                        )
+                        retry_fc: dict[str, Any] = {"mode": "ANY" if retry_any else "AUTO"}
+                        if intent_tools:
+                            retry_fc["allowedFunctionNames"] = intent_tools
+                        apply_gemini_function_calling_tools(body, decls=decls, fc_cfg=retry_fc)
+                        logger.info(
+                            "gemini_empty_turn_retry finish_reason=%s remaining=%s",
+                            fr,
+                            empty_turn_retries,
+                        )
+                        continue
+                    return (
+                        "Gemini returned an empty turn (no text or tool call). Please try again, "
+                        "or switch to Ollama in Settings if it keeps happening."
+                    )
                 if fr in ("SAFETY", "RECITATION"):
                     return (
                         "Gemini's safety filter blocked that turn. Please rephrase, or switch to "
@@ -400,7 +638,29 @@ def run_chat_turn_gemini(
                         args: dict[str, Any] = {}
                         if isinstance(raw_args, dict):
                             args = raw_args
-                        result = runner.run(name, args)
+                        sig = gemini_tool_call_signature(name, args)
+                        if gemini_should_block_repeated_tool_call(last_tool_signature, name, args):
+                            repeat_reply = (
+                                last_tool_result
+                                if last_tool_result
+                                else "I already ran that Spotify action once this turn. "
+                                "Check Spotify or try rephrasing if something still looks wrong."
+                            )
+                            return prepare_user_visible_reply(repeat_reply, tool_results)
+                        if emit:
+                            emit({"type": "tool_start", "name": name})
+                        if informational_turn and spotify_tool_is_mutating(name):
+                            result = refused_mutating_tool_result(name)
+                        else:
+                            result = runner.run(name, args)
+                        last_tool_signature = sig
+                        last_tool_result = result
+                        tool_results.append(result)
+                        if not (informational_turn and spotify_tool_is_mutating(name)):
+                            record_successful_tool(successful_tools, name, result)
+                        if emit:
+                            preview = result[:240] + ("…" if len(result) > 240 else "")
+                            emit({"type": "tool_done", "name": name, "preview": preview})
                         fr_parts.append(
                             {
                                 "functionResponse": {
@@ -420,10 +680,43 @@ def run_chat_turn_gemini(
 
                 joined = "\n".join(t for t in visible_text_chunks if isinstance(t, str) and t.strip()).strip()
                 if joined:
-                    if not had_tool_results and _user_message_wants_spotify_data(spotify_intent_blob):
+                    if (
+                        assistant_reply_is_promise_only(joined)
+                        and tool_results
+                        and tool_result_is_rejected_or_invalid_id(tool_results[-1])
+                        and not promise_nudge_used
+                    ):
+                        promise_nudge_used = True
+                        contents.append({"role": "model", "parts": [{"text": joined}]})
+                        contents.append(
+                            {"role": "user", "parts": [{"text": PROMISE_AFTER_ID_ERROR_NUDGE}]}
+                        )
+                        continue
+                    if reply_claims_unbacked_action(joined, successful_tools):
+                        if not action_claim_reprompted:
+                            action_claim_reprompted = True
+                            contents.append({"role": "model", "parts": [{"text": joined}]})
+                            contents.append(
+                                {"role": "user", "parts": [{"text": action_claim_reprompt()}]}
+                            )
+                            continue
+                        return action_claim_honest_fallback()
+                    if should_send_gemini_tool_nudge(
+                        user_text=user_text,
+                        had_tool_results=had_tool_results,
+                        action_claim_reprompted=action_claim_reprompted,
+                        tool_nudge_used=tool_nudge_used,
+                        wants_spotify_data=_user_message_wants_spotify_data(spotify_intent_blob),
+                    ):
+                        if first_text_answer is None:
+                            first_text_answer = joined
+                        tool_nudge_used = True
+                        contents.append({"role": "model", "parts": [{"text": joined}]})
                         contents.append({"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]})
                         continue
-                    return joined
+                    if tool_nudge_used and first_text_answer and not had_tool_results:
+                        return prepare_user_visible_reply(first_text_answer, tool_results)
+                    return prepare_user_visible_reply(joined, tool_results)
 
                 # No visible text and no tool calls. Log everything we have so we can
                 # diagnose schema rejections, thought-only responses, etc.
@@ -447,9 +740,18 @@ def run_chat_turn_gemini(
                     continue
                 # If the model returned ONLY thought parts on the first turn for an
                 # obvious Spotify question, give it one chance to actually act.
-                if not had_tool_results and _user_message_wants_spotify_data(spotify_intent_blob):
+                if should_send_gemini_tool_nudge(
+                    user_text=user_text,
+                    had_tool_results=had_tool_results,
+                    action_claim_reprompted=action_claim_reprompted,
+                    tool_nudge_used=tool_nudge_used,
+                    wants_spotify_data=_user_message_wants_spotify_data(spotify_intent_blob),
+                ):
+                    tool_nudge_used = True
                     contents.append({"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]})
                     continue
+                if tool_nudge_used and first_text_answer:
+                    return prepare_user_visible_reply(first_text_answer, tool_results)
                 return (
                     "Gemini didn't return any text on that turn. Please rephrase or try again, "
                     "or switch to Ollama in Settings if it keeps happening."
@@ -518,3 +820,32 @@ def _gemini_friendly_error_message(exc: httpx.HTTPStatusError, model: str) -> st
         "Gemini ran into an unexpected problem on that request. Please try again in a moment, "
         "pick a different model from the Settings dropdown, or switch to Ollama in Settings."
     )
+
+
+def iter_gemini_chat_events(
+    user_text: str,
+    settings: Settings,
+    history: list[dict[str, str]] | None = None,
+    *,
+    conversation_id: str | None = None,
+):
+    """Yield SSE-style events for a Gemini chat turn (tool steps + final text)."""
+    events: list[dict[str, Any]] = []
+
+    def _emit(ev: dict[str, Any]) -> None:
+        events.append(ev)
+
+    yield {"type": "status", "message": "Calling Gemini…"}
+    try:
+        text = run_chat_turn_gemini(
+            user_text,
+            settings,
+            history=history,
+            emit=_emit,
+            conversation_id=conversation_id,
+        )
+        for ev in events:
+            yield ev
+        yield {"type": "final", "text": text}
+    except Exception as e:
+        yield {"type": "error", "message": f"{type(e).__name__}: {e}"}

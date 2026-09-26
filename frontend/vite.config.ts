@@ -1,9 +1,16 @@
+/// <reference types="vitest/config" />
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+    globals: false,
+  },
   server: {
+    host: "127.0.0.1",
     port: 5173,
     proxy: {
       // Chat can run for several minutes (Ollama + many tool rounds); avoid proxy cutting the connection.

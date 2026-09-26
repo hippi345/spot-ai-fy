@@ -20,6 +20,7 @@ from spot_backend.gemini_llm import (
     _GEMINI_PARAM_DESC_MAX,
     _SYSTEM,
     _openai_tools_to_gemini_declarations,
+    build_gemini_generate_content_body,
 )
 from spot_backend.llm_prefs import read_effective_gemini_model
 from spot_backend.spotify_tools import OLLAMA_TOOLS
@@ -66,12 +67,12 @@ def main() -> int:
             for prompt in PROMPTS:
                 print(f"\n>>> {prompt!r}")
                 for trial in range(1, N_TRIALS + 1):
-                    body = {
-                        "systemInstruction": {"parts": [{"text": sys_prompt}]},
-                        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                        "tools": [{"functionDeclarations": declarations}],
-                        "toolConfig": {"functionCallingConfig": {"mode": mode}},
-                    }
+                    body = build_gemini_generate_content_body(
+                        system_text=sys_prompt,
+                        user_prompt=prompt,
+                        decls=declarations,
+                        fc_mode=mode,
+                    )
                     resp = client.post(url, params={"key": key}, json=body)
                     if resp.status_code != 200:
                         print(f"   trial {trial}: HTTP {resp.status_code} {resp.text[:200]}")

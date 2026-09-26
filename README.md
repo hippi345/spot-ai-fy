@@ -31,7 +31,7 @@ Spot-AI-fy is a local-first natural-language front end for the Spotify Web API. 
 - **Known-limitation guardrails** — the system prompt tells the agent which Spotify endpoints don't exist (per-playlist listen counts, per-track play counts, long listening history) so it answers plainly instead of looping through tools.
 - **Good OAuth diagnostics** — distinguishes stale scopes (requires re-consent, since Spotify refresh tokens don't upgrade scopes), not-owned playlists, and the Spotify Web API [Feb 2026 dev-mode migration](https://developer.spotify.com/blog/2026-02-06-update-on-developer-access-and-platform-security) (`/tracks` → `/items`, removed `/artists/{id}/top-tracks`, capped `/search` limit).
 - **Two LLM backends, swappable at runtime from the UI** — no `.env` edit needed to switch between local Ollama and Gemini. Model tags for both providers are populated dynamically from what the provider reports (`ollama list` for Ollama, the Google Generative Language models API for Gemini).
-- **Live agent-progress panel (Ollama)** — shows rounds, tool calls, and elapsed time per step with a live ticker; toggle "Show details" to expand the raw tool-result previews. Gemini calls skip the panel to stay quiet.
+- **Live agent-progress panel** — shows rounds, tool calls, and elapsed time per step with a live ticker for both Ollama and Gemini streams; toggle "Show details" to expand the raw tool-result previews.
 - **CPU-friendly Ollama tuning knobs** — per-provider settings for context window, keep-alive, history replay, tool-result caps, and agent-step caps so a local model on a laptop stays responsive without silently truncating prompts. See [Bring your own LLM](#bring-your-own-llm).
 - **Optional agent-context file** — drop a markdown file in `backend/AGENT_CONTEXT.md` (or point `AGENT_CONTEXT_FILE` at a path) and it's appended to the system prompt for both backends, letting you tune tone and rules without editing Python.
 
@@ -74,9 +74,6 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-Copy-Item .env.example .env
-notepad .env   # paste your SPOTIFY_CLIENT_ID (and GEMINI_API_KEY if using Gemini)
-
 uvicorn spot_backend.app:app --host 127.0.0.1 --port 8765 --reload
 ```
 
@@ -88,11 +85,10 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env
-${EDITOR:-nano} .env
-
 uvicorn spot_backend.app:app --host 127.0.0.1 --port 8765 --reload
 ```
+
+Optional: copy `backend/.env.example` to `backend/.env` if you prefer configuring via environment variables instead of the in-app wizard.
 
 ### 2. Frontend
 
@@ -102,7 +98,20 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173), click **Connect Spotify**, pick a playback device, and start chatting.
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173) (the Vite dev server binds to `127.0.0.1`, not `localhost` IPv6). The **first-time setup wizard** walks you through:
+
+1. **Spotify** — copy the redirect URI into your [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) app, paste the Client ID, then **Connect Spotify**.
+2. **LLM** — choose **Gemini** (API key) or **Ollama** (URL + model). The backend validates the provider before saving.
+
+When setup is complete, pick a playback device in settings (**Auto (active device)** clears any saved device override) and start chatting. Reopen setup anytime from **Setup** — the wizard stays open when you open it manually even if setup is already complete.
+
+After saving Ollama settings, the wizard may show **CPU-only guidance** (from `GET /api/ps` `size_vram` plus a one-word timing probe). CPU-only runs are supported but can take tens of seconds per simple request; Gemini is faster when you have a key.
+
+If like/save/follow actions return HTTP 403, use **Re-authorize Spotify** (missing `user-library-modify`, `user-follow-modify`, etc.) — Sign out → Connect picks up the scopes in `DEFAULT_SCOPES`.
+
+Single-track **play now** uses album `context_uri` + track `offset` when possible (plain `uris: [track]` can leave the Spotify desktop app stuck with “Restriction violated”).
+
+Set `VITE_API_BASE_URL` when the UI should call a non-proxied API host (defaults to same-origin / Vite proxy).
 
 The Vite dev server proxies `/api/*`, `/login`, and `/logout` to the backend on port 8765. Spotify’s OAuth redirect still hits `http://127.0.0.1:8765/callback` directly (register that URI on the Spotify dashboard).
 
@@ -169,7 +178,7 @@ Best for privacy, offline use, and "I already have a GPU / spare laptop running 
 **Tuning for CPU-only machines.** Ollama's default context is 4096 tokens, which routinely gets silently truncated by Spot-AI-fy's system prompt + history + tool results. The following knobs (all Ollama-only — they do not affect Gemini) are safe defaults on a 16 GB CPU laptop:
 
 ```ini
-OLLAMA_NUM_CTX=8192            # stop silent "truncating input prompt" warnings
+OLLAMA_NUM_CTX=16384           # default; agent prompt + tools need >8k tokens
 OLLAMA_KEEP_ALIVE=30m          # skip the cold-load penalty between prompts (can be 1–2 min on CPU)
 OLLAMA_HISTORY_MESSAGES=10     # only replay the last N UI messages each round
 OLLAMA_TOOL_RESULT_MAX=5000    # cap per-tool result bytes fed back into the prompt
@@ -201,9 +210,20 @@ The agent loop depends on tool calling — it needs a model that will either emi
 
 > **Heads up** — OpenAI (GPT-*), Anthropic (Claude), and OpenAI-compatible proxies like OpenRouter / Groq / Together are not wired up yet. See [Roadmap](#roadmap) below.
 
+## Configuration precedence
+
+Settings can come from the in-app setup wizard (stored under `DATA_DIR`) or from `backend/.env`. When both exist, **environment variables / `.env` always win**:
+
+1. **Environment variables** and `backend/.env` (highest — keeps existing deployments working)
+2. **OS keychain** (`keyring`) for secrets such as `GEMINI_API_KEY` when the wizard saves them
+3. **`secrets.json`** in `DATA_DIR` (mode `0600`) when no keychain backend is available
+4. **`setup.json`** in `DATA_DIR` for non-secret fields (Spotify Client ID, Ollama host)
+
+Secrets are never logged or returned from API responses (masked placeholders only).
+
 ## Environment variables
 
-All variables live in `backend/.env` (see [`backend/.env.example`](backend/.env.example) for the annotated template). Only `SPOTIFY_CLIENT_ID` is strictly required.
+All variables live in `backend/.env` (see [`backend/.env.example`](backend/.env.example) for the annotated template). Nothing is strictly required if you use the setup wizard; `SPOTIFY_CLIENT_ID` (or wizard step 1) is required before Spotify login.
 
 | Variable | Purpose |
 | --- | --- |
@@ -214,7 +234,9 @@ All variables live in `backend/.env` (see [`backend/.env.example`](backend/.env.
 | `FRONTEND_ORIGIN` | CORS origin for the Vite dev server (default `http://localhost:5173`). |
 | `LLM_PROVIDER` | `ollama` (default, local) or `gemini` (cloud). Runtime overridable from the UI. |
 | `OLLAMA_HOST` / `OLLAMA_MODEL` | Ollama endpoint and default model tag. Model tag is overridable from the UI (dropdown is populated from `ollama list`). |
-| `OLLAMA_NUM_CTX` | Ollama context window in tokens. Default `8192` to avoid silent truncation of long prompts. Set `0` to use the model's built-in default. |
+| `OLLAMA_NUM_CTX` | Ollama context window in tokens. Default `16384` (full tool list is ~10k+ tokens). Set `0` to use the model's built-in default. |
+| `OLLAMA_THINK` | When `false` (default), sends `"think": false` to Ollama; retries once without the field if the model rejects it. |
+| `OLLAMA_NUM_THREAD` | Optional CPU thread hint (`options.num_thread`). `0` = omit. |
 | `OLLAMA_KEEP_ALIVE` | How long Ollama keeps the model resident after the last request (e.g. `30m`, `2h`, `-1` = forever). Avoids the ~100 s cold-load penalty on CPU. |
 | `OLLAMA_HISTORY_MESSAGES` | Number of previous chat messages replayed to Ollama each round. `0` = send everything the UI passed (currently up to 40). Recommended `10` for CPU. |
 | `OLLAMA_TOOL_RESULT_MAX` | Character cap on each tool result fed back into the Ollama prompt. `0` = use the built-in 12 000-char default. Recommended `5000` for CPU. |
@@ -236,7 +258,7 @@ The backend exposes ~35 tools to the LLM (and via MCP). A few highlights:
 - **Playlist edits (yours)**: `spotify_create_playlist`, `spotify_update_playlist`, `spotify_add_tracks_to_playlist`, `spotify_add_tracks_by_query` (composite), `spotify_remove_playlist_tracks`, `spotify_reorder_playlist_tracks`, `spotify_replace_playlist_tracks`.
 - **Playlist edits (someone else's)**: `spotify_duplicate_playlist` — Spotify's API forbids editing other users' playlists, so this composite copies a source playlist into a brand-new one **owned by you** (paginated source read + new playlist + 100-uri batched copy). The returned `new_playlist_id` is fully writable for `spotify_add_tracks_to_playlist` / `spotify_remove_playlist_tracks` / etc.
 - **Playback (play now)**: `spotify_start_resume_playback`, `spotify_play_playlist` (composite — start at track + repeat/shuffle), `spotify_pause`, `spotify_skip_next`, `spotify_skip_previous`, `spotify_seek`.
-- **Playback (queue / next)**: `spotify_add_to_queue`, `spotify_play_next`.
+- **Playback (queue / next)**: `spotify_add_to_queue`, `spotify_play_next`. Spotify cannot remove arbitrary queue items — use `spotify_remove_from_queue` for a clear explanation or offer `spotify_skip_next`.
 - **Modes & devices**: `spotify_set_repeat`, `spotify_set_shuffle`, `spotify_set_volume`, `spotify_devices`, `spotify_transfer_playback`, `spotify_playback_state`.
 
 All tools return structured JSON with explicit error flags (`stale_scopes_need_reauth`, `playlist_not_owned_by_user`, `playback_verified`, `rejected_uris`, `spotify_feb_2026_migration_possible`, ...) so the LLM stops guessing when something goes wrong.
@@ -252,6 +274,7 @@ The agent's system prompt is wired to tell you plainly when something isn't poss
 - **Editing another user's playlist** — not possible. The agent will offer `spotify_duplicate_playlist` to copy it into a writable playlist you own.
 - **Per-playlist / per-track / per-album play counts** — not in the API. The agent will offer `spotify_top_artists` / `spotify_top_tracks` as the closest proxy.
 - **Listening history beyond the most recent ~50 items** — not in the API.
+- **Private playlist visibility in Development Mode** — Spot-AI-fy always sends `public: false` on create/update and re-reads the playlist, but Spotify may still report `public: true` afterward. The [February 2026 Web API migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide) documents dev-mode limits (Premium owner, user caps, library endpoint changes, removed batch/browse routes) and does **not** state whether dev-mode apps can create truly private playlists; when a tool result includes `visibility_warning`, the assistant reply appends that note server-side.
 
 ## Security & privacy
 

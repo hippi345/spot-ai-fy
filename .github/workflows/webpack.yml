@@ -43,6 +43,12 @@ jobs:
         # if any .ts / .tsx has a type error before we even try to bundle.
         run: npx tsc --noEmit
 
+      - name: Unit tests
+        run: npm test
+
+      - name: Lint
+        run: npm run lint
+
       - name: Build
         # vite build (invoked by `npm run build`) produces frontend/dist.
         run: npm run build

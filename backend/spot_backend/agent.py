@@ -9,9 +9,40 @@ from typing import Any
 
 import httpx
 
+from spot_backend.action_claim_guard import (
+    action_claim_honest_fallback,
+    action_claim_reprompt,
+    record_successful_tool,
+    reply_claims_unbacked_action,
+)
+from spot_backend.chat_messages import (
+    PROMISE_AFTER_ID_ERROR_NUDGE,
+    assistant_reply_is_promise_only,
+    friendly_reply_for_empty_model_output,
+    is_unpersisted_assistant_fallback,
+    prepare_user_visible_reply,
+    tool_result_is_rejected_or_invalid_id,
+)
+from spot_backend.deterministic_chat import ollama_deterministic_shortcut_events
+from spot_backend.chat_tool_state import seed_runner_from_chat_history
+from spot_backend.prompt_intent import (
+    filter_ollama_tools_for_prompt,
+    informational_system_suffix,
+    prompt_is_informational,
+    refused_mutating_tool_result,
+    spotify_tool_is_mutating,
+)
 from spot_backend.config import Settings, get_settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
 from spot_backend.llm_prefs import read_effective_llm_provider, read_effective_ollama_model
+from spot_backend.ollama_agent_profile import (
+    SMALL_MODEL_SYSTEM_PROMPT,
+    apply_ollama_request_tuning,
+    filter_ollama_tools,
+    maybe_warn_prompt_exceeds_ctx,
+    should_retry_ollama_without_think,
+    use_small_model_mode,
+)
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
 
 _SYSTEM = """You are a Spotify assistant with tools to read the user's library and control playback.
@@ -50,7 +81,7 @@ Rules:
   * "Most listened / most played / favorite playlist" — Spotify's Web API does NOT expose per-playlist listen counts or a top-playlists endpoint. User-top is only exposed at track and artist granularity. For those, CALL the dedicated tools spotify_top_tracks and spotify_top_artists (time_range short_term|medium_term|long_term). Say that Spotify does not publish top-playlist analytics and offer to fetch the user's top tracks or top artists instead. Do NOT call spotify_user_playlists + spotify_playlist_tracks in a loop trying to compute a "most listened" ranking.
   * "My top / favorite / most played artists or tracks" — CALL spotify_top_artists or spotify_top_tracks (do NOT say you lack a tool, do NOT iterate spotify_search). Default time_range = medium_term. If the user says "this month" or "lately" use short_term; if they say "all time" / "over the years" use long_term. The API caps results at 50; rank is the only ordering signal (no per-item play counts).
   * Per-track / per-album play counts — not exposed on the Web API. Say so; offer top tracks/artists as a proxy.
-  * Listening history beyond the most recently played items — the Web API caps recently-played at 50. State that clearly rather than iterating.
+  * Listening history beyond the most recently played items — CALL spotify_recently_played (caps at 50 items). Do not iterate other tools to guess history.
   * "Who follows me" / "my followers" / "people who follow me" — Spotify's Web API does NOT expose your follower list, only a count (visible via spotify_me.followers.total). Say so plainly. Offer to: (a) report the count, (b) fetch artists you follow with spotify_followed_artists, or (c) fetch your top artists/tracks.
   * "People I follow" / "users I follow" — Spotify's Web API does NOT expose users you follow, only ARTISTS you follow (via spotify_followed_artists). Say so and call spotify_followed_artists. Do NOT pretend you fetched users.
   * "What playlists does <user> have" — GET /users/{user_id}/playlists is gated behind Spotify's Extended Quota Mode as of their Feb-2026 migration and this app runs in dev mode. spotify_user_public_playlists will return HTTP 403 for EVERY user_id (even the signed-in user themselves and well-known accounts like 'spotify'), with `endpoint_gated_in_dev_mode: true` in the JSON. Do NOT suggest sign-out/reconnect for this error; do NOT retry with a different user_id. Say one sentence that listing another user's playlists needs Extended Quota Mode and offer: (a) spotify_search_playlists by topic, (b) spotify_user_playlists for the signed-in user's own playlists. Also: display-name lookup is never supported, ids only.
@@ -59,6 +90,7 @@ Rules:
   * Editing a playlist owned by someone else — NOT supported by the Web API. Offer spotify_duplicate_playlist to copy it into a new playlist the user owns; the new playlist is fully writable (returned id works with spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks / spotify_replace_playlist_tracks / spotify_reorder_playlist_tracks).
 - The user selects an active device in the UI; omit device_id unless you must override it.
 - After tools return, give a short natural language summary for the user.
+- Never mention internal tool or function names (spotify_* identifiers) to the user — describe actions in plain language only.
 
 High-level phrasing (you resolve intent → concrete tools; do not ask the user for Spotify ids first unless truly impossible):
 - "Add [artist or songs] to my playlist [name]" / "put these on [name]" → spotify_user_playlists (match the name to an id), then USE spotify_add_tracks_by_query with {playlist_id, query, count, min_year?} as a single call. Only fall back to spotify_search + spotify_add_tracks_to_playlist when the user picked specific songs by title that need individual resolution. Never use a playlist id from someone else's search result.
@@ -92,7 +124,7 @@ CRITICAL — Ollama JSON tool mode (this model has no native tool API):
 - If the user asks anything about Spotify (library, search, play, albums, playlists), your FIRST step is almost always `spotify_search` or `spotify_me` / `spotify_user_playlists` — pick the one that best resolves a vague request (e.g. playlist name → user_playlists; artist → search).
 - AFTER tool results are pasted into the conversation as user messages, answer in short plain text, or emit another ```json block if you need more tools.
 
-Tool names: spotify_search, spotify_search_playlists, spotify_me, spotify_user_playlists, spotify_user_public_playlists, spotify_followed_artists, spotify_get_playlist, spotify_playlist_tracks, spotify_user_saved_tracks, spotify_top_artists, spotify_top_tracks, spotify_get_album, spotify_get_track, spotify_get_artist, spotify_artist_albums, spotify_artist_top_tracks, spotify_create_playlist, spotify_duplicate_playlist, spotify_follow_playlist, spotify_update_playlist, spotify_add_tracks_to_playlist, spotify_add_tracks_by_query, spotify_remove_playlist_tracks, spotify_reorder_playlist_tracks, spotify_replace_playlist_tracks, spotify_unfollow_playlist, spotify_devices, spotify_playback_state, spotify_transfer_playback, spotify_start_resume_playback, spotify_play_playlist, spotify_pause, spotify_skip_next, spotify_skip_previous, spotify_add_to_queue, spotify_play_next, spotify_set_repeat, spotify_set_shuffle, spotify_seek, spotify_set_volume.
+Tool names: spotify_search, spotify_search_playlists, spotify_me, spotify_user_playlists, spotify_user_public_playlists, spotify_followed_artists, spotify_get_playlist, spotify_playlist_tracks, spotify_user_saved_tracks, spotify_recently_played, spotify_save_tracks, spotify_unsave_tracks, spotify_save_albums, spotify_unsave_albums, spotify_saved_albums, spotify_follow_artist, spotify_unfollow_artist, spotify_get_queue, spotify_playlists_containing_track, spotify_top_artists, spotify_top_tracks, spotify_get_album, spotify_get_track, spotify_get_artist, spotify_artist_albums, spotify_artist_top_tracks, spotify_create_playlist, spotify_duplicate_playlist, spotify_follow_playlist, spotify_update_playlist, spotify_add_tracks_to_playlist, spotify_add_tracks_by_query, spotify_remove_playlist_tracks, spotify_reorder_playlist_tracks, spotify_replace_playlist_tracks, spotify_unfollow_playlist, spotify_devices, spotify_playback_state, spotify_transfer_playback, spotify_start_resume_playback, spotify_play_playlist, spotify_pause, spotify_skip_next, spotify_skip_previous, spotify_add_to_queue, spotify_play_next, spotify_set_repeat, spotify_set_shuffle, spotify_seek, spotify_set_volume.
 """
 
 _JSON_MODE_EMPTY_NUDGE = (
@@ -110,6 +142,20 @@ _JSON_PLAIN_ANSWER_FOLLOWUP = (
     "Do not start your reply with `{`, `[`, or a markdown code fence. "
     "Use a single ```json ... ``` tool block only if you still need another Spotify API call."
 )
+
+def _apply_ollama_tuning(
+    body: dict[str, Any],
+    settings: Settings,
+    ollama_options: dict[str, Any],
+    *,
+    omit_think_field: bool = False,
+) -> None:
+    apply_ollama_request_tuning(
+        body,
+        settings,
+        ollama_options,
+        omit_think_field=omit_think_field,
+    )
 
 
 def _tool_calls_from_payload(payload: Any) -> list[dict[str, Any]] | None:
@@ -311,8 +357,39 @@ def _assistant_message_for_history(msg: dict[str, Any]) -> dict[str, Any]:
     if msg.get("tool_calls"):
         out["tool_calls"] = msg["tool_calls"]
     flat = _message_content_str(msg)
+    if is_unpersisted_assistant_fallback(flat):
+        flat = ""
     out["content"] = flat
     return out
+
+
+def _accumulate_ollama_stream_message(stream_msg: dict[str, Any], chunk_message: dict[str, Any]) -> None:
+    """Merge one Ollama NDJSON chunk into the running assistant message."""
+    if chunk_message.get("content") is not None:
+        piece = chunk_message["content"]
+        if isinstance(piece, str):
+            prev = stream_msg.get("content")
+            if isinstance(prev, str):
+                stream_msg["content"] = prev + piece
+            else:
+                stream_msg["content"] = piece
+    if chunk_message.get("role"):
+        stream_msg["role"] = chunk_message["role"]
+    if chunk_message.get("tool_calls"):
+        existing = stream_msg.get("tool_calls")
+        incoming = chunk_message["tool_calls"]
+        if isinstance(existing, list) and isinstance(incoming, list) and existing and incoming:
+            stream_msg["tool_calls"] = existing + incoming
+        else:
+            stream_msg["tool_calls"] = incoming
+    for key in ("thinking", "thought", "reasoning"):
+        if chunk_message.get(key) is not None:
+            prev = stream_msg.get(key)
+            piece = chunk_message[key]
+            if isinstance(piece, str) and isinstance(prev, str):
+                stream_msg[key] = prev + piece
+            else:
+                stream_msg[key] = piece
 
 
 def _normalize_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -360,6 +437,10 @@ def _json_mode_expecting_first_tool_result(messages: list[dict[str, Any]]) -> bo
 
 def _forced_json_tool_calls_for_question(user_text: str) -> list[dict[str, Any]] | None:
     """Obvious Spotify intents when the model returns nothing (JSON tool mode)."""
+    from spot_backend.prompt_intent import prompt_requests_recent_listening_history
+
+    if prompt_requests_recent_listening_history(user_text):
+        return [{"function": {"name": "spotify_recently_played", "arguments": {"limit": 20}}}]
     t = user_text.lower()
     if "playlist" not in t:
         return None
@@ -393,6 +474,8 @@ def _coerce_chat_history(history: Any) -> list[dict[str, str]]:
         content = (item.get("content") or item.get("text") or "").strip()
         if role not in ("user", "assistant") or not content:
             continue
+        if role == "assistant" and is_unpersisted_assistant_fallback(content):
+            continue
         out.append({"role": str(role), "content": content})
     return out
 
@@ -401,14 +484,41 @@ def iter_ollama_chat_events(
     user_text: str,
     settings: Settings,
     history: list[dict[str, str]] | None = None,
+    *,
+    conversation_id: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yields Spot-AI-fy progress events for the Ollama agent; ends with ``final`` or ``error``."""
-    runner = SpotifyToolRunner(settings=settings)
+    runner = SpotifyToolRunner(settings=settings, conversation_id=conversation_id)
+    history_turns = _coerce_chat_history(history)
+    seed_runner_from_chat_history(runner, history_turns, conversation_id=conversation_id)
+    shortcut_events = ollama_deterministic_shortcut_events(
+        user_text,
+        runner,
+        conversation_id=conversation_id,
+    )
+    if shortcut_events is not None:
+        yield from shortcut_events
+        runner.close()
+        return
+    successful_tools: set[str] = set()
+    tool_results: list[str] = []
+    promise_nudge_used = False
+    action_claim_reprompted = False
     try:
         ollama_model = read_effective_ollama_model(settings.data_dir, settings.ollama_model)
-        base_system = _SYSTEM + load_optional_agent_context_markdown(settings)
+        small_model = use_small_model_mode(settings, ollama_model)
+        base_system = (
+            SMALL_MODEL_SYSTEM_PROMPT if small_model else _SYSTEM
+        ) + load_optional_agent_context_markdown(settings)
+        active_tools = filter_ollama_tools(OLLAMA_TOOLS, small=small_model)
+        informational_turn = prompt_is_informational(user_text)
+        if informational_turn:
+            base_system = base_system + informational_system_suffix(user_text)
+        active_tools = filter_ollama_tools_for_prompt(
+            active_tools,
+            informational=informational_turn,
+        )
         messages: list[dict[str, Any]] = [{"role": "system", "content": base_system}]
-        history_turns = _coerce_chat_history(history)
         hist_cap = int(getattr(settings, "ollama_history_messages", 0) or 0)
         if hist_cap > 0 and len(history_turns) > hist_cap:
             history_turns = history_turns[-hist_cap:]
@@ -424,6 +534,8 @@ def iter_ollama_chat_events(
         ollama_options: dict[str, Any] = {}
         if settings.ollama_num_ctx and settings.ollama_num_ctx > 0:
             ollama_options["num_ctx"] = int(settings.ollama_num_ctx)
+        if int(getattr(settings, "ollama_num_thread", 0) or 0) > 0:
+            ollama_options["num_thread"] = int(settings.ollama_num_thread)
         ollama_keep_alive = (settings.ollama_keep_alive or "").strip()
         tool_result_cap = int(getattr(settings, "ollama_tool_result_max", 0) or 0)
         if tool_result_cap <= 0:
@@ -431,19 +543,11 @@ def iter_ollama_chat_events(
         steps_override = int(getattr(settings, "ollama_max_steps", 0) or 0)
         max_steps = steps_override if steps_override > 0 else int(settings.agent_max_steps)
 
-        def _apply_ollama_tuning(b: dict[str, Any]) -> dict[str, Any]:
-            if ollama_options:
-                existing = b.get("options")
-                if isinstance(existing, dict):
-                    merged = {**ollama_options, **existing}
-                else:
-                    merged = dict(ollama_options)
-                b["options"] = merged
-            if ollama_keep_alive:
-                b["keep_alive"] = ollama_keep_alive
-            return b
+        omit_think_field = False
 
         connect_bits = [ollama_model]
+        if small_model:
+            connect_bits.append("small-model-tools")
         if ollama_options.get("num_ctx"):
             connect_bits.append(f"ctx={ollama_options['num_ctx']}")
         if ollama_keep_alive:
@@ -461,6 +565,7 @@ def iter_ollama_chat_events(
             for step_idx in range(max_steps):
                 yield {"type": "round", "step": step_idx + 1, "max": max_steps}
                 nudge_attempt = 0
+                reprompt_action_claim = False
                 msg: dict[str, Any] = {}
                 while nudge_attempt < 3:
                     inner_guard = 0
@@ -482,12 +587,27 @@ def iter_ollama_chat_events(
                         if json_mode_patched and _json_mode_expecting_first_tool_result(messages):
                             body["format"] = "json"
                         if native_tools:
-                            body["tools"] = OLLAMA_TOOLS
-                        _apply_ollama_tuning(body)
+                            body["tools"] = active_tools
+                        apply_ollama_request_tuning(
+                            body, settings, ollama_options, omit_think_field=omit_think_field
+                        )
+                        if settings.ollama_num_ctx and settings.ollama_num_ctx > 0:
+                            maybe_warn_prompt_exceeds_ctx(
+                                messages,
+                                body.get("tools") if native_tools else None,
+                                int(settings.ollama_num_ctx),
+                            )
 
                         with client.stream("POST", url, json=body) as r:
-                            if r.status_code == 400 and native_tools:
+                            err_body = ""
+                            if r.status_code == 400:
                                 err_body = r.read().decode("utf-8", errors="replace")
+                                if should_retry_ollama_without_think(
+                                    r.status_code, err_body, body
+                                ):
+                                    omit_think_field = True
+                                    continue
+                            if r.status_code == 400 and native_tools and err_body:
                                 if _ollama_tools_unsupported_error(err_body):
                                     native_tools = False
                                     if not json_mode_patched:
@@ -531,18 +651,14 @@ def iter_ollama_chat_events(
                                     continue
                                 m = chunk.get("message")
                                 if isinstance(m, dict):
-                                    if m.get("content") is not None:
-                                        stream_msg["content"] = m["content"]
-                                    if m.get("role"):
-                                        stream_msg["role"] = m["role"]
-                                    if m.get("tool_calls"):
-                                        stream_msg["tool_calls"] = m["tool_calls"]
-                                    for key in ("thinking", "thought", "reasoning"):
-                                        if m.get(key) is not None:
-                                            stream_msg[key] = m[key]
+                                    _accumulate_ollama_stream_message(stream_msg, m)
                                 root_tc = chunk.get("tool_calls")
                                 if isinstance(root_tc, list) and root_tc:
-                                    stream_msg["tool_calls"] = root_tc
+                                    existing = stream_msg.get("tool_calls")
+                                    if isinstance(existing, list) and existing:
+                                        stream_msg["tool_calls"] = existing + root_tc
+                                    else:
+                                        stream_msg["tool_calls"] = root_tc
                                 flat = _message_content_str(stream_msg)
                                 if len(flat) > prev_flat_len:
                                     delta = flat[prev_flat_len:]
@@ -582,7 +698,9 @@ def iter_ollama_chat_events(
                             "stream": False,
                             "format": "json",
                         }
-                        _apply_ollama_tuning(ns_body)
+                        _apply_ollama_tuning(
+                            ns_body, settings, ollama_options, omit_think_field=omit_think_field
+                        )
                         try:
                             nr = client.post(
                                 url,
@@ -630,12 +748,7 @@ def iter_ollama_chat_events(
                         nudge_attempt += 1
                         continue
 
-                    hint = (
-                        "The model returned no assistant text and no tool calls (Ollama may stream reasoning "
-                        "without a final answer, or the run was cut short). Try: (1) a shorter, one-step question, "
-                        "(2) another Ollama tag if this one misbehaves with tools, (3) Gemini in Spot-AI-fy, or "
-                        "(4) concrete examples in backend/AGENT_CONTEXT.md."
-                    )
+                    hint = friendly_reply_for_empty_model_output(user_text)
                     if parse_src:
                         content_only = _message_content_str(msg).strip()
                         if not content_only and parse_src:
@@ -645,8 +758,36 @@ def iter_ollama_chat_events(
                             final_text = parse_src
                     else:
                         final_text = hint
+                    if is_unpersisted_assistant_fallback(final_text):
+                        final_text = friendly_reply_for_empty_model_output(user_text)
+                    if reply_claims_unbacked_action(final_text, successful_tools):
+                        if not action_claim_reprompted:
+                            action_claim_reprompted = True
+                            messages.append(_assistant_message_for_history(msg))
+                            messages.append({"role": "user", "content": action_claim_reprompt()})
+                            reprompt_action_claim = True
+                            break
+                        final_text = action_claim_honest_fallback()
+                    if (
+                        assistant_reply_is_promise_only(final_text)
+                        and tool_results
+                        and tool_result_is_rejected_or_invalid_id(tool_results[-1])
+                        and not promise_nudge_used
+                    ):
+                        promise_nudge_used = True
+                        messages.append(_assistant_message_for_history(msg))
+                        messages.append({"role": "user", "content": PROMISE_AFTER_ID_ERROR_NUDGE})
+                        yield {
+                            "type": "status",
+                            "message": "Last tool failed on id validation — nudging the model to retry…",
+                        }
+                        continue
+                    final_text = prepare_user_visible_reply(final_text, tool_results)
                     yield {"type": "final", "text": final_text}
                     return
+
+                if reprompt_action_claim:
+                    continue
 
                 messages.append(_assistant_message_for_history(msg))
                 for tc in tool_calls:
@@ -657,8 +798,26 @@ def iter_ollama_chat_events(
                         continue
                     if not isinstance(args, dict):
                         args = {}
+                    if informational_turn and spotify_tool_is_mutating(name):
+                        yield {"type": "tool_start", "name": name}
+                        result = refused_mutating_tool_result(name)
+                        preview = result[:240] + ("…" if len(result) > 240 else "")
+                        yield {"type": "tool_done", "name": name, "preview": preview}
+                        tool_results.append(result)
+                        if native_tools:
+                            messages.append({"role": "tool", "name": name, "content": result})
+                        else:
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": f"Tool `{name}` result:\n{result}",
+                                },
+                            )
+                        continue
                     yield {"type": "tool_start", "name": name}
                     result = runner.run(name, args)
+                    record_successful_tool(successful_tools, name, result)
+                    tool_results.append(result)
                     preview = result[:240] + ("…" if len(result) > 240 else "")
                     yield {"type": "tool_done", "name": name, "preview": preview}
                     result_chat = _cap_tool_result_for_chat(result, max_len=tool_result_cap)
@@ -672,7 +831,13 @@ def iter_ollama_chat_events(
                 if json_mode_patched:
                     messages.append({"role": "user", "content": _JSON_PLAIN_ANSWER_FOLLOWUP})
 
-            yield {"type": "final", "text": "Stopped after maximum tool steps. Try a simpler request."}
+            yield {
+                "type": "final",
+                "text": prepare_user_visible_reply(
+                    "Stopped after maximum tool steps. Try a simpler request.",
+                    tool_results,
+                ),
+            }
     finally:
         runner.close()
 
@@ -681,30 +846,44 @@ def iter_chat_events(
     user_text: str,
     settings: Settings,
     history: list[dict[str, str]] | None = None,
+    *,
+    conversation_id: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yields progress for Spot-AI-fy chat (Ollama streaming or Gemini)."""
     provider = read_effective_llm_provider(settings.data_dir, settings.llm_provider)
     if provider == "gemini":
-        yield {"type": "status", "message": "Calling Gemini…"}
-        try:
-            from spot_backend.gemini_llm import run_chat_turn_gemini
+        from spot_backend.gemini_llm import iter_gemini_chat_events
 
-            text = run_chat_turn_gemini(user_text, settings, history=history)
-            yield {"type": "final", "text": text}
-        except Exception as e:
-            yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+        yield from iter_gemini_chat_events(
+            user_text,
+            settings,
+            history=history,
+            conversation_id=conversation_id,
+        )
         return
 
-    yield from iter_ollama_chat_events(user_text, settings, history=history)
+    yield from iter_ollama_chat_events(
+        user_text,
+        settings,
+        history=history,
+        conversation_id=conversation_id,
+    )
 
 
 def run_chat_turn_ollama(
     user_text: str,
     settings: Settings | None = None,
     history: list[dict[str, str]] | None = None,
+    *,
+    conversation_id: str | None = None,
 ) -> str:
     settings = settings or get_settings()
-    for ev in iter_ollama_chat_events(user_text, settings, history=history):
+    for ev in iter_ollama_chat_events(
+        user_text,
+        settings,
+        history=history,
+        conversation_id=conversation_id,
+    ):
         if ev.get("type") == "final":
             return str(ev.get("text") or "")
         if ev.get("type") == "error":
@@ -716,11 +895,23 @@ def run_chat_turn(
     user_text: str,
     settings: Settings | None = None,
     history: list[dict[str, str]] | None = None,
+    *,
+    conversation_id: str | None = None,
 ) -> str:
     settings = settings or get_settings()
     provider = read_effective_llm_provider(settings.data_dir, settings.llm_provider)
     if provider == "gemini":
         from spot_backend.gemini_llm import run_chat_turn_gemini
 
-        return run_chat_turn_gemini(user_text, settings, history=history)
-    return run_chat_turn_ollama(user_text, settings, history=history)
+        return run_chat_turn_gemini(
+            user_text,
+            settings,
+            history=history,
+            conversation_id=conversation_id,
+        )
+    return run_chat_turn_ollama(
+        user_text,
+        settings,
+        history=history,
+        conversation_id=conversation_id,
+    )

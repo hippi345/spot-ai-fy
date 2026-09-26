@@ -1,5 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { SetupWizard } from "./SetupWizard";
+import { fetchSetupStatus, type SetupStatus } from "./lib/api";
+import {
+  buildChatStreamRequestBody,
+  loadChatSession,
+  saveChatSession,
+  startNewChatSession,
+} from "./lib/chatSession";
+import { FRIENDLY_SPOTIFY_GUIDANCE, isUnpersistedAssistantFallback } from "./lib/chatMessages";
+import { isChatBlockedBySetup } from "./lib/setupGate";
+import {
+  type TraceStep,
+  reduceTraceFinishAllRunning,
+  reduceTraceFinishStep,
+  reduceTracePushStep,
+} from "./lib/chatTrace";
+
 
 
 type Session = {
@@ -7,6 +24,8 @@ type Session = {
   device_id: string | null;
   spotify_granted_scopes?: string | null;
   spotify_playlist_write_ok?: boolean | null;
+  spotify_missing_scopes?: string[] | null;
+  spotify_reauth_recommended?: boolean;
 };
 
 
@@ -25,21 +44,10 @@ type SpotifyDevice = {
 
 
 
-type ChatMessage = { role: "user" | "assistant"; text: string };
+type ChatMessage = { role: "user" | "assistant"; text: string; trace?: TraceStep[] };
 
 
 
-type TraceStepKind = "status" | "round" | "tool";
-
-type TraceStep = {
-  id: number;
-  kind: TraceStepKind;
-  label: string;
-  detail?: string;
-  startedAt: number;
-  finishedAt?: number;
-  status: "running" | "done" | "error";
-};
 
 
 
@@ -125,7 +133,11 @@ export function App() {
 
   const [sending, setSending] = useState(false);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [conversationId, setConversationId] = useState<string>(() => loadChatSession().conversationId);
+
+  const [messages, setMessages] = useState<ChatMessage[]>(() =>
+    loadChatSession().messages.map((m) => ({ role: m.role, text: m.text })),
+  );
 
   const [traceSteps, setTraceSteps] = useState<TraceStep[]>([]);
 
@@ -169,6 +181,23 @@ export function App() {
     return () => window.cancelAnimationFrame(id);
   }, [messages.length, liveReply, sending, traceSteps.length]);
 
+  useEffect(() => {
+    saveChatSession({
+      conversationId,
+      messages: messages.map((m) => ({ role: m.role, text: m.text })),
+    });
+  }, [conversationId, messages]);
+
+  const beginNewChat = useCallback(() => {
+    const fresh = startNewChatSession();
+    setConversationId(fresh.conversationId);
+    setMessages([]);
+    setLiveReply("");
+    setTraceSteps([]);
+    setError(null);
+    setInput("");
+  }, []);
+
   const [llm, setLlm] = useState<LlmStatus | null>(null);
 
   const [llmPick, setLlmPick] = useState<"ollama" | "gemini">("ollama");
@@ -183,7 +212,28 @@ export function App() {
 
   const [geminiCustomModel, setGeminiCustomModel] = useState("");
 
+  const [setupComplete, setSetupComplete] = useState(false);
+  const [showSetupWizard, setShowSetupWizard] = useState(false);
+  const [wizardAutoOpened, setWizardAutoOpened] = useState(false);
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  const [streamStalled, setStreamStalled] = useState(false);
+  const streamIdleMs = 45_000;
 
+  const refreshSetup = useCallback(async () => {
+    try {
+      const s = await fetchSetupStatus();
+      setSetupStatus(s);
+      const ready = !isChatBlockedBySetup(s) && s.spotify_configured;
+      setSetupComplete(ready);
+      if (!ready) {
+        setShowSetupWizard(true);
+        setWizardAutoOpened(true);
+      }
+    } catch {
+      setSetupComplete(false);
+      setShowSetupWizard(true);
+    }
+  }, []);
 
   const refreshLlm = useCallback(async () => {
 
@@ -575,7 +625,9 @@ export function App() {
 
     void refreshLlm();
 
-  }, [refreshSession, refreshLlm]);
+    void refreshSetup();
+
+  }, [refreshSession, refreshLlm, refreshSetup]);
 
 
 
@@ -630,39 +682,37 @@ export function App() {
 
 
   const deviceOptions = useMemo(() => {
-
-    return devices.map((d) => ({
-
-      value: d.id,
-
-      label: `${d.name} (${d.type})${d.is_active ? " · active" : ""}`,
-
-    }));
-
-  }, [devices]);
+    const autoLabel = loadingDevices ? "Loading…" : "Auto (active device)";
+    const auto = { value: "", label: autoLabel };
+    return [
+      auto,
+      ...devices.map((d) => ({
+        value: d.id,
+        label: `${d.name} (${d.type})${d.is_active ? " · active" : ""}`,
+      })),
+    ];
+  }, [devices, loadingDevices]);
 
 
 
   const saveDevice = async () => {
-
-    if (!deviceId) return;
-
     setError(null);
+    if (!deviceId) {
+      await fetch("/api/device", { method: "DELETE" });
+      await refreshSession();
+      setBanner("Using auto (active Spotify device).");
+      return;
+    }
 
     await fetch("/api/device", {
-
       method: "POST",
-
       headers: { "Content-Type": "application/json" },
-
       body: JSON.stringify({ device_id: deviceId }),
-
     });
 
     await refreshSession();
 
     setBanner("Playback device saved.");
-
   };
 
 
@@ -673,11 +723,16 @@ export function App() {
 
     if (!text) return;
 
-    const historyPayload = messages.slice(-40).map((m) => ({ role: m.role, content: m.text }));
+    const historyPayload = messages
+      .slice(-40)
+      .filter((m) => m.role === "user" || !isUnpersistedAssistantFallback(m.text))
+      .map((m) => ({ role: m.role, content: m.text }));
 
     setSending(true);
 
     setError(null);
+
+    setStreamStalled(false);
 
     setTraceSteps([]);
 
@@ -686,6 +741,8 @@ export function App() {
     setInput("");
 
     setMessages((m) => [...m, { role: "user", text }]);
+
+    let traceAccum: TraceStep[] = [];
 
     const controller = new AbortController();
 
@@ -699,43 +756,48 @@ export function App() {
     const pushStep = (step: Omit<TraceStep, "id" | "startedAt"> & { startedAt?: number }) => {
       const id = newStepId();
       const now = Date.now();
-      setTraceSteps((prev) => {
-        const finished = prev.map((s) =>
-          s.status === "running" ? { ...s, status: "done" as const, finishedAt: now } : s,
-        );
-        return [
-          ...finished,
-          { ...step, id, startedAt: step.startedAt ?? now } as TraceStep,
-        ];
-      });
+      const next = reduceTracePushStep(traceAccum, step, id, now);
+      traceAccum = next;
+      setTraceSteps(next);
       return id;
     };
 
     const finishStep = (id: number, patch?: Partial<TraceStep>) => {
       const now = Date.now();
-      setTraceSteps((prev) =>
-        prev.map((s) =>
-          s.id === id
-            ? { ...s, status: "done", finishedAt: now, ...patch }
-            : s,
-        ),
-      );
+      const next = reduceTraceFinishStep(traceAccum, id, patch, now);
+      traceAccum = next;
+      setTraceSteps(next);
     };
 
     const finishAllRunning = () => {
       const now = Date.now();
-      setTraceSteps((prev) =>
-        prev.map((s) =>
-          s.status === "running" ? { ...s, status: "done", finishedAt: now } : s,
-        ),
-      );
+      const next = reduceTraceFinishAllRunning(traceAccum, now);
+      traceAccum = next;
+      setTraceSteps(next);
     };
 
     const toolStepIdByName = new Map<string, number>();
 
 
 
-    let streamOk = false;
+    let lastStreamEventAt = Date.now();
+    let idleTimer: number | undefined;
+
+    const bumpStreamActivity = () => {
+      lastStreamEventAt = Date.now();
+      setStreamStalled(false);
+    };
+
+    const armIdleTimer = () => {
+      if (idleTimer !== undefined) window.clearInterval(idleTimer);
+      idleTimer = window.setInterval(() => {
+        if (Date.now() - lastStreamEventAt >= streamIdleMs) {
+          setStreamStalled(true);
+        }
+      }, 2000);
+    };
+
+    armIdleTimer();
 
     try {
 
@@ -745,7 +807,7 @@ export function App() {
 
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
 
-        body: JSON.stringify({ message: text, history: historyPayload }),
+        body: JSON.stringify(buildChatStreamRequestBody(text, historyPayload, conversationId)),
 
         signal: controller.signal,
 
@@ -792,10 +854,18 @@ export function App() {
 
 
       const handleEvent = (j: Record<string, unknown>) => {
+        bumpStreamActivity();
 
         const typ = String(j.type || "");
 
         switch (typ) {
+
+          case "keepalive": {
+            const msg = String(j.message ?? "Still working…");
+            const sid = pushStep({ kind: "status", label: msg, status: "done" });
+            finishStep(sid);
+            break;
+          }
 
           case "status": {
             const msg = String(j.message ?? "");
@@ -969,23 +1039,15 @@ export function App() {
 
 
 
-      const emptyish = !reply.trim() || reply.trim() === "No response from model.";
+      const emptyish =
+        !reply.trim() ||
+        reply.trim() === "No response from model." ||
+        isUnpersistedAssistantFallback(reply);
 
-      if (emptyish) {
-
-        setError(
-
-          "The model returned no assistant text and no tool calls (Ollama may stream reasoning without a final answer, or the run was cut short). Try: (1) a shorter, one-step question, (2) another Ollama tag if this one misbehaves with tools, (3) Gemini in Spot-AI-fy, or (4) concrete examples in backend/AGENT_CONTEXT.md."
-
-        );
-
-      } else {
-
-        setMessages((m) => [...m, { role: "assistant", text: reply }]);
-
-        streamOk = true;
-
-      }
+      const assistantText = emptyish ? FRIENDLY_SPOTIFY_GUIDANCE : reply;
+      const traceCopy = traceAccum.map((s) => ({ ...s }));
+      setMessages((m) => [...m, { role: "assistant", text: assistantText, trace: traceCopy }]);
+      setTraceSteps([]);
 
     } catch (e) {
 
@@ -1013,11 +1075,13 @@ export function App() {
 
       window.clearTimeout(timeoutId);
 
+      if (idleTimer !== undefined) window.clearInterval(idleTimer);
+
       setSending(false);
 
       setLiveReply("");
 
-      if (streamOk) setTraceSteps([]);
+      setStreamStalled(false);
 
     }
 
@@ -1040,7 +1104,7 @@ export function App() {
 
     setDeviceId("");
 
-    setMessages([]);
+    beginNewChat();
 
     setBanner("Signed out.");
 
@@ -1064,15 +1128,19 @@ export function App() {
     return "•";
   };
 
-  const showTracePanel = llm?.provider === "ollama" && traceSteps.length > 0;
+  const showTracePanel = sending && traceSteps.length > 0;
 
   const statusChips = useMemo(() => {
-    const spotifyLabel = `Spotify — ${session?.signed_in ? "Connected" : "Not connected"}`;
-    const llmName = llm?.provider === "gemini" ? "Gemini" : "Ollama";
-    const llmConnected = Boolean(llm?.reachable);
+    let spotifyLabel = "Spotify — Not connected";
+    if (session?.signed_in) spotifyLabel = "Spotify — Connected";
+    else if (setupStatus?.spotify_configured) spotifyLabel = "Spotify — Client ID saved, sign in to connect";
+    const llmName = (showSetupWizard ? setupStatus?.provider : llm?.provider) === "gemini" ? "Gemini" : "Ollama";
+    const llmConnected = showSetupWizard
+      ? Boolean(setupStatus?.llm_ready)
+      : Boolean(setupStatus?.llm_ready ?? llm?.reachable);
     const llmLabel = `${llmName} — ${llmConnected ? "Connected" : "Not connected"}`;
     return `${spotifyLabel} · ${llmLabel}`;
-  }, [session?.signed_in, llm?.provider, llm?.reachable]);
+  }, [session?.signed_in, llm?.provider, llm?.reachable, setupStatus, showSetupWizard]);
 
 
 
@@ -1090,13 +1158,26 @@ export function App() {
 
         </div>
 
-        <p className="status-chips" aria-live="polite">
-
-          {statusChips}
-
-        </p>
+        <div className="app-header-actions">
+          <p className="status-chips" aria-live="polite">
+            {statusChips}
+          </p>
+          <button type="button" className="header-setup-btn" onClick={() => setShowSetupWizard(true)}>
+            Setup
+          </button>
+        </div>
 
       </header>
+
+
+
+      {session?.spotify_reauth_recommended ? (
+        <div className="banner banner-warn" role="status">
+          Spotify is missing permissions ({session.spotify_missing_scopes?.slice(0, 4).join(", ")}
+          {session.spotify_missing_scopes && session.spotify_missing_scopes.length > 4 ? "…" : ""}).{" "}
+          <a href="/login">Re-authorize Spotify</a>
+        </div>
+      ) : null}
 
 
 
@@ -1116,9 +1197,37 @@ export function App() {
 
       ) : null}
 
+      {showSetupWizard ? (
+        <SetupWizard
+          allowDismiss={setupComplete}
+          closeOnComplete={wizardAutoOpened}
+          onDismiss={() => {
+            setShowSetupWizard(false);
+            setWizardAutoOpened(false);
+          }}
+          onSettingsSaved={(patch) => {
+            const nextProvider = patch?.provider;
+            if (nextProvider === "gemini" || nextProvider === "ollama") {
+              setSetupStatus((prev) => (prev ? { ...prev, provider: nextProvider } : prev));
+            }
+            void refreshLlm();
+            void refreshSetup();
+          }}
+          onComplete={() => {
+            setSetupComplete(true);
+            setShowSetupWizard(false);
+            setWizardAutoOpened(false);
+            void refreshLlm();
+            void refreshSession();
+            void refreshSetup();
+          }}
+        />
+      ) : null}
 
-
-      <section className="panel chat-panel" aria-labelledby="chat-heading">
+      <section
+        className={`panel chat-panel${setupComplete ? "" : " chat-panel--blocked"}`}
+        aria-labelledby="chat-heading"
+      >
 
         <div className="chat-panel-head">
 
@@ -1127,6 +1236,15 @@ export function App() {
             Chat
 
           </h2>
+
+          <button
+            type="button"
+            className="secondary"
+            onClick={beginNewChat}
+            disabled={sending}
+          >
+            New chat
+          </button>
 
         </div>
 
@@ -1143,6 +1261,24 @@ export function App() {
             <div key={i} className={`bubble ${m.role}`}>
 
               {m.text}
+
+              {m.role === "assistant" &&
+              m.trace &&
+              m.trace.filter((s) => s.kind === "tool").length > 0 ? (
+                <details className="message-trace">
+                  <summary>
+                    Actions taken ({m.trace.filter((s) => s.kind === "tool").length})
+                  </summary>
+                  <ul className="trace-steps compact">
+                    {m.trace.filter((s) => s.kind === "tool").map((step) => (
+                      <li key={step.id}>
+                        {step.label}
+                        {step.detail ? ` — ${step.detail.slice(0, 120)}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
 
             </div>
 
@@ -1201,6 +1337,15 @@ export function App() {
 
         {error ? <div className="error">{error}</div> : null}
 
+        {streamStalled && sending ? (
+          <div className="error">
+            No response for {Math.round(streamIdleMs / 1000)}s — the model may still be thinking.{" "}
+            <button type="button" onClick={() => void sendChat()}>
+              Retry
+            </button>
+          </div>
+        ) : null}
+
         <textarea
 
           id="chat"
@@ -1213,7 +1358,7 @@ export function App() {
 
           onChange={(e) => setInput(e.target.value)}
 
-          disabled={sending}
+          disabled={sending || !setupComplete}
 
           rows={3}
 
@@ -1221,7 +1366,11 @@ export function App() {
 
         <div className="btn-row">
 
-          <button type="button" onClick={() => void sendChat()} disabled={sending || !input.trim()}>
+          <button
+            type="button"
+            onClick={() => void sendChat()}
+            disabled={sending || !input.trim() || !setupComplete}
+          >
 
             {sending ? "Working…" : "Send"}
 
@@ -1533,7 +1682,7 @@ export function App() {
 
                     {" "}
 
-                    — {llm.provider === "gemini" ? "Check GEMINI_MODEL." : `Try: ollama pull ${llm.configured_model || "gemma2:2b"}`}
+                    — {llm.provider === "gemini" ? "Check GEMINI_MODEL." : `Try: ollama pull ${llm.configured_model || "qwen3:4b-instruct"}`}
 
                   </span>
 
@@ -1556,6 +1705,24 @@ export function App() {
             </div>
 
           ) : null}
+
+
+
+          <div className="settings-block">
+
+            <div className="settings-block-head">
+
+              <span className="badge">Setup</span>
+
+            </div>
+
+            <button type="button" onClick={() => setShowSetupWizard(true)}>
+
+              Open setup wizard
+
+            </button>
+
+          </div>
 
 
 
@@ -1629,8 +1796,6 @@ export function App() {
 
               >
 
-                <option value="">{loadingDevices ? "Loading…" : "Select device"}</option>
-
                 {deviceOptions.map((o) => (
 
                   <option key={o.value} value={o.value}>
@@ -1649,7 +1814,7 @@ export function App() {
 
               </button>
 
-              <button type="button" onClick={() => void saveDevice()} disabled={!session?.signed_in || !deviceId}>
+              <button type="button" onClick={() => void saveDevice()} disabled={!session?.signed_in}>
 
                 Save
 

@@ -24,11 +24,19 @@ from spot_backend.llm_prefs import (
     write_llm_provider,
     write_ollama_model_override,
 )
+from spot_backend.llm_provider_lists import (
+    fetch_gemini_chat_model_names,
+    fetch_ollama_model_names,
+    ollama_model_name_matches_installed,
+)
 from spot_backend.pkce import new_pkce_params
 from spot_backend.spotify_client import DEFAULT_SCOPES, SpotifyAuthError, SpotifyClient
-from spot_backend.token_store import DeviceSelection, load_device, load_tokens, save_device
+from spot_backend.setup_service import probe_ollama, save_llm_setup, save_spotify_app, setup_status
+from spot_backend.token_store import DeviceSelection, clear_device, load_device, load_tokens, save_device
 
 app = FastAPI(title="Spot-AI-fy API")
+
+SSE_KEEPALIVE_SECONDS = 12.0
 
 # state -> code_verifier for Spotify PKCE (in-memory; cleared after callback).
 _pkce_pending: dict[str, str] = {}
@@ -55,6 +63,7 @@ class ChatHistoryTurn(BaseModel):
 class ChatBody(BaseModel):
     message: str = Field(..., min_length=1, max_length=48_000)
     history: list[ChatHistoryTurn] | None = Field(default=None, max_length=48)
+    conversation_id: str | None = Field(default=None, max_length=128)
 
 
 def _dump_chat_history(body: ChatBody) -> list[dict[str, str]] | None:
@@ -75,6 +84,56 @@ class GeminiModelBody(BaseModel):
     model: str = Field(..., min_length=1, max_length=200)
 
 
+class SpotifyAppSetupBody(BaseModel):
+    client_id: str = Field(default="", max_length=200)
+
+
+class LlmSetupBody(BaseModel):
+    provider: Literal["ollama", "gemini"]
+    gemini_api_key: str | None = Field(default=None, max_length=500)
+    ollama_host: str | None = Field(default=None, max_length=500)
+    ollama_model: str | None = Field(default=None, max_length=200)
+    gemini_model: str | None = Field(default=None, max_length=200)
+    ollama_allow_public: bool = False
+    ollama_small_model_mode: Literal["auto", "on", "off"] | None = None
+    test: bool = True
+
+
+@app.get("/api/setup/status")
+def api_setup_status() -> dict[str, Any]:
+    return setup_status()
+
+
+@app.post("/api/setup/spotify-app")
+def api_setup_spotify_app(body: SpotifyAppSetupBody) -> dict[str, Any]:
+    try:
+        return save_spotify_app(body.client_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.post("/api/setup/llm")
+def api_setup_llm(body: LlmSetupBody) -> dict[str, Any]:
+    try:
+        return save_llm_setup(
+            provider=body.provider,
+            gemini_api_key=body.gemini_api_key,
+            ollama_host=body.ollama_host,
+            ollama_model=body.ollama_model,
+            gemini_model=body.gemini_model,
+            test=body.test,
+            ollama_allow_public=body.ollama_allow_public,
+            ollama_small_model_mode=body.ollama_small_model_mode,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.get("/api/setup/ollama/probe")
+def api_setup_ollama_probe(host: str, allow_public: bool = False) -> dict[str, Any]:
+    return probe_ollama(host, allow_public=allow_public)
+
+
 @app.get("/login")
 def login() -> RedirectResponse:
     s = get_settings()
@@ -82,9 +141,8 @@ def login() -> RedirectResponse:
         raise HTTPException(
             status_code=400,
             detail=(
-                "SPOTIFY_CLIENT_ID is not set. Put it in backend/.env (gitignored) — "
-                "see backend/.env.example — or export it, then restart the API. "
-                "Do not commit credentials to GitHub."
+                "Spotify is not configured yet. Complete step 1 in the setup wizard (Spotify Client ID) "
+                "or set SPOTIFY_CLIENT_ID in backend/.env — see backend/.env.example."
             ),
         )
     verifier, challenge, state = new_pkce_params()
@@ -149,6 +207,12 @@ def _playlist_modify_scopes_ok(scope: str) -> bool | None:
     return False
 
 
+def _missing_default_scopes(granted: str) -> list[str]:
+    parts = set((granted or "").replace(",", " ").split())
+    required = set(DEFAULT_SCOPES.split())
+    return sorted(required - parts)
+
+
 @app.get("/api/session")
 def session() -> dict[str, Any]:
     s = get_settings()
@@ -156,11 +220,14 @@ def session() -> dict[str, Any]:
     device = load_device(s.resolved_device_path)
     signed = bool(bundle and bundle.access_token)
     granted = (bundle.scope or "").strip() if bundle else ""
+    missing = _missing_default_scopes(granted) if signed and granted else []
     return {
         "signed_in": signed,
         "device_id": device.device_id if device else None,
         "spotify_granted_scopes": granted if granted else None,
         "spotify_playlist_write_ok": _playlist_modify_scopes_ok(granted) if signed else None,
+        "spotify_missing_scopes": missing if signed else None,
+        "spotify_reauth_recommended": bool(missing) if signed else False,
     }
 
 
@@ -172,6 +239,23 @@ def devices() -> Any:
         return client.api_get("/me/player/devices")
     except SpotifyAuthError as e:
         raise HTTPException(status_code=401, detail=str(e)) from e
+    except httpx.HTTPStatusError as e:
+        msg = (e.response.text or "")[:300] or e.response.reason_phrase or "Spotify error"
+        upstream = e.response.status_code
+        if upstream >= 500:
+            status = 502
+        elif upstream == 401:
+            status = 401
+        elif 400 <= upstream < 500:
+            status = upstream
+        else:
+            status = 502
+        raise HTTPException(
+            status_code=status,
+            detail=f"Could not list Spotify devices: {msg}",
+        ) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=503, detail=f"Could not reach Spotify: {e}") from e
     finally:
         client.close()
 
@@ -183,6 +267,13 @@ def set_device(body: DeviceBody) -> dict[str, str]:
     return {"ok": "true", "device_id": body.device_id}
 
 
+@app.delete("/api/device")
+def reset_saved_device() -> dict[str, str]:
+    s = get_settings()
+    clear_device(s.resolved_device_path)
+    return {"ok": "true"}
+
+
 @app.post("/api/chat")
 def chat(body: ChatBody) -> dict[str, str]:
     s = get_settings()
@@ -191,7 +282,7 @@ def chat(body: ChatBody) -> dict[str, str]:
     gemini_model = read_effective_gemini_model(s.data_dir, s.gemini_model)
     hist = _dump_chat_history(body)
     try:
-        text = run_chat_turn(body.message, s, history=hist)
+        text = run_chat_turn(body.message, s, history=hist, conversation_id=body.conversation_id)
     except httpx.HTTPStatusError as e:
         snippet = (e.response.text or "")[:400]
         if active == "gemini":
@@ -270,15 +361,39 @@ def chat(body: ChatBody) -> dict[str, str]:
 @app.post("/api/chat/stream")
 def chat_stream(body: ChatBody) -> StreamingResponse:
     """SSE stream of Spot-AI-fy agent progress (Ollama token deltas, tool steps, Gemini status)."""
+    import queue
+    import threading
+
     s = get_settings()
     hist = _dump_chat_history(body)
 
     def event_gen():
-        try:
-            for ev in iter_chat_events(body.message, s, history=hist):
-                yield sse_data(ev)
-        finally:
-            yield sse_data({"type": "done"})
+        out_q: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+        def producer() -> None:
+            try:
+                for ev in iter_chat_events(
+                    body.message,
+                    s,
+                    history=hist,
+                    conversation_id=body.conversation_id,
+                ):
+                    out_q.put(ev)
+            finally:
+                out_q.put(None)
+
+        threading.Thread(target=producer, daemon=True).start()
+        keepalive_s = SSE_KEEPALIVE_SECONDS
+        while True:
+            try:
+                ev = out_q.get(timeout=keepalive_s)
+            except queue.Empty:
+                yield sse_data({"type": "keepalive", "message": "Still working…"})
+                continue
+            if ev is None:
+                break
+            yield sse_data(ev)
+        yield sse_data({"type": "done"})
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
@@ -347,31 +462,10 @@ def llm_status() -> dict[str, Any]:
         out["gemini_model_ui_override"] = gemini_model_override_active(s.data_dir)
         key = (s.gemini_api_key or "").strip()
         if not key:
-            out["error"] = "GEMINI_API_KEY is not set in backend/.env"
+            out["error"] = "Gemini API key is not configured. Use the setup wizard or set GEMINI_API_KEY in backend/.env."
             return out
         try:
-            # pageSize=200 so the UI can list every model the key can access.
-            r = httpx.get(
-                "https://generativelanguage.googleapis.com/v1beta/models",
-                params={"key": key, "pageSize": 200},
-                timeout=10.0,
-            )
-            r.raise_for_status()
-            data = r.json()
-            # Keep only text-generation capable models so the dropdown is useful for chat.
-            names: list[str] = []
-            for m in data.get("models", []):
-                if not isinstance(m, dict):
-                    continue
-                full = str(m.get("name", ""))
-                if not full:
-                    continue
-                methods = m.get("supportedGenerationMethods") or []
-                if isinstance(methods, list) and "generateContent" not in methods:
-                    continue
-                short = full.split("/", 1)[1] if full.startswith("models/") else full
-                names.append(short)
-            names.sort()
+            names = fetch_gemini_chat_model_names(key, page_size=200, timeout=10.0)
             out["reachable"] = True
             out["models"] = names
             want = effective_gemini.strip().lower()
@@ -391,22 +485,10 @@ def llm_status() -> dict[str, Any]:
     out["configured_model"] = effective_ollama
     out["ollama_model_ui_override"] = ollama_model_override_active(s.data_dir)
     try:
-        r = httpx.get(f"{base}/api/tags", timeout=5.0)
-        r.raise_for_status()
-        data = r.json()
-        names = [
-            str(m["name"])
-            for m in data.get("models", [])
-            if isinstance(m, dict) and m.get("name") is not None
-        ]
-        want = effective_ollama.strip().lower()
-        want_base = want.split(":", 1)[0]
+        names = fetch_ollama_model_names(base, timeout=5.0)
         out["reachable"] = True
         out["models"] = names
-        out["model_installed"] = any(
-            isinstance(n, str) and (n.lower() == want or n.lower().split(":", 1)[0] == want_base)
-            for n in names
-        )
+        out["model_installed"] = ollama_model_name_matches_installed(names, effective_ollama)
     except httpx.RequestError as e:
         out["error"] = str(e)
     except httpx.HTTPStatusError as e:

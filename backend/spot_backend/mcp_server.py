@@ -185,6 +185,15 @@ def spotify_artist_albums(
 
 
 @mcp.tool()
+def spotify_artist_latest_album(artist_id: str, include_groups: str = "album,single") -> str:
+    """Newest album or single for an artist (by release_date)."""
+    return _runner.run(
+        "spotify_artist_latest_album",
+        {"artist_id": artist_id, "include_groups": include_groups},
+    )
+
+
+@mcp.tool()
 def spotify_get_artist(artist_id: str, market: str = "") -> str:
     """Get artist profile (genres, popularity)."""
     args: dict = {"artist_id": artist_id}
@@ -341,6 +350,214 @@ def spotify_add_to_queue(uri: str, device_id: str = "") -> str:
     if device_id.strip():
         args["device_id"] = device_id.strip()
     return _runner.run("spotify_add_to_queue", args)
+
+
+@mcp.tool()
+def spotify_play_next(uri: str, device_id: str = "") -> str:
+    """Queue a track to play next (does not interrupt current playback)."""
+    args: dict = {"uri": uri}
+    if device_id.strip():
+        args["device_id"] = device_id.strip()
+    return _runner.run("spotify_play_next", args)
+
+
+@mcp.tool()
+def spotify_add_tracks_by_query(
+    playlist_id: str,
+    query: str,
+    count: int = 1,
+    min_year: int = 0,
+) -> str:
+    """Search for tracks matching a query and add them to a playlist."""
+    args: dict[str, Any] = {"playlist_id": playlist_id, "query": query, "count": count}
+    if min_year > 0:
+        args["min_year"] = min_year
+    return _runner.run("spotify_add_tracks_by_query", args)
+
+
+@mcp.tool()
+def spotify_play_artist(artist_name: str = "", artist_id: str = "", device_id: str = "") -> str:
+    """Play an artist by starting their top tracks (uris list)."""
+    args: dict[str, Any] = {}
+    if artist_name.strip():
+        args["artist_name"] = artist_name.strip()
+    if artist_id.strip():
+        args["artist_id"] = artist_id.strip()
+    if device_id.strip():
+        args["device_id"] = device_id.strip()
+    return _runner.run("spotify_play_artist", args)
+
+
+@mcp.tool()
+def spotify_play_playlist(
+    playlist_id: str,
+    device_id: str = "",
+    start_at_uri: str = "",
+    repeat: str = "",
+    shuffle: bool | None = None,
+) -> str:
+    """Start playing a playlist, optionally at a track, with repeat/shuffle."""
+    args: dict[str, Any] = {"playlist_id": playlist_id}
+    if device_id.strip():
+        args["device_id"] = device_id.strip()
+    if start_at_uri.strip():
+        args["start_at_uri"] = start_at_uri.strip()
+    if repeat.strip():
+        args["repeat"] = repeat.strip()
+    if shuffle is not None:
+        args["shuffle"] = shuffle
+    return _runner.run("spotify_play_playlist", args)
+
+
+@mcp.tool()
+def spotify_set_repeat(state: str, device_id: str = "") -> str:
+    """Set repeat mode: track, context, or off."""
+    args: dict[str, Any] = {"state": state}
+    if device_id.strip():
+        args["device_id"] = device_id.strip()
+    return _runner.run("spotify_set_repeat", args)
+
+
+@mcp.tool()
+def spotify_set_shuffle(state: bool, device_id: str = "") -> str:
+    """Toggle shuffle on the active device."""
+    args: dict[str, Any] = {"state": state}
+    if device_id.strip():
+        args["device_id"] = device_id.strip()
+    return _runner.run("spotify_set_shuffle", args)
+
+
+@mcp.tool()
+def spotify_seek(position_ms: int, device_id: str = "") -> str:
+    """Seek to position_ms in the current track."""
+    args: dict[str, Any] = {"position_ms": position_ms}
+    if device_id.strip():
+        args["device_id"] = device_id.strip()
+    return _runner.run("spotify_seek", args)
+
+
+@mcp.tool()
+def spotify_set_volume(volume_percent: int, device_id: str = "") -> str:
+    """Set playback volume 0-100."""
+    args: dict[str, Any] = {"volume_percent": volume_percent}
+    if device_id.strip():
+        args["device_id"] = device_id.strip()
+    return _runner.run("spotify_set_volume", args)
+
+
+@mcp.tool()
+def spotify_recently_played(limit: int = 20, after: str = "", before: str = "") -> str:
+    """Recently played tracks for the signed-in user."""
+    args: dict[str, Any] = {"limit": limit}
+    if after.strip():
+        args["after"] = after.strip()
+    if before.strip():
+        args["before"] = before.strip()
+    return _runner.run("spotify_recently_played", args)
+
+
+@mcp.tool()
+def spotify_save_tracks(track_id: str = "", track_ids: list[str] | None = None) -> str:
+    """Save (like) tracks to the user's library."""
+    args: dict[str, Any] = {}
+    if track_id.strip():
+        args["track_id"] = track_id.strip()
+    if track_ids:
+        args["track_ids"] = track_ids
+    return _runner.run("spotify_save_tracks", args)
+
+
+@mcp.tool()
+def spotify_unsave_tracks(track_id: str = "", track_ids: list[str] | None = None) -> str:
+    """Remove saved tracks from the user's library."""
+    args: dict[str, Any] = {}
+    if track_id.strip():
+        args["track_id"] = track_id.strip()
+    if track_ids:
+        args["track_ids"] = track_ids
+    return _runner.run("spotify_unsave_tracks", args)
+
+
+@mcp.tool()
+def spotify_save_albums(album_id: str = "", album_ids: list[str] | None = None) -> str:
+    """Save albums to the user's library."""
+    args: dict[str, Any] = {}
+    if album_id.strip():
+        args["album_id"] = album_id.strip()
+    if album_ids:
+        args["album_ids"] = album_ids
+    return _runner.run("spotify_save_albums", args)
+
+
+@mcp.tool()
+def spotify_unsave_albums(album_id: str = "", album_ids: list[str] | None = None) -> str:
+    """Remove saved albums from the user's library."""
+    args: dict[str, Any] = {}
+    if album_id.strip():
+        args["album_id"] = album_id.strip()
+    if album_ids:
+        args["album_ids"] = album_ids
+    return _runner.run("spotify_unsave_albums", args)
+
+
+@mcp.tool()
+def spotify_saved_albums(limit: int = 20, offset: int = 0, market: str = "") -> str:
+    """List saved albums."""
+    args: dict[str, Any] = {"limit": limit, "offset": offset}
+    if market.strip():
+        args["market"] = market.strip()
+    return _runner.run("spotify_saved_albums", args)
+
+
+@mcp.tool()
+def spotify_follow_artist(artist_id: str = "", artist_ids: list[str] | None = None) -> str:
+    """Follow artists."""
+    args: dict[str, Any] = {}
+    if artist_id.strip():
+        args["artist_id"] = artist_id.strip()
+    if artist_ids:
+        args["artist_ids"] = artist_ids
+    return _runner.run("spotify_follow_artist", args)
+
+
+@mcp.tool()
+def spotify_unfollow_artist(artist_id: str = "", artist_ids: list[str] | None = None) -> str:
+    """Unfollow artists."""
+    args: dict[str, Any] = {}
+    if artist_id.strip():
+        args["artist_id"] = artist_id.strip()
+    if artist_ids:
+        args["artist_ids"] = artist_ids
+    return _runner.run("spotify_unfollow_artist", args)
+
+
+@mcp.tool()
+def spotify_get_queue() -> str:
+    """Return the current playback queue."""
+    return _runner.run("spotify_get_queue", {})
+
+
+@mcp.tool()
+def spotify_remove_from_queue() -> str:
+    """Explain that Spotify cannot remove queue items (offer skip instead)."""
+    return _runner.run("spotify_remove_from_queue", {})
+
+
+@mcp.tool()
+def spotify_playlists_containing_track(
+    track_id: str,
+    max_playlists: int = 30,
+    max_pages_per_playlist: int = 3,
+) -> str:
+    """Find playlists in the user's library that contain a track."""
+    return _runner.run(
+        "spotify_playlists_containing_track",
+        {
+            "track_id": track_id,
+            "max_playlists": max_playlists,
+            "max_pages_per_playlist": max_pages_per_playlist,
+        },
+    )
 
 
 def main() -> None:

@@ -21,7 +21,7 @@ def test_login_redirect_pkce_params(data_dir) -> None:
     loc = r.headers["location"]
     assert loc.startswith("https://accounts.spotify.com/authorize?")
     qs = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)
-    assert qs["client_id"] == ["test-spotify-client-id"]
+    assert qs["client_id"] == ["a" * 32]
     assert qs["redirect_uri"] == ["http://127.0.0.1:8765/callback"]
     assert qs["response_type"] == ["code"]
     assert qs["code_challenge_method"] == ["S256"]

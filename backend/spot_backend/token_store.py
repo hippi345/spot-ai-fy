@@ -51,6 +51,11 @@ def load_device(path: Path) -> DeviceSelection | None:
         return None
 
 
+def clear_device(path: Path) -> None:
+    if path.is_file():
+        path.unlink(missing_ok=True)
+
+
 def save_device(path: Path, selection: DeviceSelection) -> None:
     _atomic_write(path, selection.model_dump())
 

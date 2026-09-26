@@ -36,12 +36,14 @@ class Settings(BaseSettings):
     llm_provider: str = "ollama"
 
     ollama_host: str = "http://127.0.0.1:11434"
-    ollama_model: str = "gemma2:2b"
-    # Ollama context window (tokens). Default 4096 silently truncates agent prompts that
-    # include a long system prompt + chat history + tool results. Bumping to 8192 costs
-    # a little extra KV cache (~1 GB RAM for 8B-class models) but keeps the full prompt.
-    # Set to 0 to let Ollama use its per-model default.
-    ollama_num_ctx: int = 8192
+    ollama_model: str = "qwen3:4b-instruct"
+    # Ollama context window (tokens). The default agent prompt + ~50 tools is ~10k+ tokens;
+    # 16384 avoids silent truncation at 8192. Set to 0 to let Ollama use its per-model default.
+    ollama_num_ctx: int = 16384
+    # When false, send "think": false to Ollama /api/chat (disables thinking on supported models).
+    ollama_think: bool = False
+    # Optional CPU thread hint for Ollama (options.num_thread). 0 = omit.
+    ollama_num_thread: int = 0
     # How long Ollama keeps the model resident after the last request. A short keep-alive
     # means every prompt can pay a ~2-minute reload penalty on CPU-only machines.
     # Accepts Ollama duration strings ("30m", "2h") or "-1" to keep forever.
@@ -79,4 +81,6 @@ class Settings(BaseSettings):
 
 
 def get_settings() -> Settings:
-    return Settings()
+    from spot_backend.secrets_store import merge_settings_from_store
+
+    return merge_settings_from_store(Settings())
