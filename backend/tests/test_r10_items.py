@@ -352,6 +352,7 @@ def test_r10_item5_make_private_visibility_note_once() -> None:
     )
     reply = prepare_user_visible_reply(assistant, [tool_json])
     assert reply.count("still shows it as public") == 1
+    assert "to be private" not in reply.lower()
     assert "I asked Spotify to make it private" in reply
 
 

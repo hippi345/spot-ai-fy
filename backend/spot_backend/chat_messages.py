@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 STOCK_NO_ASSISTANT_HINT = (
     "The model returned no assistant text and no tool calls (Ollama may stream reasoning "
@@ -180,10 +181,52 @@ _PRIVATE_VISIBILITY_CLAIM = re.compile(
     r"\b(?:currently\s+private|(?:it(?:'s|\s+is)|remains?|stays?)\s+(?:set\s+to\s+)?private)\b",
     re.I,
 )
+_PRIVATE_CHANGE_SUCCESS_CLAIM = re.compile(
+    r"\b(?:"
+    r"made\s+(?:it\s+|the\s+playlist\s+)?private|"
+    r"(?:updated|changed)\s+(?:the\s+)?(?:playlist\s+)?(?:\"[^\"]+\"|'[^']+'|\S+\s+)?to\s+be\s+private|"
+    r"(?:is|are)\s+now\s+private|"
+    r"set\s+(?:it\s+|the\s+playlist\s+)?to\s+private|"
+    r"updated\s+your\s+playlist\s+to\s+be\s+private"
+    r")\b",
+    re.I,
+)
 _PUBLIC_VISIBILITY_CLAIM = re.compile(
     r"\b(?:currently\s+public|(?:it(?:'s|\s+is)|remains?|stays?)\s+(?:set\s+to\s+)?public)\b",
     re.I,
 )
+
+
+def _tool_visibility_mismatch_results(tool_results: list[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in tool_results:
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("visibility_mismatch"):
+            rows.append(data)
+            continue
+        if (
+            data.get("visibility_change_requested")
+            and data.get("ok") is False
+            and data.get("visibility_warning")
+        ):
+            rows.append(data)
+    return rows
+
+
+def _sentence_claims_private_change_success(sentence: str) -> bool:
+    return bool(_PRIVATE_CHANGE_SUCCESS_CLAIM.search(sentence or ""))
+
+
+def _strip_private_change_success_claims(text: str) -> str:
+    if not text:
+        return ""
+    kept = [s for s in _split_sentences(text) if not _sentence_claims_private_change_success(s)]
+    return _join_sentences(kept)
 
 
 def _tool_results_with_public_field(tool_results: list[str]) -> list[tuple[bool | None, str | None]]:
@@ -208,6 +251,8 @@ def fix_playlist_visibility_contradictions(text: str, tool_results: list[str]) -
     out = (text or "").strip()
     if not out:
         return out
+    if _tool_visibility_mismatch_results(tool_results):
+        out = _strip_private_change_success_claims(out)
     for actual_public, name in _tool_results_with_public_field(tool_results):
         contradicts = (actual_public and _PRIVATE_VISIBILITY_CLAIM.search(out)) or (
             not actual_public and _PUBLIC_VISIBILITY_CLAIM.search(out)

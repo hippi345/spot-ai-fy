@@ -1838,11 +1838,20 @@ class SpotifyToolRunner:
                 out["visibility_mismatch"] = True
                 out["requested_public"] = requested_public
                 out["actual_public"] = checked.get("public")
+                out["public"] = checked.get("public")
                 out["visibility_warning"] = _PLAYLIST_VISIBILITY_MISMATCH_NOTE
-                out["assistant_reply_instruction"] = (
-                    "Do not describe playlist visibility, public/private status, or Spotify sync delay "
-                    "in your reply. Confirm the update briefly only; the app adds any visibility note."
+                out["visibility_result"] = (
+                    "Update request sent, but Spotify still reports this playlist as public; "
+                    "do not say the playlist is private or that the change succeeded."
                 )
+                out["assistant_reply_instruction"] = (
+                    "The private request was sent, but Spotify still reports public. "
+                    "Do not say the playlist is private, is now private, was updated to be private, "
+                    "or that the visibility change succeeded. Confirm only that you sent the update; "
+                    "the app adds any visibility note."
+                )
+            elif isinstance(checked, dict) and "public" in checked:
+                out["public"] = checked.get("public")
         return json.dumps(out, ensure_ascii=False)
 
     def _remove_playlist_tracks(self, arguments: dict[str, Any]) -> str:
@@ -4361,6 +4370,10 @@ class SpotifyToolRunner:
         progress_raw = ps.get("progress_ms")
         progress_ms = progress_raw if isinstance(progress_raw, int) else 0
         is_playing = ps.get("is_playing") is True
+        shuffle_raw = ps.get("shuffle_state")
+        shuffle_state = shuffle_raw if isinstance(shuffle_raw, bool) else None
+        repeat_raw = ps.get("repeat_state")
+        repeat_state = repeat_raw if isinstance(repeat_raw, str) else None
         had_playback = bool(item_uri) and (is_playing or progress_ms > 0 or bool(context_uri))
         manual_queue, queue_ok = self._capture_manual_queue_uris(context_uri, item_uri)
         return {
@@ -4370,9 +4383,50 @@ class SpotifyToolRunner:
             "item_uri": item_uri or None,
             "item_name": item_name or None,
             "progress_ms": progress_ms,
+            "shuffle_state": shuffle_state,
+            "repeat_state": repeat_state,
             "manual_queue_uris": manual_queue,
             "queue_capture_ok": queue_ok,
         }
+
+    def _resolve_album_context_for_track_uri(self, track_uri: str) -> str | None:
+        uri = (track_uri or "").strip()
+        if not uri.startswith("spotify:track:"):
+            return None
+        track_id = _normalize_spotify_id(uri, "track")
+        if not _looks_like_spotify_catalog_id(track_id):
+            return None
+        try:
+            track = self.client.api_get(f"/tracks/{track_id}")
+        except (httpx.HTTPStatusError, Exception):
+            return None
+        if not isinstance(track, dict):
+            return None
+        album = track.get("album") if isinstance(track.get("album"), dict) else {}
+        album_id = album.get("id") if isinstance(album.get("id"), str) else ""
+        if not _looks_like_spotify_catalog_id(album_id):
+            return None
+        return f"spotify:album:{album_id}"
+
+    def _restore_shuffle_repeat_modes(self, prior: dict[str, Any], device_id: str) -> None:
+        shuffle = prior.get("shuffle_state")
+        if isinstance(shuffle, bool):
+            params: dict[str, str] = {"state": "true" if shuffle else "false"}
+            if device_id:
+                params["device_id"] = device_id
+            try:
+                self.client.api_put("/me/player/shuffle", params=params)
+            except httpx.HTTPStatusError:
+                pass
+        repeat = prior.get("repeat_state")
+        if isinstance(repeat, str) and repeat.strip().lower() in ("off", "track", "context"):
+            params = {"state": repeat.strip().lower()}
+            if device_id:
+                params["device_id"] = device_id
+            try:
+                self.client.api_put("/me/player/repeat", params=params)
+            except httpx.HTTPStatusError:
+                pass
 
     def _build_restore_play_body(self, prior: dict[str, Any]) -> dict[str, Any] | None:
         if not prior.get("had_playback"):
@@ -4380,9 +4434,16 @@ class SpotifyToolRunner:
         item_uri = prior.get("item_uri")
         if not isinstance(item_uri, str) or not item_uri.strip():
             return None
-        ctx = prior.get("context_uri") or item_uri
+        ctx_raw = prior.get("context_uri")
+        ctx = ctx_raw.strip() if isinstance(ctx_raw, str) and ctx_raw.strip() else ""
+        if not ctx or ctx.startswith("spotify:track:") or ctx == item_uri.strip():
+            resolved = self._resolve_album_context_for_track_uri(item_uri)
+            if resolved:
+                ctx = resolved
+            elif not ctx:
+                ctx = item_uri.strip()
         body: dict[str, Any] = {
-            "context_uri": str(ctx).strip(),
+            "context_uri": ctx,
             "offset": {"uri": item_uri.strip()},
         }
         progress = prior.get("progress_ms")
@@ -4396,6 +4457,7 @@ class SpotifyToolRunner:
         body = self._build_restore_play_body(prior)
         if not body:
             return None
+        self._restore_shuffle_repeat_modes(prior, device_id)
         try:
             self._try_play(device_id, body)
         except httpx.HTTPStatusError:
