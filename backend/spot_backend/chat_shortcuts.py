@@ -9,6 +9,7 @@ from spot_backend.deterministic_chat_types import DeterministicChatResult
 from spot_backend.play_artist import format_play_artist_reply, play_artist_tool_step
 from spot_backend.play_artist_intent import extract_play_artist_name
 from spot_backend.prompt_intent import prompt_requests_recent_listening_history
+from spot_backend.queue_track_intent import extract_queue_track_request
 from spot_backend.spotify_tools import SpotifyToolRunner
 
 _LIKE_THIS_RE = re.compile(
@@ -28,8 +29,53 @@ def _parse_tool_json(raw: str) -> dict:
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError, ValueError):
-        return {}
+        data = {}
+    if isinstance(data, dict) and data.get("items"):
+        return data
+    # Truncated tool payloads: recover a partial items array if present.
+    marker = '"items"'
+    idx = (raw or "").find(marker)
+    if idx >= 0:
+        fragment = (raw or "")[idx:]
+        if not fragment.strip().endswith("}"):
+            fragment = fragment.rsplit("}", 1)[0] + "]}"
+        try:
+            wrapped = json.loads("{" + fragment)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            wrapped = {}
+        if isinstance(wrapped, dict) and isinstance(wrapped.get("items"), list):
+            return wrapped
     return data if isinstance(data, dict) else {}
+
+
+def _summarize_recent_plays(items: list) -> str:
+    labels: list[str] = []
+    for row in items[:12]:
+        if not isinstance(row, dict):
+            continue
+        track = row.get("track") if isinstance(row.get("track"), dict) else row
+        if not isinstance(track, dict):
+            continue
+        name = track.get("name") if isinstance(track.get("name"), str) else "Unknown track"
+        artists = track.get("artists") if isinstance(track.get("artists"), list) else []
+        artist_names = [
+            a.get("name")
+            for a in artists
+            if isinstance(a, dict) and isinstance(a.get("name"), str)
+        ]
+        if artist_names:
+            labels.append(f"{name} — {', '.join(artist_names)}")
+        else:
+            labels.append(name)
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return f"Your most recent play was {labels[0]}."
+    head = ", ".join(labels[:8])
+    extra = len(items) - len(labels[:8])
+    if extra > 0:
+        return f"Recently you played: {head}, and {extra} more."
+    return f"Recently you played: {head}."
 
 
 def _run_tool(
@@ -55,7 +101,8 @@ def try_deterministic_recently_played_reply(
     data = _parse_tool_json(raw)
     items = data.get("items") if isinstance(data.get("items"), list) else []
     if items:
-        reply = (
+        summary = _summarize_recent_plays(items)
+        reply = summary or (
             f"I pulled your {len(items)} most recent plays from Spotify — "
             "check the tool results for track details."
         )
@@ -101,6 +148,20 @@ def try_deterministic_chat_reply(
         name, args, raw = play_artist_tool_step(runner, artist_name)
         steps.append((name, args, raw))
         return DeterministicChatResult(format_play_artist_reply(artist_name, raw), steps)
+
+    queue_req = extract_queue_track_request(t)
+    if queue_req:
+        track_title, artist = queue_req
+        qargs: dict[str, str] = {"track_name": track_title}
+        if artist:
+            qargs["artist_name"] = artist
+        raw = _run_tool(runner, "spotify_add_to_queue", qargs, steps)
+        data = _parse_tool_json(raw)
+        if data.get("ok"):
+            label = f"{track_title} by {artist}" if artist else track_title
+            return DeterministicChatResult(f"Queued {label} on Spotify.", steps)
+        err = str(data.get("error") or "I could not queue that track.")
+        return DeterministicChatResult(err, steps)
 
     if _LIKE_THIS_RE.match(t) or _SAVE_SONG_RE.match(t):
         state_raw = _run_tool(runner, "spotify_playback_state", {}, steps)

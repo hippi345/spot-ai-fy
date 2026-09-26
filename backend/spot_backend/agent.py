@@ -490,7 +490,7 @@ def iter_ollama_chat_events(
     """Yields Spot-AI-fy progress events for the Ollama agent; ends with ``final`` or ``error``."""
     runner = SpotifyToolRunner(settings=settings, conversation_id=conversation_id)
     history_turns = _coerce_chat_history(history)
-    seed_runner_from_chat_history(runner, history_turns)
+    seed_runner_from_chat_history(runner, history_turns, conversation_id=conversation_id)
     shortcut_events = ollama_deterministic_shortcut_events(
         user_text,
         runner,

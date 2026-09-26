@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 
 # Delay before a single 404 device-not-active play retry (tests patch this).
@@ -24,6 +25,76 @@ def _compact(data: Any, limit: int = 6000) -> str:
     if len(s) > limit:
         return s[:limit] + "\n... (truncated)"
     return s
+
+
+_UNWANTED_TRACK_VARIANT_RE = re.compile(
+    r"\b(karaoke|cover version|\bcover\b|tribute|instrumental|live at|live from|in the style of)\b",
+    re.I,
+)
+
+
+def _slim_recently_played_payload(data: dict[str, Any]) -> dict[str, Any]:
+    raw_items = data.get("items") if isinstance(data.get("items"), list) else []
+    items: list[dict[str, Any]] = []
+    for row in raw_items:
+        if not isinstance(row, dict):
+            continue
+        track = row.get("track") if isinstance(row.get("track"), dict) else {}
+        artists_raw = track.get("artists") if isinstance(track.get("artists"), list) else []
+        artists = [
+            {"name": a.get("name")}
+            for a in artists_raw
+            if isinstance(a, dict) and isinstance(a.get("name"), str)
+        ]
+        items.append(
+            {
+                "played_at": row.get("played_at"),
+                "track": {
+                    "name": track.get("name"),
+                    "uri": track.get("uri"),
+                    "id": track.get("id"),
+                    "artists": artists,
+                },
+            }
+        )
+    out: dict[str, Any] = {"items": items}
+    if isinstance(data.get("next"), str):
+        out["next"] = data["next"]
+    cursors = data.get("cursors")
+    if isinstance(cursors, dict):
+        out["cursors"] = cursors
+    return out
+
+
+def _score_track_search_candidate(
+    track: dict[str, Any],
+    *,
+    want_title: str = "",
+    want_artist: str = "",
+) -> int:
+    name = str(track.get("name") or "")
+    name_low = name.lower()
+    score = int(track.get("popularity") or 0)
+    if _UNWANTED_TRACK_VARIANT_RE.search(name_low):
+        score -= 120
+    title = want_title.strip().lower()
+    artist = want_artist.strip().lower()
+    if title and title in name_low:
+        score += 80
+    if title and name_low == title:
+        score += 40
+    artists = track.get("artists") if isinstance(track.get("artists"), list) else []
+    artist_names = [
+        str(a.get("name") or "").lower()
+        for a in artists
+        if isinstance(a, dict)
+    ]
+    if artist:
+        if any(an == artist for an in artist_names):
+            score += 100
+        elif any(artist in an for an in artist_names):
+            score += 40
+    return score
 
 
 def _coerce_str(v: Any, default: str = "") -> str:
@@ -694,6 +765,11 @@ class SpotifyToolRunner:
         prior = load_last_library_mutation(self.conversation_id)
         if isinstance(prior, dict):
             self._last_library_mutation = prior
+        from spot_backend.library_mutation_store import load_last_playlist_id
+
+        stored_pid = load_last_playlist_id(self.conversation_id)
+        if stored_pid:
+            self.note_session_playlist_id(stored_pid)
 
     def last_saved_track_ids_for_undo(self, conversation_id: str | None = None) -> list[str]:
         """Track ids to unsave for undo — persisted session first, else this runner's last save."""
@@ -715,6 +791,9 @@ class SpotifyToolRunner:
         if _looks_like_spotify_catalog_id(pid):
             self._last_session_playlist_id = pid
             self._session_known_ids.add(pid)
+            from spot_backend.library_mutation_store import record_last_playlist_id
+
+            record_last_playlist_id(self.conversation_id, pid)
 
     def close(self) -> None:
         self.client.close()
@@ -848,6 +927,31 @@ class SpotifyToolRunner:
                 )
             raise
         return True, None
+
+    def _validate_playlist_id_for_mutation(self, pid: str) -> tuple[str | None, str | None]:
+        """Reject or substitute playlist ids that were not seen in tool results this session."""
+        clean = (pid or "").strip()
+        if not clean:
+            return None, json.dumps({"error": "playlist_id is required"})
+        if clean in self._session_known_ids:
+            return clean, None
+        fallback = self._last_session_playlist_id
+        if fallback and _looks_like_spotify_catalog_id(fallback):
+            return fallback, None
+        return None, json.dumps(
+            {
+                "ok": False,
+                "error": (
+                    "That playlist id was not returned by Spotify tools in this conversation — "
+                    "I cannot change it until you create or look up the playlist here."
+                ),
+                "rejected_playlist_id": clean,
+                "hint": "Use the id from spotify_create_playlist or spotify_user_playlists in this chat.",
+                "reconnect_spotify_unnecessary": True,
+                "sign_out_not_recommended": True,
+            },
+            ensure_ascii=False,
+        )
 
     def _precheck_play_catalog_id(self, name: str, arguments: dict[str, Any]) -> str | None:
         if name not in ("spotify_play_playlist", "spotify_start_resume_playback"):
@@ -1700,6 +1804,10 @@ class SpotifyToolRunner:
             err = None
         if not pid:
             return json.dumps({"error": "playlist_id is required"})
+        validated, reject = self._validate_playlist_id_for_mutation(pid)
+        if reject:
+            return reject
+        pid = validated or pid
         body: dict[str, Any] = {}
         if "name" in arguments and arguments.get("name") is not None:
             n = str(arguments.get("name", "")).strip()
@@ -1933,6 +2041,21 @@ class SpotifyToolRunner:
         if before:
             params["before"] = before
         data = self.client.api_get("/me/player/recently-played", params=params)
+        if isinstance(data, dict):
+            slim = _slim_recently_played_payload(data)
+            items = slim.get("items") if isinstance(slim.get("items"), list) else []
+            while True:
+                slim["items"] = items
+                slim["returned_count"] = len(items)
+                if isinstance(data.get("items"), list) and len(data["items"]) > len(items):
+                    slim["truncated"] = True
+                    slim["total_fetched"] = len(data["items"])
+                out = _compact(slim, limit=8000)
+                if len(out) <= 8000 and not out.endswith("(truncated)"):
+                    return out
+                if not items:
+                    return out
+                items = items[:-1]
         return _compact(data, limit=8000)
 
     def _library_put_uris(self, uris: list[str]) -> None:
@@ -2904,9 +3027,12 @@ class SpotifyToolRunner:
                 if isinstance(checked, dict) and "public" in checked
                 else (False if not public else data.get("public"))
             ),
+            "created_private_by_default": not public,
             "playlist_id_for_add_tracks": pid,
             "hint": "Next: spotify_add_tracks_to_playlist with playlist_id = id above (string), plus track_uris / track_ids / tracks from spotify_search.",
         }
+        if not public:
+            mini["user_visible_visibility"] = "private"
         if visibility_note:
             mini["visibility_warning"] = visibility_note
         if isinstance(data.get("snapshot_id"), str):
@@ -3526,6 +3652,106 @@ class SpotifyToolRunner:
         rewritten["offset"] = {"uri": track_uri}
         return rewritten
 
+    def _coerce_body_to_album_offset(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Never send a raw `uris` list to Spotify when a single track can use album context + offset."""
+        if body.get("context_uri") and isinstance(body.get("offset"), dict):
+            return {k: v for k, v in body.items() if k != "uris"}
+        uris = body.get("uris")
+        if isinstance(uris, list) and uris:
+            first_uri = str(uris[0]).strip()
+            merged = {k: v for k, v in body.items() if k != "uris"}
+            merged["uris"] = [first_uri]
+            prepared = self._prepare_single_track_play_body(merged)
+            if prepared.get("context_uri"):
+                prepared.pop("uris", None)
+                return prepared
+        if body.get("context_uri"):
+            return {k: v for k, v in body.items() if k != "uris"}
+        prepared = self._prepare_single_track_play_body(body)
+        if prepared.get("context_uri"):
+            prepared.pop("uris", None)
+        return prepared
+
+    def _album_offset_body_for_track(
+        self,
+        track: dict[str, Any],
+        *,
+        track_uri: str = "",
+    ) -> dict[str, Any] | None:
+        uri = (track_uri or str(track.get("uri") or "")).strip()
+        if not uri.startswith("spotify:track:"):
+            tid = _normalize_spotify_id(uri or str(track.get("id") or ""), "track")
+            if _looks_like_spotify_catalog_id(tid):
+                uri = f"spotify:track:{tid}"
+        if not uri.startswith("spotify:track:"):
+            return None
+        album = track.get("album") if isinstance(track.get("album"), dict) else {}
+        album_id = album.get("id") if isinstance(album.get("id"), str) else ""
+        if not _looks_like_spotify_catalog_id(album_id):
+            track_id = _normalize_spotify_id(uri, "track")
+            try:
+                fetched = self.client.api_get(f"/tracks/{track_id}")
+            except httpx.HTTPStatusError:
+                return None
+            if isinstance(fetched, dict):
+                album = fetched.get("album") if isinstance(fetched.get("album"), dict) else {}
+                album_id = album.get("id") if isinstance(album.get("id"), str) else ""
+        if not _looks_like_spotify_catalog_id(album_id):
+            return None
+        return {
+            "context_uri": f"spotify:album:{album_id}",
+            "offset": {"uri": uri},
+        }
+
+    def _resolve_track_uri_for_queue(
+        self,
+        *,
+        query: str = "",
+        track_name: str = "",
+        artist_name: str = "",
+        market: str = "",
+    ) -> tuple[str | None, str | None]:
+        market = _normalize_market(market)
+        q = (query or "").strip()
+        if not q:
+            parts = [p for p in (track_name.strip(), artist_name.strip()) if p]
+            if len(parts) == 2:
+                q = f'track:"{parts[0]}" artist:"{parts[1]}"'
+            elif parts:
+                q = parts[0]
+        if not q:
+            return None, "query or track_name is required"
+        data = self.client.api_get(
+            "/search",
+            params={"q": q, "type": "track", "market": market, "limit": 10},
+        )
+        tracks_obj = data.get("tracks") if isinstance(data, dict) else None
+        items = tracks_obj.get("items") if isinstance(tracks_obj, dict) else None
+        if not isinstance(items, list) or not items:
+            return None, f"No tracks found for {q!r}"
+        best: dict[str, Any] | None = None
+        best_score = -10_000
+        for tr in items:
+            if not isinstance(tr, dict):
+                continue
+            score = _score_track_search_candidate(
+                tr,
+                want_title=track_name,
+                want_artist=artist_name,
+            )
+            if score > best_score:
+                best_score = score
+                best = tr
+        if not best:
+            return None, f"No tracks found for {q!r}"
+        uri = best.get("uri")
+        if isinstance(uri, str) and uri.strip():
+            return uri.strip(), None
+        tid = best.get("id")
+        if isinstance(tid, str) and _looks_like_spotify_catalog_id(tid):
+            return f"spotify:track:{tid}", None
+        return None, "Search returned a track without a uri"
+
     def _rewrite_single_track_play_for_artist_context(
         self,
         arguments: dict[str, Any],
@@ -3649,7 +3875,7 @@ class SpotifyToolRunner:
         device_id: str,
         device_note: str | None = None,
     ) -> str:
-        """Read /me/player after play; one recovery attempt, then a clear success or failure."""
+        """Read /me/player after play; at most one replay PUT, then a clear success or failure."""
         if self._playback_matches(body, attempts=4, delay_s=0.35):
             payload: dict[str, Any] = {
                 "ok": True,
@@ -3660,20 +3886,20 @@ class SpotifyToolRunner:
             if device_note:
                 payload["device_fallback_note"] = device_note
             return json.dumps(payload)
-        if self._safe_playback_recovery_once(body, device_id):
-            if self._playback_matches(body, attempts=4, delay_s=0.35):
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "device_id": device_id or None,
-                        "body": body,
-                        "playback_verified": True,
-                        "note": (
-                            "Playback did not match immediately after play; retried once on the "
-                            "active device and verified."
-                        ),
-                    }
-                )
+        try:
+            self._try_play(device_id, body)
+        except httpx.HTTPStatusError:
+            pass
+        if self._playback_matches(body, attempts=4, delay_s=0.35):
+            return json.dumps(
+                {
+                    "ok": True,
+                    "device_id": device_id or None,
+                    "body": body,
+                    "playback_verified": True,
+                    "note": "Retried play once with the same album context and verified playback.",
+                }
+            )
         snapshot = self._current_playback_snapshot()
         return json.dumps(
             {
@@ -3683,8 +3909,7 @@ class SpotifyToolRunner:
                     "Nothing is playing on the expected context, or playback is still on the previous item."
                 ),
                 "hint": (
-                    "Open Spotify on your device, tap play on any track, then retry — or ask me to "
-                    "transfer playback to a specific device."
+                    "Open Spotify on your device, tap play on any track, then retry."
                 ),
                 "requested_body": body,
                 "current_state": snapshot,
@@ -3711,15 +3936,13 @@ class SpotifyToolRunner:
         if isinstance(offset, dict):
             body["offset"] = offset
         if force_interrupt:
-            pass
+            body = self._coerce_body_to_album_offset(body)
         else:
             plain_resume = self._should_plain_resume(body)
             if plain_resume:
                 body = self._strip_redundant_resume_uris(body)
-            else:
-                body = self._rewrite_single_track_play_for_artist_context(arguments, body)
-                body = self._prepare_single_track_play_body(body)
-                body = self._strip_redundant_resume_uris(body)
+            body = self._coerce_body_to_album_offset(body)
+            body = self._strip_redundant_resume_uris(body)
         want_verification = bool(
             body.get("context_uri")
             or body.get("uris")
@@ -3844,53 +4067,12 @@ class SpotifyToolRunner:
                         raise
             if e.response.status_code != 404:
                 raise
-            # 404 => no active device. Try to pick a single available idle device, transfer, retry.
             try:
                 dev = self.client.api_get("/me/player/devices") or {}
             except httpx.HTTPStatusError:
                 dev = {}
             devices = dev.get("devices") if isinstance(dev, dict) else []
             devices = devices if isinstance(devices, list) else []
-            non_restricted = [d for d in devices if isinstance(d, dict) and not d.get("is_restricted")]
-            known_ids = {
-                d.get("id")
-                for d in non_restricted
-                if isinstance(d.get("id"), str) and d.get("id")
-            }
-            chosen = None
-            if device_id and device_id in known_ids:
-                chosen = device_id
-            elif len(non_restricted) == 1 and isinstance(non_restricted[0].get("id"), str):
-                chosen = non_restricted[0]["id"]
-            elif not device_id:
-                chosen = self._resolve_target_device("")
-            if chosen:
-                try:
-                    self.client.api_put(
-                        "/me/player",
-                        json_body={"device_ids": [chosen], "play": False},
-                    )
-                except httpx.HTTPStatusError:
-                    pass
-                time.sleep(PLAY_DEVICE_404_RETRY_DELAY_SECONDS)
-                try:
-                    self._try_play(chosen, body)
-                    verified = (
-                        True
-                        if not want_verification
-                        else self._playback_matches(body, attempts=6, delay_s=0.5)
-                    )
-                    return json.dumps(
-                        {
-                            "ok": True,
-                            "device_id": chosen,
-                            "body": body,
-                            "playback_verified": bool(verified),
-                            "note": "Transferred playback to the only available device before playing.",
-                        }
-                    )
-                except httpx.HTTPStatusError:
-                    pass
             return json.dumps(
                 {
                     "error": (
@@ -3979,6 +4161,14 @@ class SpotifyToolRunner:
                 track_ok = True if not want_track_uri else (cur_uri == want_track_uri)
                 if ctx_ok and track_ok:
                     return True
+                if (
+                    want_track_uri
+                    and track_ok
+                    and ps.get("is_playing")
+                    and want_context.startswith("spotify:album:")
+                    and want_offset_uri
+                ):
+                    return True
             time.sleep(delay_s)
         return False
 
@@ -4016,7 +4206,7 @@ class SpotifyToolRunner:
         return state.get("is_playing") is not True
 
     def _play_artist(self, arguments: dict[str, Any]) -> str:
-        """Play an artist by starting their top tracks as a uris queue (not artist context_uri)."""
+        """Play an artist by starting their top track via album context + offset (never raw uris)."""
         raw_ref = _pick_arg(arguments, "artist_name", "name", "artist_id", "id", "artist")
         if not raw_ref or not str(raw_ref).strip():
             return json.dumps(
@@ -4048,11 +4238,8 @@ class SpotifyToolRunner:
             top_data = {}
         track_items = top_data.get("tracks") if isinstance(top_data, dict) else None
         track_items = track_items if isinstance(track_items, list) else []
-        uris: list[str] = []
-        for tr in track_items[:10]:
-            if isinstance(tr, dict) and tr.get("uri"):
-                uris.append(str(tr["uri"]))
-        if not uris:
+        track_dicts = [tr for tr in track_items if isinstance(tr, dict) and tr.get("uri")]
+        if not track_dicts:
             return json.dumps(
                 {
                     "ok": False,
@@ -4062,32 +4249,50 @@ class SpotifyToolRunner:
                 },
                 ensure_ascii=False,
             )
-        play_args: dict[str, Any] = {"uris": uris, "force_interrupt": True}
+        first = track_dicts[0]
+        play_body = self._album_offset_body_for_track(first)
+        if not play_body:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "artist_id": cid,
+                    "error": "I couldn't resolve an album context for that artist's top track.",
+                    "reconnect_spotify_unnecessary": True,
+                },
+                ensure_ascii=False,
+            )
+        play_args: dict[str, Any] = dict(play_body)
         device_id = _coerce_str(arguments.get("device_id"))
         if device_id:
             play_args["device_id"] = device_id
-
-        def _attempt_play() -> dict[str, Any]:
-            play_raw = self._start_playback(play_args)
-            try:
-                parsed_play = json.loads(play_raw)
-            except (json.JSONDecodeError, ValueError):
-                return {"ok": False, "raw": play_raw}
-            return parsed_play if isinstance(parsed_play, dict) else {"ok": False, "raw": play_raw}
-
-        play_result = _attempt_play()
-        if self._player_needs_artist_play_fallback():
-            play_result = _attempt_play()
+        play_raw = self._start_playback(play_args)
+        try:
+            play_result = json.loads(play_raw)
+        except (json.JSONDecodeError, ValueError):
+            play_result = {"ok": False, "raw": play_raw}
         play_ok = isinstance(play_result, dict) and play_result.get("ok") is True
-        if play_ok and self._player_needs_artist_play_fallback():
-            play_ok = False
+        queued: list[str] = []
+        if play_ok and play_result.get("playback_verified") is not False:
+            for tr in track_dicts[1:5]:
+                uri = tr.get("uri")
+                if not isinstance(uri, str) or not uri.strip():
+                    continue
+                params: dict[str, str] = {"uri": uri.strip()}
+                if device_id:
+                    params["device_id"] = device_id
+                try:
+                    self.client.api_post("/me/player/queue", params=params)
+                    queued.append(uri.strip())
+                except httpx.HTTPStatusError:
+                    break
         artist_name = top_data.get("artist_name") if isinstance(top_data, dict) else None
         if not isinstance(artist_name, str) or not artist_name.strip():
             artist_name = str(raw_ref).strip()
         summary: dict[str, Any] = {
             "artist_id": cid,
             "artist_name": artist_name,
-            "uris": uris,
+            "play_body": play_body,
+            "queued_uris": queued,
             "playback": play_result,
             "ok": play_ok,
         }
@@ -4255,13 +4460,27 @@ class SpotifyToolRunner:
     def _add_to_queue(self, arguments: dict[str, Any]) -> str:
         uri = str(arguments.get("uri", "")).strip()
         if not uri:
-            return json.dumps({"error": "uri is required"})
+            query = _pick_arg(arguments, "query", "q")
+            track_name = _pick_arg(arguments, "track_name", "name", "title")
+            artist_name = _pick_arg(arguments, "artist_name", "artist")
+            market = _pick_arg(arguments, "market", "country")
+            resolved, err = self._resolve_track_uri_for_queue(
+                query=query,
+                track_name=track_name,
+                artist_name=artist_name,
+                market=market,
+            )
+            if err:
+                return json.dumps({"error": err})
+            uri = resolved or ""
+        if not uri:
+            return json.dumps({"error": "uri is required (or pass query / track_name + artist_name)"})
         device_id = str(arguments.get("device_id", "")).strip() or self._device_id()
         params: dict[str, str] = {"uri": uri}
         if device_id:
             params["device_id"] = device_id
         self.client.api_post("/me/player/queue", params=params)
-        return json.dumps({"ok": True})
+        return json.dumps({"ok": True, "uri": uri})
 
     def _set_repeat(self, arguments: dict[str, Any]) -> str:
         raw = str(arguments.get("state", "")).strip().lower()
@@ -4976,9 +5195,9 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "spotify_play_artist",
             "description": (
-                "PLAY NOW — play an artist by starting their top tracks (uris list, up to 10). Use for "
-                "'play Radiohead', 'play Taylor Swift', or artist_id / spotify:artist: URIs from search. "
-                "Do NOT use spotify_play_playlist for artist names."
+                "PLAY NOW — play an artist by starting their top track using album context + offset "
+                "(never a raw uris list). Use for 'play Radiohead', 'play Taylor Swift', or artist_id "
+                "/ spotify:artist: URIs from search. Do NOT use spotify_play_playlist for artist names."
             ),
             "parameters": {
                 "type": "object",
@@ -5216,8 +5435,14 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             ),
             "parameters": {
                 "type": "object",
-                "properties": {"uri": {"type": "string"}, "device_id": {"type": "string"}},
-                "required": ["uri"],
+                "properties": {
+                    "uri": {"type": "string"},
+                    "query": {"type": "string"},
+                    "track_name": {"type": "string"},
+                    "artist_name": {"type": "string"},
+                    "market": {"type": "string"},
+                    "device_id": {"type": "string"},
+                },
             },
         },
     },
@@ -5234,8 +5459,14 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
             ),
             "parameters": {
                 "type": "object",
-                "properties": {"uri": {"type": "string"}, "device_id": {"type": "string"}},
-                "required": ["uri"],
+                "properties": {
+                    "uri": {"type": "string"},
+                    "query": {"type": "string"},
+                    "track_name": {"type": "string"},
+                    "artist_name": {"type": "string"},
+                    "market": {"type": "string"},
+                    "device_id": {"type": "string"},
+                },
             },
         },
     },

@@ -467,7 +467,7 @@ _GEMINI_16_COMMANDS: list[tuple[str, str]] = [
     ("save this album", "spotify_save_albums"),
     ("play artist Radiohead", "spotify_search"),
     ("play album OK Computer", "spotify_search"),
-    ("queue this song next", "spotify_play_next"),
+    ("queue this song next", "spotify_add_to_queue"),
     ("what's playing", "spotify_playback_state"),
     ("what did I just play", "spotify_recently_played"),
     ("resume", "spotify_start_resume_playback"),

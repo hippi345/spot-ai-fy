@@ -168,6 +168,7 @@ def test_r7_item3_playlist_visibility_readback_mismatch_and_match(
         return_value=httpx.Response(200, json={"id": pid, "public": True, "name": "Mix"})
     )
     runner = SpotifyToolRunner(settings=Settings())
+    runner._session_known_ids.add(pid)
     mismatch_raw = runner.run(
         "spotify_update_playlist", {"playlist_id": pid, "public": False}
     )

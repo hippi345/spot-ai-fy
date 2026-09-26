@@ -1262,7 +1262,9 @@ export function App() {
 
               {m.text}
 
-              {m.role === "assistant" && m.trace && m.trace.length > 0 ? (
+              {m.role === "assistant" &&
+              m.trace &&
+              m.trace.filter((s) => s.kind === "tool").length > 0 ? (
                 <details className="message-trace">
                   <summary>
                     Actions taken ({m.trace.filter((s) => s.kind === "tool").length})

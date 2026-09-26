@@ -123,7 +123,11 @@ def append_visibility_notes_to_reply(text: str, tool_results: list[str]) -> str:
     for note in collect_visibility_warnings(tool_results):
         if note in base:
             continue
-        if "still shows it as public" in base_low:
+        if "still shows it as public" in base_low and "still shows it as public" in note.lower():
+            continue
+        if "still reports this playlist as public" in note.lower() and (
+            "private" in base_low or "public" in base_low
+        ):
             continue
         suffix = f"\n\nNote: {note}"
         base = base + suffix

@@ -163,7 +163,7 @@ def test_r2_itemC_play_playlist_resolves_artist_name(data_dir, signed_in_tokens)
         if request.url.params.get("type") == "track":
             return httpx.Response(
                 200,
-                json={"tracks": {"items": [{"uri": f"spotify:track:{tid}", "id": tid}]}},
+                json={"tracks": {"items": [{"uri": f"spotify:track:{tid}", "id": tid, "album": {"id": "aaaaaaaaaaaaaaaaaaaaaa"}}]}},
             )
         return httpx.Response(
             200,
@@ -179,6 +179,7 @@ def test_r2_itemC_play_playlist_resolves_artist_name(data_dir, signed_in_tokens)
             200,
             json={
                 "is_playing": True,
+                "context": {"uri": "spotify:album:aaaaaaaaaaaaaaaaaaaaaa"},
                 "item": {"uri": "spotify:track:bbbbbbbbbbbbbbbbbbbbbb"},
             },
         )
@@ -188,14 +189,13 @@ def test_r2_itemC_play_playlist_resolves_artist_name(data_dir, signed_in_tokens)
     runner.close()
     data = json.loads(raw)
     assert data.get("ok") is True
-    assert data.get("uris")
     assert play.called
     play_req = next(
         c.request for c in reversed(play.calls) if "/player/play" in str(c.request.url)
     )
     sent = json.loads(play_req.content or b"{}")
-    assert sent.get("uris")
-    assert not sent.get("context_uri")
+    assert sent.get("context_uri", "").startswith("spotify:album:")
+    assert not sent.get("uris")
 
 
 @respx.mock

@@ -464,7 +464,7 @@ def run_chat_turn_gemini(
     declarations = _openai_tools_to_gemini_declarations(OLLAMA_TOOLS)
     runner = SpotifyToolRunner(settings=settings, conversation_id=conversation_id)
     hist = _coerce_chat_history(history)
-    seed_runner_from_chat_history(runner, hist)
+    seed_runner_from_chat_history(runner, hist, conversation_id=conversation_id)
     shortcut_reply = gemini_deterministic_shortcut_reply(
         user_text,
         runner,

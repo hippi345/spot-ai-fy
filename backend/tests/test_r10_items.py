@@ -25,7 +25,12 @@ def _mock_artist_top_track_search(artist_id: str, name: str, track_ids: list[str
         return_value=httpx.Response(200, json={"id": artist_id, "name": name})
     )
     items = [
-        {"uri": f"spotify:track:{tid}", "name": f"Track {i}", "id": tid}
+        {
+            "uri": f"spotify:track:{tid}",
+            "name": f"Track {i}",
+            "id": tid,
+            "album": {"id": f"{30 + i:022d}"},
+        }
         for i, tid in enumerate(track_ids)
     ]
     for tid in track_ids:
@@ -98,10 +103,9 @@ def test_r10_item1_play_artist_uses_top_track_uris_not_playlist(
     assert "spotify_play_playlist" not in outcome.tool_names()
     assert play_calls
     body = json.loads(play_calls[0].decode() or "{}")
-    assert body.get("uris")
-    assert len(body["uris"]) >= 1
-    assert not body.get("context_uri")
-    assert body["uris"][0] == f"spotify:track:{track_ids[0]}"
+    assert body.get("context_uri", "").startswith("spotify:album:")
+    assert body.get("offset", {}).get("uri") == f"spotify:track:{track_ids[0]}"
+    assert not body.get("uris")
 
 
 @respx.mock
@@ -127,6 +131,7 @@ def test_r10_item1_play_artist_retries_when_player_has_no_item(
             200,
             json={
                 "is_playing": True,
+                "context": {"uri": "spotify:album:0000000000000000000030"},
                 "item": {"uri": f"spotify:track:{track_ids[0]}"},
             },
         )

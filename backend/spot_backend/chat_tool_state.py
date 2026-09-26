@@ -52,7 +52,14 @@ def last_playlist_id_from_chat_history(history: list[dict[str, str]] | None) -> 
 def seed_runner_from_chat_history(
     runner: SpotifyToolRunner,
     history: list[dict[str, str]] | None,
+    *,
+    conversation_id: str | None = None,
 ) -> None:
     pid = last_playlist_id_from_chat_history(history)
+    if not pid:
+        from spot_backend.library_mutation_store import load_last_playlist_id
+
+        cid = (conversation_id or runner.conversation_id or "").strip() or None
+        pid = load_last_playlist_id(cid)
     if pid:
         runner.note_session_playlist_id(pid)

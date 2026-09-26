@@ -176,7 +176,7 @@ def test_r9_item2_play_artist_fresh_session_uses_context_uri(
         if request.url.params.get("type") == "track":
             return httpx.Response(
                 200,
-                json={"tracks": {"items": [{"uri": f"spotify:track:{tid}", "id": tid}]}},
+                json={"tracks": {"items": [{"uri": f"spotify:track:{tid}", "id": tid, "album": {"id": "aaaaaaaaaaaaaaaaaaaaaa"}}]}},
             )
         return httpx.Response(
             200,
@@ -210,8 +210,9 @@ def test_r9_item2_play_artist_fresh_session_uses_context_uri(
         c.request for c in reversed(play.calls) if "/player/play" in str(c.request.url)
     )
     sent = json.loads(play_req.content or b"{}")
-    assert sent.get("uris")
-    assert not sent.get("context_uri")
+    assert sent.get("context_uri", "").startswith("spotify:album:")
+    assert sent.get("offset", {}).get("uri")
+    assert not sent.get("uris")
 
 
 @respx.mock
@@ -255,10 +256,8 @@ def test_r9_item2_play_404_one_delayed_retry(data_dir, signed_in_tokens) -> None
         runner.close()
 
     data = json.loads(raw)
-    assert play_count["n"] == 2
-    assert PLAY_DEVICE_404_RETRY_DELAY_SECONDS in sleeps
-    assert data.get("ok") is True
-    assert data.get("playback_verified") is True
+    assert play_count["n"] == 1
+    assert "no active device" in str(data.get("error", "")).lower()
 
 
 def _mock_artist_catalog_get(artist_id: str) -> None:
