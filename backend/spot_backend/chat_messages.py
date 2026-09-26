@@ -121,7 +121,38 @@ def collect_visibility_warnings(tool_results: list[str]) -> list[str]:
 _VISIBILITY_NOTE_MARKERS = (
     "still shows it as public",
     "still reports this playlist as public",
+    "still showing it as public",
 )
+
+_MODEL_VISIBILITY_DISCUSSION_MARKERS = _VISIBILITY_NOTE_MARKERS + (
+    "spotify is still showing",
+    "may take a few",
+    "may take some time",
+    "sync delay",
+    "known spotify api quirk",
+    "visibility may",
+)
+
+
+def _sentence_mentions_visibility_discussion(sentence: str) -> bool:
+    low = (sentence or "").lower()
+    if any(marker in low for marker in _MODEL_VISIBILITY_DISCUSSION_MARKERS):
+        return True
+    if "public" in low and any(
+        token in low for token in ("still", "delay", "sync", "lag", "showing", "reports")
+    ):
+        return True
+    if "private" in low and "still" in low:
+        return True
+    return False
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [p.strip() for p in re.split(r"(?<=[.!?])\s+", (text or "").strip()) if p.strip()]
+
+
+def _join_sentences(parts: list[str]) -> str:
+    return " ".join(p for p in parts if p).strip()
 
 
 def _text_contains_visibility_note(text: str) -> bool:
@@ -131,23 +162,80 @@ def _text_contains_visibility_note(text: str) -> bool:
 
 def _strip_duplicate_visibility_sentences(text: str) -> str:
     """Remove user-visible visibility mismatch sentences already present in model text."""
-    if not text or not _text_contains_visibility_note(text):
-        return text or ""
-    parts = re.split(r"(?<=[.!?])\s+", text.strip())
-    kept: list[str] = []
-    for part in parts:
-        chunk = part.strip()
-        if not chunk:
+    if not text:
+        return ""
+    kept = [s for s in _split_sentences(text) if not _text_contains_visibility_note(s)]
+    return _join_sentences(kept)
+
+
+def strip_model_visibility_discussion(text: str) -> str:
+    """Drop model-written visibility/sync sentences when the backend adds its own note."""
+    if not text:
+        return ""
+    kept = [s for s in _split_sentences(text) if not _sentence_mentions_visibility_discussion(s)]
+    return _join_sentences(kept)
+
+
+_PRIVATE_VISIBILITY_CLAIM = re.compile(
+    r"\b(?:currently\s+private|(?:it(?:'s|\s+is)|remains?|stays?)\s+(?:set\s+to\s+)?private)\b",
+    re.I,
+)
+_PUBLIC_VISIBILITY_CLAIM = re.compile(
+    r"\b(?:currently\s+public|(?:it(?:'s|\s+is)|remains?|stays?)\s+(?:set\s+to\s+)?public)\b",
+    re.I,
+)
+
+
+def _tool_results_with_public_field(tool_results: list[str]) -> list[tuple[bool | None, str | None]]:
+    rows: list[tuple[bool | None, str | None]] = []
+    for raw in tool_results:
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
             continue
-        if _text_contains_visibility_note(chunk):
+        if not isinstance(data, dict) or "public" not in data:
             continue
-        kept.append(chunk)
-    return " ".join(kept).strip()
+        pub = data.get("public")
+        if pub is not True and pub is not False:
+            continue
+        name = data.get("name") if isinstance(data.get("name"), str) else None
+        rows.append((bool(pub), name))
+    return rows
+
+
+def fix_playlist_visibility_contradictions(text: str, tool_results: list[str]) -> str:
+    """Ensure user-visible text does not contradict spotify_create/update `public` field."""
+    out = (text or "").strip()
+    if not out:
+        return out
+    for actual_public, name in _tool_results_with_public_field(tool_results):
+        contradicts = (actual_public and _PRIVATE_VISIBILITY_CLAIM.search(out)) or (
+            not actual_public and _PUBLIC_VISIBILITY_CLAIM.search(out)
+        )
+        if not contradicts:
+            continue
+        cleaned_parts = []
+        for sentence in _split_sentences(out):
+            if actual_public and _PRIVATE_VISIBILITY_CLAIM.search(sentence):
+                continue
+            if not actual_public and _PUBLIC_VISIBILITY_CLAIM.search(sentence):
+                continue
+            cleaned_parts.append(sentence)
+        out = _join_sentences(cleaned_parts)
+        label = name.strip() if isinstance(name, str) and name.strip() else "your playlist"
+        if actual_public:
+            out = _join_sentences([out, f"{label} is public on Spotify."])
+        else:
+            out = _join_sentences([out, f"{label} is private on Spotify."])
+    return out.strip()
 
 
 def append_visibility_notes_to_reply(text: str, tool_results: list[str]) -> str:
     """Append deterministic playlist-visibility notes from tool JSON (all LLM providers)."""
-    base = _strip_duplicate_visibility_sentences((text or "").rstrip())
+    base = text or ""
+    if collect_visibility_warnings(tool_results):
+        base = strip_model_visibility_discussion(base)
+    base = _strip_duplicate_visibility_sentences(base.rstrip())
     for note in collect_visibility_warnings(tool_results):
         if note in base:
             continue
@@ -232,6 +320,7 @@ def prepare_user_visible_reply(text: str, tool_results: list[str] | None = None)
     cleaned = sanitize_raw_tool_json_in_reply(cleaned)
     if tool_results:
         cleaned = ground_reply_artist_credits(cleaned, tool_results)
+        cleaned = fix_playlist_visibility_contradictions(cleaned, tool_results)
         cleaned = append_visibility_notes_to_reply(cleaned, tool_results)
     return cleaned
 

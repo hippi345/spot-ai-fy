@@ -1839,6 +1839,10 @@ class SpotifyToolRunner:
                 out["requested_public"] = requested_public
                 out["actual_public"] = checked.get("public")
                 out["visibility_warning"] = _PLAYLIST_VISIBILITY_MISMATCH_NOTE
+                out["assistant_reply_instruction"] = (
+                    "Do not describe playlist visibility, public/private status, or Spotify sync delay "
+                    "in your reply. Confirm the update briefly only; the app adds any visibility note."
+                )
         return json.dumps(out, ensure_ascii=False)
 
     def _remove_playlist_tracks(self, arguments: dict[str, Any]) -> str:
@@ -3037,8 +3041,21 @@ class SpotifyToolRunner:
             "playlist_id_for_add_tracks": pid,
             "hint": "Next: spotify_add_tracks_to_playlist with playlist_id = id above (string), plus track_uris / track_ids / tracks from spotify_search.",
         }
-        if not public:
+        actual_public = mini.get("public")
+        if actual_public is True:
+            mini["user_visible_visibility"] = "public"
+        elif actual_public is False:
             mini["user_visible_visibility"] = "private"
+        if actual_public is True:
+            vis_phrase = "public (public is true)"
+        elif actual_public is False:
+            vis_phrase = "private (public is false)"
+        else:
+            vis_phrase = "unknown — omit visibility unless public is true or false"
+        mini["assistant_reply_instruction"] = (
+            "When confirming creation, state playlist visibility only from the `public` field: "
+            f"say it is {vis_phrase}. Do not claim private when public is true or public when public is false."
+        )
         if visibility_note:
             mini["visibility_change_requested"] = True
             mini["visibility_warning"] = visibility_note
@@ -4196,6 +4213,136 @@ class SpotifyToolRunner:
             "device_is_restricted": (device.get("is_restricted") if isinstance(device, dict) else None),
         }
 
+    def _queue_track_uris_from_payload(self, data: dict[str, Any]) -> list[str]:
+        queue = data.get("queue")
+        if not isinstance(queue, list):
+            return []
+        out: list[str] = []
+        for tr in queue:
+            if not isinstance(tr, dict):
+                continue
+            uri = tr.get("uri")
+            if isinstance(uri, str) and uri.strip():
+                out.append(uri.strip())
+        return out
+
+    def _context_upcoming_track_uris(self, context_uri: str, current_item_uri: str) -> set[str]:
+        ctx = (context_uri or "").strip()
+        cur = (current_item_uri or "").strip()
+        upcoming: set[str] = set()
+        if not ctx.startswith(("spotify:album:", "spotify:playlist:")):
+            return upcoming
+        try:
+            if ctx.startswith("spotify:album:"):
+                aid = ctx.split(":", 2)[2]
+                page = self.client.api_get(f"/albums/{aid}/tracks", params={"limit": 50})
+                items = page.get("items") if isinstance(page, dict) else None
+                items = items if isinstance(items, list) else []
+                passed_current = not cur
+                for tr in items:
+                    if not isinstance(tr, dict):
+                        continue
+                    uri = tr.get("uri")
+                    if not isinstance(uri, str) or not uri.strip():
+                        continue
+                    u = uri.strip()
+                    if not passed_current:
+                        if u == cur:
+                            passed_current = True
+                        continue
+                    upcoming.add(u)
+            else:
+                pid = ctx.split(":", 2)[2]
+                page = self.client.api_get(
+                    f"/playlists/{pid}/items",
+                    params={"limit": 50, "fields": "items(item(uri))"},
+                )
+                items = page.get("items") if isinstance(page, dict) else None
+                items = items if isinstance(items, list) else []
+                passed_current = not cur
+                for row in items:
+                    if not isinstance(row, dict):
+                        continue
+                    item = row.get("item") if isinstance(row.get("item"), dict) else row.get("track")
+                    if not isinstance(item, dict):
+                        continue
+                    uri = item.get("uri")
+                    if not isinstance(uri, str) or not uri.strip():
+                        continue
+                    u = uri.strip()
+                    if not passed_current:
+                        if u == cur:
+                            passed_current = True
+                        continue
+                    upcoming.add(u)
+        except httpx.HTTPStatusError:
+            return set()
+        return upcoming
+
+    def _capture_manual_queue_uris(
+        self, context_uri: str | None, current_item_uri: str | None
+    ) -> tuple[list[str], bool]:
+        try:
+            data = self.client.api_get("/me/player/queue")
+        except httpx.HTTPStatusError:
+            return [], False
+        except Exception:
+            return [], True
+        if not isinstance(data, dict):
+            return [], False
+        queued = self._queue_track_uris_from_payload(data)
+        if not queued:
+            return [], True
+        try:
+            exclude = self._context_upcoming_track_uris(
+                context_uri or "",
+                current_item_uri or "",
+            )
+        except httpx.HTTPStatusError:
+            exclude = set()
+        except Exception:
+            exclude = set()
+        manual = [u for u in queued if u not in exclude]
+        return manual, True
+
+    def _requeue_manual_uris(
+        self, uris: list[str], device_id: str, *, max_calls: int = 15
+    ) -> int:
+        if not uris:
+            return 0
+        present: set[str] = set()
+        try:
+            data = self.client.api_get("/me/player/queue")
+            if isinstance(data, dict):
+                cp = data.get("currently_playing")
+                if isinstance(cp, dict):
+                    cu = cp.get("uri")
+                    if isinstance(cu, str) and cu.strip():
+                        present.add(cu.strip())
+                present.update(self._queue_track_uris_from_payload(data))
+        except httpx.HTTPStatusError:
+            pass
+        except Exception:
+            pass
+        added = 0
+        for uri in uris:
+            if added >= max_calls:
+                break
+            if uri in present:
+                continue
+            params: dict[str, str] = {"uri": uri}
+            if device_id:
+                params["device_id"] = device_id
+            try:
+                self.client.api_post("/me/player/queue", params=params)
+            except httpx.HTTPStatusError:
+                break
+            except Exception:
+                break
+            present.add(uri)
+            added += 1
+        return added
+
     def _fetch_pre_play_restore_state(self) -> dict[str, Any]:
         """Snapshot playback before a play attempt (for restore if the request never takes)."""
         try:
@@ -4215,6 +4362,7 @@ class SpotifyToolRunner:
         progress_ms = progress_raw if isinstance(progress_raw, int) else 0
         is_playing = ps.get("is_playing") is True
         had_playback = bool(item_uri) and (is_playing or progress_ms > 0 or bool(context_uri))
+        manual_queue, queue_ok = self._capture_manual_queue_uris(context_uri, item_uri)
         return {
             "had_playback": had_playback,
             "is_playing": is_playing,
@@ -4222,6 +4370,8 @@ class SpotifyToolRunner:
             "item_uri": item_uri or None,
             "item_name": item_name or None,
             "progress_ms": progress_ms,
+            "manual_queue_uris": manual_queue,
+            "queue_capture_ok": queue_ok,
         }
 
     def _build_restore_play_body(self, prior: dict[str, Any]) -> dict[str, Any] | None:
@@ -4258,6 +4408,9 @@ class SpotifyToolRunner:
                 self.client.api_put(pause_path)
             except httpx.HTTPStatusError:
                 pass
+        manual = prior.get("manual_queue_uris")
+        if isinstance(manual, list) and manual:
+            self._requeue_manual_uris([str(u) for u in manual if u], device_id)
         return body
 
     def _describe_requested_play(self, body: dict[str, Any], label_override: str = "") -> str:
@@ -4277,11 +4430,15 @@ class SpotifyToolRunner:
             prev = prior.get("item_name")
             if not isinstance(prev, str) or not prev.strip():
                 prev = "your previous track"
-            return (
+            msg = (
                 f"Spotify wouldn't play {requested_label} on this device, "
                 f"so I went back to {prev}."
             )
-        return f"Spotify wouldn't play {requested_label} on this device."
+        else:
+            msg = f"Spotify wouldn't play {requested_label} on this device."
+        if prior.get("queue_capture_ok") is False:
+            msg = f"{msg} Your queue may have been cleared."
+        return msg
 
     def _playback_failed_restore_payload(
         self,
