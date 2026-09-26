@@ -156,8 +156,47 @@ def scrub_internal_tool_references(text: str) -> str:
     return out.strip()
 
 
+_CORRECTION_LEAK_RE = re.compile(
+    r"(?:^|\n)\s*my apologies\b.*?(?=\n\n|\Z)",
+    re.I | re.DOTALL,
+)
+_PREVIOUS_RESPONSE_LEAK_RE = re.compile(
+    r"(?:^|\n)\s*(?:in my (?:previous|last) response\b|my last response stated\b).*?(?=\n\n|\Z)",
+    re.I | re.DOTALL,
+)
+_RAW_JSON_BLOB_RE = re.compile(r"\{[^{}]*\"(?:ok|error|items)\"[^{}]*\}", re.DOTALL)
+
+
+def strip_internal_correction_leaks(text: str) -> str:
+    """Drop model self-correction / apology preambles from user-visible replies."""
+    out = text or ""
+    for pattern in (_CORRECTION_LEAK_RE, _PREVIOUS_RESPONSE_LEAK_RE):
+        out = pattern.sub("", out)
+    return out.strip()
+
+
+def sanitize_raw_tool_json_in_reply(text: str) -> str:
+    """Replace accidental raw Spotify tool JSON blobs with a short plain sentence."""
+    stripped = (text or "").strip()
+    if not stripped.startswith("{") or not stripped.endswith("}"):
+        return text
+    try:
+        data = json.loads(stripped)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return text
+    if not isinstance(data, dict):
+        return text
+    if data.get("error"):
+        return str(data.get("error"))
+    if data.get("ok"):
+        return "Done."
+    return text
+
+
 def prepare_user_visible_reply(text: str, tool_results: list[str] | None = None) -> str:
     cleaned = scrub_internal_tool_references(text)
+    cleaned = strip_internal_correction_leaks(cleaned)
+    cleaned = sanitize_raw_tool_json_in_reply(cleaned)
     if tool_results:
         cleaned = append_visibility_notes_to_reply(cleaned, tool_results)
     return cleaned

@@ -672,6 +672,14 @@ class SpotifyToolRunner:
         self.settings = self.client.settings
         self._session_known_ids: set[str] = set()
         self._last_library_mutation: dict[str, Any] | None = None
+        self._last_session_playlist_id: str | None = None
+        self._last_primary_artist_id: str | None = None
+
+    def note_session_playlist_id(self, playlist_id: str) -> None:
+        pid = (playlist_id or "").strip()
+        if _looks_like_spotify_catalog_id(pid):
+            self._last_session_playlist_id = pid
+            self._session_known_ids.add(pid)
 
     def close(self) -> None:
         self.client.close()
@@ -868,6 +876,22 @@ class SpotifyToolRunner:
         except (json.JSONDecodeError, TypeError, ValueError):
             return
         self._session_known_ids.update(collect_catalog_ids_from_tool_json(data))
+        if name in ("spotify_create_playlist", "spotify_duplicate_playlist"):
+            pid = data.get("id") or data.get("new_playlist_id") or data.get("playlist_id_for_add_tracks")
+            if isinstance(pid, str) and _looks_like_spotify_catalog_id(pid):
+                self._last_session_playlist_id = pid
+        if name == "spotify_search" and isinstance(data, dict):
+            artists = data.get("artists")
+            if isinstance(artists, dict):
+                items = artists.get("items")
+                if isinstance(items, list) and items and isinstance(items[0], dict):
+                    aid = items[0].get("id")
+                    if isinstance(aid, str) and _looks_like_spotify_catalog_id(aid):
+                        self._last_primary_artist_id = aid
+        if name in ("spotify_get_artist", "spotify_artist_top_tracks") and isinstance(data, dict):
+            aid = data.get("id")
+            if isinstance(aid, str) and _looks_like_spotify_catalog_id(aid):
+                self._last_primary_artist_id = aid
 
     def _format_http_error(
         self,
@@ -1628,10 +1652,16 @@ class SpotifyToolRunner:
         return _compact(data, limit=8000)
 
     def _update_playlist(self, arguments: dict[str, Any]) -> str:
-        pid = _normalize_spotify_id(
-            _pick_arg(arguments, "playlist_id", "playlistId", "id"),
-            "playlist",
-        )
+        from spot_backend.chat_tool_state import is_playlist_pronoun_reference
+
+        raw_ref = _pick_arg(arguments, "playlist_id", "playlistId", "id")
+        if is_playlist_pronoun_reference(raw_ref or ""):
+            pid, err = self._resolve_playlist_id_from_arg(raw_ref or "")
+            if err:
+                return err
+        else:
+            pid = _normalize_spotify_id(raw_ref or "", "playlist")
+            err = None
         if not pid:
             return json.dumps({"error": "playlist_id is required"})
         body: dict[str, Any] = {}
@@ -1754,6 +1784,18 @@ class SpotifyToolRunner:
         text = (raw or "").strip()
         if not text:
             return None, json.dumps({"error": "playlist_id is required"})
+        from spot_backend.chat_tool_state import is_playlist_pronoun_reference
+
+        if is_playlist_pronoun_reference(text):
+            if self._last_session_playlist_id:
+                return self._last_session_playlist_id, None
+            return None, json.dumps(
+                {
+                    "error": "No playlist from this chat to refer to yet.",
+                    "hint": "Create or mention a playlist first, or pass its id from spotify_user_playlists.",
+                    "reconnect_spotify_unnecessary": True,
+                }
+            )
         norm = _normalize_spotify_id(text, "playlist")
         if norm and _looks_like_spotify_catalog_id(norm):
             return norm, None
@@ -3430,8 +3472,6 @@ class SpotifyToolRunner:
         track_id = _normalize_spotify_id(track_uri, "track")
         if not _looks_like_spotify_catalog_id(track_id):
             return body
-        if track_id in self._session_known_ids:
-            return body
         try:
             track = self.client.api_get(f"/tracks/{track_id}")
         except httpx.HTTPStatusError:
@@ -3446,6 +3486,45 @@ class SpotifyToolRunner:
         rewritten["context_uri"] = f"spotify:album:{album_id}"
         rewritten["offset"] = {"uri": track_uri}
         return rewritten
+
+    def _rewrite_single_track_play_for_artist_context(
+        self,
+        arguments: dict[str, Any],
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        """When the user asked to play an artist, never send a lone track URI to Spotify."""
+        if body.get("context_uri"):
+            return body
+        uris = body.get("uris")
+        if not isinstance(uris, list) or len(uris) != 1:
+            return body
+        track_uri = str(uris[0]).strip()
+        if not track_uri.startswith("spotify:track:"):
+            return body
+        artist_id = _pick_arg(arguments, "artist_id", "artistId")
+        if artist_id:
+            norm = _normalize_spotify_id(str(artist_id), "artist")
+            if _looks_like_spotify_catalog_id(norm):
+                return {"context_uri": f"spotify:artist:{norm}"}
+        session_artist = self._last_primary_artist_id
+        if not session_artist:
+            return body
+        track_id = _normalize_spotify_id(track_uri, "track")
+        if not _looks_like_spotify_catalog_id(track_id):
+            return body
+        try:
+            track = self.client.api_get(f"/tracks/{track_id}")
+        except httpx.HTTPStatusError:
+            return body
+        if not isinstance(track, dict):
+            return body
+        artists = track.get("artists")
+        if not isinstance(artists, list):
+            return body
+        for artist in artists:
+            if isinstance(artist, dict) and str(artist.get("id") or "") == session_artist:
+                return {"context_uri": f"spotify:artist:{session_artist}"}
+        return body
 
     def _retry_play_after_restriction(self, body: dict[str, Any], device_id: str) -> str | None:
         chosen = self._resolve_target_device(device_id)
@@ -3520,6 +3599,7 @@ class SpotifyToolRunner:
         if plain_resume:
             body = self._strip_redundant_resume_uris(body)
         else:
+            body = self._rewrite_single_track_play_for_artist_context(arguments, body)
             body = self._prepare_single_track_play_body(body)
             body = self._strip_redundant_resume_uris(body)
         want_verification = bool(
@@ -3658,9 +3738,6 @@ class SpotifyToolRunner:
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
             if status == 403 and _spotify_error_is_restriction_violated(e):
-                recovered = self._retry_play_after_restriction(body, device_id)
-                if recovered:
-                    return recovered
                 return json.dumps(
                     {
                         "ok": False,

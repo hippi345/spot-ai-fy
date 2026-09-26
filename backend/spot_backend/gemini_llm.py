@@ -23,6 +23,9 @@ from spot_backend.chat_messages import (
     prepare_user_visible_reply,
     tool_result_is_rejected_or_invalid_id,
 )
+from spot_backend.chat_shortcuts import try_deterministic_chat_reply
+from spot_backend.chat_tool_state import seed_runner_from_chat_history
+from spot_backend.gemini_nudge import should_send_gemini_tool_nudge
 from spot_backend.prompt_intent import (
     gemini_declarations_for_prompt,
     gemini_should_use_any_first_round,
@@ -346,7 +349,11 @@ def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
         return ["spotify_set_volume"]
     if re.search(r"\b(what'?s playing|now playing|current(ly)? playing|what song)\b", t):
         return ["spotify_playback_state"]
-    if re.search(r"\b(recently played|listening history|what did i (just )?play)\b", t):
+    if re.search(
+        r"\b(recently played|listening history|what did i (just )?play|"
+        r"what have i been listening to|been listening to lately|listening to lately)\b",
+        t,
+    ):
         return ["spotify_recently_played"]
     if re.search(r"\b(like this|save this|add to (my )?library)\b", t):
         return [
@@ -450,12 +457,17 @@ def run_chat_turn_gemini(
     model = read_effective_gemini_model(settings.data_dir, settings.gemini_model) or _DEFAULT_GEMINI_MODEL
     declarations = _openai_tools_to_gemini_declarations(OLLAMA_TOOLS)
     runner = SpotifyToolRunner(settings=settings)
+    hist = _coerce_chat_history(history)
+    seed_runner_from_chat_history(runner, hist)
+    shortcut = try_deterministic_chat_reply(user_text, runner)
+    if shortcut is not None:
+        runner.close()
+        return prepare_user_visible_reply(shortcut, [])
     informational_turn = prompt_is_informational(user_text)
     full_system = _SYSTEM + load_optional_agent_context_markdown(settings)
     if informational_turn:
         full_system = full_system + informational_system_suffix(user_text)
 
-    hist = _coerce_chat_history(history)
     contents: list[dict[str, Any]] = []
     for turn in hist:
         gem_role = "user" if turn["role"] == "user" else "model"
@@ -474,6 +486,8 @@ def run_chat_turn_gemini(
     last_tool_result: str | None = None
     action_claim_reprompted = False
     promise_nudge_used = False
+    tool_nudge_used = False
+    first_text_answer: str | None = None
     empty_turn_retries = 3
     # Gemini 2.5-flash with our 40-tool catalog is *unreliable* in AUTO function-
     # calling mode — measured empty-content rate is 12/15 (80%) even with a
@@ -676,13 +690,21 @@ def run_chat_turn_gemini(
                             )
                             continue
                         return action_claim_honest_fallback()
-                    if (
-                        not had_tool_results
-                        and not action_claim_reprompted
-                        and _user_message_wants_spotify_data(spotify_intent_blob)
+                    if should_send_gemini_tool_nudge(
+                        user_text=user_text,
+                        had_tool_results=had_tool_results,
+                        action_claim_reprompted=action_claim_reprompted,
+                        tool_nudge_used=tool_nudge_used,
+                        wants_spotify_data=_user_message_wants_spotify_data(spotify_intent_blob),
                     ):
+                        if first_text_answer is None:
+                            first_text_answer = joined
+                        tool_nudge_used = True
+                        contents.append({"role": "model", "parts": [{"text": joined}]})
                         contents.append({"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]})
                         continue
+                    if tool_nudge_used and first_text_answer and not had_tool_results:
+                        return prepare_user_visible_reply(first_text_answer, tool_results)
                     return prepare_user_visible_reply(joined, tool_results)
 
                 # No visible text and no tool calls. Log everything we have so we can
@@ -707,7 +729,14 @@ def run_chat_turn_gemini(
                     continue
                 # If the model returned ONLY thought parts on the first turn for an
                 # obvious Spotify question, give it one chance to actually act.
-                if not had_tool_results and _user_message_wants_spotify_data(spotify_intent_blob):
+                if should_send_gemini_tool_nudge(
+                    user_text=user_text,
+                    had_tool_results=had_tool_results,
+                    action_claim_reprompted=action_claim_reprompted,
+                    tool_nudge_used=tool_nudge_used,
+                    wants_spotify_data=_user_message_wants_spotify_data(spotify_intent_blob),
+                ):
+                    tool_nudge_used = True
                     contents.append({"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]})
                     continue
                 return (

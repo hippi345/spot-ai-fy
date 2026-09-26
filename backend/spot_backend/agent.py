@@ -23,6 +23,8 @@ from spot_backend.chat_messages import (
     prepare_user_visible_reply,
     tool_result_is_rejected_or_invalid_id,
 )
+from spot_backend.chat_shortcuts import try_deterministic_chat_reply
+from spot_backend.chat_tool_state import seed_runner_from_chat_history
 from spot_backend.prompt_intent import (
     filter_ollama_tools_for_prompt,
     informational_system_suffix,
@@ -481,6 +483,13 @@ def iter_ollama_chat_events(
 ) -> Iterator[dict[str, Any]]:
     """Yields Spot-AI-fy progress events for the Ollama agent; ends with ``final`` or ``error``."""
     runner = SpotifyToolRunner(settings=settings)
+    history_turns = _coerce_chat_history(history)
+    seed_runner_from_chat_history(runner, history_turns)
+    shortcut = try_deterministic_chat_reply(user_text, runner)
+    if shortcut is not None:
+        yield {"type": "final", "text": prepare_user_visible_reply(shortcut, [])}
+        runner.close()
+        return
     successful_tools: set[str] = set()
     tool_results: list[str] = []
     promise_nudge_used = False
@@ -500,7 +509,6 @@ def iter_ollama_chat_events(
             informational=informational_turn,
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": base_system}]
-        history_turns = _coerce_chat_history(history)
         hist_cap = int(getattr(settings, "ollama_history_messages", 0) or 0)
         if hist_cap > 0 and len(history_turns) > hist_cap:
             history_turns = history_turns[-hist_cap:]

@@ -463,7 +463,7 @@ _GEMINI_16_COMMANDS: list[tuple[str, str]] = [
     ("shuffle off", "spotify_set_shuffle"),
     ("repeat track", "spotify_set_repeat"),
     ("volume 50", "spotify_set_volume"),
-    ("like this", "spotify_save_tracks"),
+    ("favorite this song", "spotify_save_tracks"),
     ("save this album", "spotify_save_albums"),
     ("play artist Radiohead", "spotify_search"),
     ("play album OK Computer", "spotify_search"),
@@ -505,7 +505,7 @@ def test_r5_item9_gemini_sixteen_commands_one_tool_each(data_dir, signed_in_toke
         assert tool_calls == [expected_tool], user_text
 
 
-# r5-item10 — restriction violated triggers transfer retry
+# r5-item10 — restriction violated returns clear error without transfer retry storm
 @respx.mock
 def test_r5_item10_restriction_violated_attempts_player_transfer(
     data_dir, signed_in_tokens,
@@ -515,5 +515,5 @@ def test_r5_item10_restriction_violated_attempts_player_transfer(
         return_value=httpx.Response(204)
     )
     data = run_playback_restriction_violated(track_id)
-    assert transfer.called
+    assert not transfer.called
     assert "stuck state" in data.get("error", "").lower()

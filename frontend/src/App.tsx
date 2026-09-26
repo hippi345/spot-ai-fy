@@ -1228,9 +1228,11 @@ export function App() {
 
               {m.role === "assistant" && m.trace && m.trace.length > 0 ? (
                 <details className="message-trace">
-                  <summary>Actions taken ({m.trace.length})</summary>
+                  <summary>
+                    Actions taken ({m.trace.filter((s) => s.kind === "tool").length})
+                  </summary>
                   <ul className="trace-steps compact">
-                    {m.trace.map((step) => (
+                    {m.trace.filter((s) => s.kind === "tool").map((step) => (
                       <li key={step.id}>
                         {step.label}
                         {step.detail ? ` — ${step.detail.slice(0, 120)}` : ""}

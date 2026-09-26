@@ -41,14 +41,22 @@ _LIBRARY_REMOVE_TOOLS = frozenset(
 # informational replies that mention "liked" in passing.
 _CLAIM_RULES: list[tuple[re.Pattern[str], frozenset[str]]] = [
     (re.compile(r"\b(?:I(?:'ve| have)?\s+)?now playing\b", re.I), _PLAYBACK_TOOLS),
+    (re.compile(r"\bnow playing\b", re.I), _PLAYBACK_TOOLS),
+    (re.compile(r"\bplaying\b.+\b(?:top tracks|radio)\b", re.I), _PLAYBACK_TOOLS),
+    (re.compile(r"^playing\b", re.I), _PLAYBACK_TOOLS),
     (re.compile(r"\b(?:I(?:'ve| have)?\s+)?(?:started|starting) (?:playing|playback)\b", re.I), _PLAYBACK_TOOLS),
     (re.compile(r"\b(?:I(?:'m| am)\s+)?playing\b.+\b(?:on|in) your\b", re.I), _PLAYBACK_TOOLS),
     (re.compile(r"\b(?:I(?:'ve| have)?\s+)?paused(?: playback)?\b", re.I), _PAUSE_TOOLS),
     (re.compile(r"\b(?:I(?:'ve| have)?\s+)?(?:skipped|skipping)\b", re.I), _SKIP_TOOLS),
+    (re.compile(r"\bskipped\b.+\b(?:song|track)\b", re.I), _SKIP_TOOLS),
     (re.compile(r"\b(?:I(?:'ve| have)?\s+)?set (?:the )?volume\b", re.I), _VOLUME_TOOLS),
     (re.compile(r"\bvolume (?:is )?now (?:at|set to)\b", re.I), _VOLUME_TOOLS),
     (re.compile(r"\b(?:I(?:'ve| have)?\s+)?saved(?:\s+(?:that|the|this|it))?\b", re.I), _LIBRARY_SAVE_TOOLS),
+    (re.compile(r"\b(?:I(?:'ve| have)?\s+)?saved\s+['\"]", re.I), _LIBRARY_SAVE_TOOLS),
+    (re.compile(r"\bsaved\b.+\bto your (?:liked|library)\b", re.I), _LIBRARY_SAVE_TOOLS),
     (re.compile(r"\b(?:I(?:'ve| have)?\s+)?liked (?:that|the|this|it)\b", re.I), _LIBRARY_SAVE_TOOLS),
+    (re.compile(r"\b(?:I(?:'ve| have)?\s+)?liked\s+['\"]", re.I), _LIBRARY_SAVE_TOOLS),
+    (re.compile(r"\b(?:I(?:'ve| have)?\s+)?added\b.+\bto (?:your )?(?:library|liked|playlist)\b", re.I), _LIBRARY_SAVE_TOOLS),
     (
         re.compile(r"\b(?:I(?:'ve| have)?\s+)?added (?:it )?to (?:your )?library\b", re.I),
         _LIBRARY_SAVE_TOOLS,

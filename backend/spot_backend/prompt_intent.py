@@ -270,6 +270,8 @@ PURE_HOW_TO_NO_LOOKUP_SUFFIX = """
 PURE HOW-TO (app instructions only):
 - The user only wants to know how to do something in the Spotify app or what to type here later — not a live report of their library.
 - Do NOT call Spotify lookup tools on this turn; explain steps from general Spotify knowledge.
+- Spotify app facts you may cite: crossfade is available under Settings → Playback (adjust crossfade duration); collaborative playlists are enabled in playlist settings (Make collaborative); deleting a playlist is done from the playlist menu (⋯) → Delete.
+- When you mention song or artist names in examples, keep them generic unless they came from tool results in this chat.
 """
 
 
