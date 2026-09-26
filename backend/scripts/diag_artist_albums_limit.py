@@ -65,10 +65,14 @@ def main() -> int:
         print(f"  limit={lim:2d}  {marker} {code}  {body[:160] if code != 200 else '(200 OK)'}")
 
     print("\n" + "=" * 70)
-    print(f"/artists/{TAYLOR_ID}/top-tracks  (no limit param, sanity)")
+    print("artist top tracks (Feb-2026: GET /artists/{id}/top-tracks removed in dev mode)")
     print("=" * 70)
-    code, body = probe(client, f"/artists/{TAYLOR_ID}/top-tracks", {"market": "US"})
-    print(f"  {'OK ' if code == 200 else 'BAD'} {code}  {body[:160] if code != 200 else '(200 OK)'}")
+    code, body = probe(
+        client,
+        "/search",
+        {"q": 'artist:"Taylor Swift"', "type": "track", "market": "US", "limit": 10},
+    )
+    print(f"  search fallback  {'OK ' if code == 200 else 'BAD'} {code}  {body[:160] if code != 200 else '(200 OK)'}")
 
     print("\n" + "=" * 70)
     print("/users/spotify/playlists  (well-known Spotify-owned account)")
