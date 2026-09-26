@@ -11,11 +11,18 @@ import {
 type Props = {
   onComplete: () => void;
   onDismiss?: () => void;
+  onSettingsSaved?: () => void;
   allowDismiss: boolean;
   closeOnComplete?: boolean;
 };
 
-export function SetupWizard({ onComplete, onDismiss, allowDismiss, closeOnComplete = false }: Props) {
+export function SetupWizard({
+  onComplete,
+  onDismiss,
+  onSettingsSaved,
+  allowDismiss,
+  closeOnComplete = false,
+}: Props) {
   const [step, setStep] = useState<1 | 2>(1);
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [clientId, setClientId] = useState("");
@@ -43,7 +50,8 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss, closeOnComple
     else if (!ollamaModel) setOllamaModel("qwen3:4b-instruct");
     if (s.gemini_model) setGeminiModel(s.gemini_model);
     if (closeOnComplete && s.setup_complete) onComplete();
-    if (s.spotify_configured && s.spotify_signed_in) setStep(2);
+    if (s.setup_complete) setStep(1);
+    else if (s.spotify_configured && s.spotify_signed_in) setStep(2);
   }, [onComplete, closeOnComplete]);
 
   useEffect(() => {
@@ -117,6 +125,7 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss, closeOnComple
       setCpuHint(profile?.message ?? null);
       setSavedNotice("Saved — settings tested successfully.");
       await refresh();
+      onSettingsSaved?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "LLM setup failed");
     } finally {
@@ -130,7 +139,7 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss, closeOnComple
     <div className="setup-overlay" role="dialog" aria-modal="true" aria-labelledby="setup-title">
       <div className="setup-card panel">
         <div className="setup-head">
-          <h2 id="setup-title">First-time setup</h2>
+          <h2 id="setup-title">{status?.setup_complete ? "Settings" : "First-time setup"}</h2>
           {allowDismiss && onDismiss ? (
             <button type="button" className="setup-dismiss" onClick={onDismiss}>
               Close

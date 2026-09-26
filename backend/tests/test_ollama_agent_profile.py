@@ -54,6 +54,7 @@ def test_small_model_tool_subset() -> None:
         "spotify_set_volume",
         "spotify_set_shuffle",
         "spotify_set_repeat",
+        "spotify_unfollow_playlist",
     }
 
 

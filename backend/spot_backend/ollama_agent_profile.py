@@ -30,8 +30,17 @@ SMALL_MODEL_TOOL_NAMES: frozenset[str] = frozenset(
         "spotify_set_volume",
         "spotify_set_shuffle",
         "spotify_set_repeat",
+        "spotify_unfollow_playlist",
     }
 )
+
+
+def small_model_route_hint(user_text: str) -> str | None:
+    """Lightweight intent → tool hint for tests and small-model routing."""
+    low = (user_text or "").lower()
+    if "playlist" in low and any(w in low for w in ("delete", "remove", "unfollow")):
+        return "spotify_unfollow_playlist"
+    return None
 
 SMALL_MODEL_SYSTEM_PROMPT = """You are a Spotify assistant with a small set of tools.
 Use tools instead of guessing IDs. For play requests use spotify_play_playlist or spotify_start_resume_playback.

@@ -289,7 +289,7 @@ def test_item14_devices_endpoint_friendly_error(data_dir, signed_in_tokens) -> N
     )
     client = TestClient(app)
     r = client.get("/api/devices")
-    assert r.status_code == 500
+    assert r.status_code == 502
     assert "Could not list Spotify devices" in r.json()["detail"]
 
 

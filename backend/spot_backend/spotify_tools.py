@@ -86,6 +86,32 @@ def _normalize_include_groups(s: str) -> str:
     return ",".join(parts) if parts else "album,single"
 
 
+_LIBRARY_URI_CHUNK = 40
+
+
+def _release_date_sort_key(release_date: str) -> tuple[int, int, int]:
+    parts = (release_date or "0000").split("-")
+    year = int(parts[0]) if parts and parts[0].isdigit() else 0
+    month = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+    day = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+    return (year, month, day)
+
+
+def pick_latest_album_release(items: list[Any]) -> dict[str, Any] | None:
+    """Pick the newest album/single by release_date (deluxe reissues beat older originals)."""
+    candidates = [it for it in items if isinstance(it, dict) and it.get("name")]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda album: _release_date_sort_key(str(album.get("release_date") or "")),
+    )
+
+
+def _spotify_uris_csv(segment: str, ids: list[str]) -> str:
+    return ",".join(f"spotify:{segment}:{i}" for i in ids)
+
+
 def _looks_like_spotify_catalog_id(s: str) -> bool:
     """Spotify track/artist/album ids are 22-char base62-ish strings."""
     if len(s) != 22:
@@ -1007,6 +1033,8 @@ class SpotifyToolRunner:
                 return self._get_track(arguments)
             case "spotify_artist_albums":
                 return self._artist_albums(arguments)
+            case "spotify_artist_latest_album":
+                return self._artist_latest_album(arguments)
             case "spotify_get_artist":
                 return self._get_artist(arguments)
             case "spotify_artist_top_tracks":
@@ -1306,6 +1334,51 @@ class SpotifyToolRunner:
             )
         )
 
+    def _artist_latest_album(self, arguments: dict[str, Any]) -> str:
+        raw_id = _pick_arg(arguments, "artist_id", "artistId", "id")
+        artist_id = _normalize_spotify_id(raw_id, "artist")
+        if not artist_id:
+            return json.dumps({"error": "artist_id is required"})
+        include_groups = _normalize_include_groups(
+            _coerce_str(arguments.get("include_groups"), "album,single")
+        )
+        limit = _safe_int(arguments.get("limit"), 10, lo=1, hi=10)
+        market = _normalize_market(_pick_arg(arguments, "market", "country"))
+        canonical_id = self._canonical_artist_id(artist_id, market)
+        if not canonical_id:
+            return json.dumps(
+                {
+                    "error": "Could not resolve artist_id to a Spotify catalog id",
+                    "hint": "Use artists.items[0].id from spotify_search, or pass a recognizable artist name.",
+                    "query_tried": artist_id,
+                }
+            )
+        page = self.client.api_get(
+            f"/artists/{canonical_id}/albums",
+            params={
+                "include_groups": include_groups,
+                "limit": limit,
+                "offset": 0,
+                "market": market,
+            },
+        )
+        items: list[Any] = []
+        if isinstance(page, dict) and isinstance(page.get("items"), list):
+            items = page["items"]
+        latest = pick_latest_album_release(items)
+        if not latest:
+            return json.dumps({"error": "No albums found for this artist", "artist_id": canonical_id})
+        return json.dumps(
+            {
+                "ok": True,
+                "artist_id": canonical_id,
+                "latest_album": latest,
+                "release_date": latest.get("release_date"),
+                "album_type": latest.get("album_type"),
+            },
+            ensure_ascii=False,
+        )
+
     def _get_artist(self, arguments: dict[str, Any]) -> str:
         raw = _pick_arg(arguments, "artist_id", "artistId", "id")
         norm = _normalize_spotify_id(raw, "artist")
@@ -1571,13 +1644,23 @@ class SpotifyToolRunner:
         data = self.client.api_get("/me/player/recently-played", params=params)
         return _compact(data, limit=8000)
 
+    def _library_put_uris(self, uris: list[str]) -> None:
+        for offset in range(0, len(uris), _LIBRARY_URI_CHUNK):
+            chunk = uris[offset : offset + _LIBRARY_URI_CHUNK]
+            self.client.api_put("/me/library", params={"uris": ",".join(chunk)})
+
+    def _library_delete_uris(self, uris: list[str]) -> None:
+        for offset in range(0, len(uris), _LIBRARY_URI_CHUNK):
+            chunk = uris[offset : offset + _LIBRARY_URI_CHUNK]
+            self.client.api_delete("/me/library", params={"uris": ",".join(chunk)})
+
     def _save_tracks(self, arguments: dict[str, Any]) -> str:
         ids = self._collect_catalog_ids(arguments, "track", "track_ids", "ids", "track_id")
         if not ids:
             return json.dumps({"error": "track_id or track_ids is required"})
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 track ids per call"})
-        self.client.api_put("/me/tracks", params={"ids": ",".join(ids)})
+        self._library_put_uris([f"spotify:track:{i}" for i in ids])
         return json.dumps({"ok": True, "saved_track_ids": ids})
 
     def _unsave_tracks(self, arguments: dict[str, Any]) -> str:
@@ -1586,7 +1669,7 @@ class SpotifyToolRunner:
             return json.dumps({"error": "track_id or track_ids is required"})
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 track ids per call"})
-        self.client.api_delete("/me/tracks", params={"ids": ",".join(ids)})
+        self._library_delete_uris([f"spotify:track:{i}" for i in ids])
         return json.dumps({"ok": True, "removed_track_ids": ids})
 
     def _save_albums(self, arguments: dict[str, Any]) -> str:
@@ -1595,7 +1678,7 @@ class SpotifyToolRunner:
             return json.dumps({"error": "album_id or album_ids is required"})
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 album ids per call"})
-        self.client.api_put("/me/albums", params={"ids": ",".join(ids)})
+        self._library_put_uris([f"spotify:album:{i}" for i in ids])
         return json.dumps({"ok": True, "saved_album_ids": ids})
 
     def _unsave_albums(self, arguments: dict[str, Any]) -> str:
@@ -1604,7 +1687,7 @@ class SpotifyToolRunner:
             return json.dumps({"error": "album_id or album_ids is required"})
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 album ids per call"})
-        self.client.api_delete("/me/albums", params={"ids": ",".join(ids)})
+        self._library_delete_uris([f"spotify:album:{i}" for i in ids])
         return json.dumps({"ok": True, "removed_album_ids": ids})
 
     def _saved_albums(self, arguments: dict[str, Any]) -> str:
@@ -1623,7 +1706,7 @@ class SpotifyToolRunner:
             return json.dumps({"error": "artist_id or artist_ids is required"})
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 artist ids per call"})
-        self.client.api_put("/me/following", params={"type": "artist", "ids": ",".join(ids)})
+        self._library_put_uris([f"spotify:artist:{i}" for i in ids])
         return json.dumps({"ok": True, "followed_artist_ids": ids})
 
     def _unfollow_artist(self, arguments: dict[str, Any]) -> str:
@@ -1632,7 +1715,7 @@ class SpotifyToolRunner:
             return json.dumps({"error": "artist_id or artist_ids is required"})
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 artist ids per call"})
-        self.client.api_delete("/me/following", params={"type": "artist", "ids": ",".join(ids)})
+        self._library_delete_uris([f"spotify:artist:{i}" for i in ids])
         return json.dumps({"ok": True, "unfollowed_artist_ids": ids})
 
     def _get_queue(self) -> str:
@@ -2380,13 +2463,32 @@ class SpotifyToolRunner:
         if not isinstance(data, dict):
             return _compact(data)
         pid = data.get("id")
+        visibility_note: str | None = None
+        checked: dict[str, Any] | None = None
+        if pid and not public and data.get("public") is True:
+            try:
+                self.client.api_put(f"/playlists/{pid}", json_body={"public": False})
+            except httpx.HTTPStatusError:
+                pass
+            try:
+                checked = self.client.api_get(f"/playlists/{pid}", params={"fields": "id,public,name"})
+            except httpx.HTTPStatusError:
+                checked = None
+            if isinstance(checked, dict) and checked.get("public") is True:
+                visibility_note = (
+                    "Spotify still reports this playlist as public after creation. "
+                    "You may need to set visibility manually in the Spotify app."
+                )
         mini: dict[str, Any] = {
             "id": pid,
             "name": data.get("name"),
             "uri": data.get("uri"),
+            "public": (checked.get("public") if isinstance(checked, dict) else data.get("public")),
             "playlist_id_for_add_tracks": pid,
             "hint": "Next: spotify_add_tracks_to_playlist with playlist_id = id above (string), plus track_uris / track_ids / tracks from spotify_search.",
         }
+        if visibility_note:
+            mini["visibility_warning"] = visibility_note
         if isinstance(data.get("snapshot_id"), str):
             mini["snapshot_id"] = data["snapshot_id"]
         return json.dumps(mini, ensure_ascii=False)
@@ -3396,21 +3498,26 @@ class SpotifyToolRunner:
         says something like "play RNB2025 starting at Kill Bill with repeat on". It plays the
         context, then (if the play call returned ok) applies repeat and shuffle.
         """
-        raw_ref = _pick_arg(arguments, "playlist_id", "playlistId", "id", "context_uri")
+        raw_ref = _pick_arg(arguments, "playlist_id", "playlistId", "id", "context_uri", "artist_name")
         parsed = _parse_spotify_context_ref(raw_ref) if raw_ref else None
         if parsed is None and raw_ref:
             bare = _normalize_spotify_id(raw_ref, "playlist")
             if _looks_like_spotify_catalog_id(bare):
                 parsed = ("playlist", bare)
             else:
-                return json.dumps(
-                    {
-                        "error": "playlist_id must be a 22-character Spotify id or spotify:playlist:/album:/artist: URI from search tools.",
-                        "hint": "Call spotify_search or spotify_user_playlists first — do not invent ids.",
-                        "reconnect_spotify_unnecessary": True,
-                    },
-                    ensure_ascii=False,
-                )
+                market = _normalize_market(_pick_arg(arguments, "market", "country"))
+                artist_cid = self._canonical_artist_id(raw_ref.strip(), market)
+                if artist_cid:
+                    parsed = ("artist", artist_cid)
+                else:
+                    return json.dumps(
+                        {
+                            "error": "playlist_id must be a 22-character Spotify id or spotify:playlist:/album:/artist: URI from search tools.",
+                            "hint": "Call spotify_search or spotify_user_playlists first — do not invent ids.",
+                            "reconnect_spotify_unnecessary": True,
+                        },
+                        ensure_ascii=False,
+                    )
         if parsed is None:
             return json.dumps(
                 {
@@ -3701,6 +3808,22 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {"track_id": {"type": "string"}, "market": {"type": "string"}},
                 "required": ["track_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_artist_latest_album",
+            "description": "Newest album or single for an artist (by release_date). Use for 'latest album' questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artist_id": {"type": "string"},
+                    "include_groups": {"type": "string"},
+                    "market": {"type": "string"},
+                },
+                "required": ["artist_id"],
             },
         },
     },

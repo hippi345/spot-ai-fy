@@ -235,8 +235,17 @@ def devices() -> Any:
         raise HTTPException(status_code=401, detail=str(e)) from e
     except httpx.HTTPStatusError as e:
         msg = (e.response.text or "")[:300] or e.response.reason_phrase or "Spotify error"
+        upstream = e.response.status_code
+        if upstream >= 500:
+            status = 502
+        elif upstream == 401:
+            status = 401
+        elif 400 <= upstream < 500:
+            status = upstream
+        else:
+            status = 502
         raise HTTPException(
-            status_code=e.response.status_code if 400 <= e.response.status_code < 600 else 502,
+            status_code=status,
             detail=f"Could not list Spotify devices: {msg}",
         ) from e
     except httpx.HTTPError as e:

@@ -9,6 +9,12 @@ from typing import Any, Callable
 
 import httpx
 
+from spot_backend.action_claim_guard import (
+    action_claim_honest_fallback,
+    action_claim_reprompt,
+    record_successful_tool,
+    reply_claims_unbacked_action,
+)
 from spot_backend.config import Settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
@@ -258,6 +264,38 @@ def _user_message_wants_spotify_data(text: str) -> bool:
     )
 
 
+def _gemini_candidate_has_tool_or_text(cand: dict[str, Any]) -> tuple[bool, bool]:
+    """Return (has_function_call, has_visible_text)."""
+    c_content = cand.get("content")
+    if not isinstance(c_content, dict):
+        return False, False
+    parts = c_content.get("parts")
+    if not isinstance(parts, list):
+        parts = []
+    has_fc = False
+    has_text = False
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        fc = part.get("functionCall")
+        if isinstance(fc, dict) and fc.get("name"):
+            has_fc = True
+        text_val = part.get("text")
+        if (
+            isinstance(text_val, str)
+            and text_val.strip()
+            and not bool(part.get("thought"))
+        ):
+            has_text = True
+    return has_fc, has_text
+
+
+def _gemini_finish_reason_is_empty(fr: Any) -> bool:
+    if fr in ("MALFORMED_FUNCTION_CALL", "OTHER"):
+        return True
+    return False
+
+
 _GEMINI_TOOL_NUDGE = (
     "Spot-AI-fy: You did not call any Spotify tools yet. The user question requires live Spotify data. "
     "Decompose high-level requests: playlist by name → spotify_user_playlists; artist/tracks → spotify_search; "
@@ -299,6 +337,9 @@ def run_chat_turn_gemini(
     params = {"key": key}
 
     had_tool_results = False
+    successful_tools: set[str] = set()
+    action_claim_reprompted = False
+    empty_turn_retries = 1
     # Gemini 2.5-flash with our 40-tool catalog is *unreliable* in AUTO function-
     # calling mode — measured empty-content rate is 12/15 (80%) even with a
     # short system prompt. ANY mode forces the model to emit a tool call, which
@@ -339,6 +380,25 @@ def run_chat_turn_gemini(
                     return "Unexpected Gemini response shape."
 
                 fr = cand.get("finishReason")
+                has_fc, has_visible = _gemini_candidate_has_tool_or_text(cand)
+                if _gemini_finish_reason_is_empty(fr) or (not has_fc and not has_visible):
+                    if empty_turn_retries > 0:
+                        empty_turn_retries -= 1
+                        body["toolConfig"] = {
+                            "functionCallingConfig": {
+                                "mode": "ANY" if wants_spotify else "AUTO",
+                            }
+                        }
+                        logger.info(
+                            "gemini_empty_turn_retry finish_reason=%s remaining=%s",
+                            fr,
+                            empty_turn_retries,
+                        )
+                        continue
+                    return (
+                        "Gemini returned an empty turn (no text or tool call). Please try again, "
+                        "or switch to Ollama in Settings if it keeps happening."
+                    )
                 if fr in ("SAFETY", "RECITATION"):
                     return (
                         "Gemini's safety filter blocked that turn. Please rephrase, or switch to "
@@ -405,6 +465,7 @@ def run_chat_turn_gemini(
                         if emit:
                             emit({"type": "tool_start", "name": name})
                         result = runner.run(name, args)
+                        record_successful_tool(successful_tools, name, result)
                         if emit:
                             preview = result[:240] + ("…" if len(result) > 240 else "")
                             emit({"type": "tool_done", "name": name, "preview": preview})
@@ -427,7 +488,20 @@ def run_chat_turn_gemini(
 
                 joined = "\n".join(t for t in visible_text_chunks if isinstance(t, str) and t.strip()).strip()
                 if joined:
-                    if not had_tool_results and _user_message_wants_spotify_data(spotify_intent_blob):
+                    if reply_claims_unbacked_action(joined, successful_tools):
+                        if not action_claim_reprompted:
+                            action_claim_reprompted = True
+                            contents.append({"role": "model", "parts": [{"text": joined}]})
+                            contents.append(
+                                {"role": "user", "parts": [{"text": action_claim_reprompt()}]}
+                            )
+                            continue
+                        return action_claim_honest_fallback()
+                    if (
+                        not had_tool_results
+                        and not action_claim_reprompted
+                        and _user_message_wants_spotify_data(spotify_intent_blob)
+                    ):
                         contents.append({"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]})
                         continue
                     return joined

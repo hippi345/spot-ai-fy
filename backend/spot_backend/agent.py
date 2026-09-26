@@ -9,6 +9,12 @@ from typing import Any
 
 import httpx
 
+from spot_backend.action_claim_guard import (
+    action_claim_honest_fallback,
+    action_claim_reprompt,
+    record_successful_tool,
+    reply_claims_unbacked_action,
+)
 from spot_backend.chat_messages import (
     friendly_reply_for_empty_model_output,
     is_unpersisted_assistant_fallback,
@@ -449,6 +455,8 @@ def iter_ollama_chat_events(
 ) -> Iterator[dict[str, Any]]:
     """Yields Spot-AI-fy progress events for the Ollama agent; ends with ``final`` or ``error``."""
     runner = SpotifyToolRunner(settings=settings)
+    successful_tools: set[str] = set()
+    action_claim_reprompted = False
     try:
         ollama_model = read_effective_ollama_model(settings.data_dir, settings.ollama_model)
         small_model = use_small_model_mode(settings, ollama_model)
@@ -504,6 +512,7 @@ def iter_ollama_chat_events(
             for step_idx in range(max_steps):
                 yield {"type": "round", "step": step_idx + 1, "max": max_steps}
                 nudge_attempt = 0
+                reprompt_action_claim = False
                 msg: dict[str, Any] = {}
                 while nudge_attempt < 3:
                     inner_guard = 0
@@ -696,8 +705,19 @@ def iter_ollama_chat_events(
                         final_text = hint
                     if is_unpersisted_assistant_fallback(final_text):
                         final_text = friendly_reply_for_empty_model_output(user_text)
+                    if reply_claims_unbacked_action(final_text, successful_tools):
+                        if not action_claim_reprompted:
+                            action_claim_reprompted = True
+                            messages.append(_assistant_message_for_history(msg))
+                            messages.append({"role": "user", "content": action_claim_reprompt()})
+                            reprompt_action_claim = True
+                            break
+                        final_text = action_claim_honest_fallback()
                     yield {"type": "final", "text": final_text}
                     return
+
+                if reprompt_action_claim:
+                    continue
 
                 messages.append(_assistant_message_for_history(msg))
                 for tc in tool_calls:
@@ -710,6 +730,7 @@ def iter_ollama_chat_events(
                         args = {}
                     yield {"type": "tool_start", "name": name}
                     result = runner.run(name, args)
+                    record_successful_tool(successful_tools, name, result)
                     preview = result[:240] + ("…" if len(result) > 240 else "")
                     yield {"type": "tool_done", "name": name, "preview": preview}
                     result_chat = _cap_tool_result_for_chat(result, max_len=tool_result_cap)

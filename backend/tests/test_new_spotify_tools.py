@@ -60,7 +60,7 @@ def test_save_tracks_missing_library_modify_scope(data_dir) -> None:
 
 @respx.mock
 def test_save_tracks(data_dir, signed_in_tokens) -> None:
-    route = respx.put(url__regex=r"https://api\.spotify\.com/v1/me/tracks.*").mock(
+    route = respx.put("https://api.spotify.com/v1/me/library").mock(
         return_value=httpx.Response(200, json={})
     )
     runner = SpotifyToolRunner(settings=Settings())

@@ -150,11 +150,15 @@ def _ollama_cpu_profile(base_url: str, model_tag: str) -> dict[str, Any]:
             out["cpu_only"] = vram == 0
     except httpx.HTTPError:
         pass
+    probe_prompt = (
+        'You are a Spotify assistant. The user said "play something chill". '
+        "Reply with one short sentence — no tools."
+    )
     try:
         t0 = time.perf_counter()
         gen = httpx.post(
             f"{base}/api/generate",
-            json={"model": model_tag, "prompt": "Reply with exactly: OK", "stream": False},
+            json={"model": model_tag, "prompt": probe_prompt, "stream": False},
             timeout=120.0,
         )
         gen.raise_for_status()
@@ -162,13 +166,16 @@ def _ollama_cpu_profile(base_url: str, model_tag: str) -> dict[str, Any]:
     except httpx.HTTPError:
         pass
     probe = out.get("probe_seconds")
-    if out.get("cpu_only") and isinstance(probe, (int, float)) and probe >= 8:
-        out["recommend_gemini"] = True
-        out["message"] = (
-            f"CPU-only Ollama measured ~{probe}s for a one-word test prompt — simple chat controls "
-            f"often take 8–25s and search-first requests can run 2–3 minutes. Gemini is usually "
-            f"faster if you have an API key, but local Ollama still works."
+    if out.get("cpu_only"):
+        probe_note = (
+            f" (~{probe}s measured for a short prompt)" if isinstance(probe, (int, float)) else ""
         )
+        out["message"] = (
+            "Runs on CPU only: simple commands often take ~10–25s on this machine; "
+            f"searches can take 1–5 minutes{probe_note}. Gemini is usually faster if you have an API key."
+        )
+        if isinstance(probe, (int, float)) and probe >= 8:
+            out["recommend_gemini"] = True
     return out
 
 

@@ -660,7 +660,8 @@ export function App() {
 
 
   const deviceOptions = useMemo(() => {
-    const auto = { value: "", label: "Auto (active device)" };
+    const autoLabel = loadingDevices ? "Loading…" : "Auto (active device)";
+    const auto = { value: "", label: autoLabel };
     return [
       auto,
       ...devices.map((d) => ({
@@ -668,7 +669,7 @@ export function App() {
         label: `${d.name} (${d.type})${d.is_active ? " · active" : ""}`,
       })),
     ];
-  }, [devices]);
+  }, [devices, loadingDevices]);
 
 
 
@@ -719,6 +720,8 @@ export function App() {
 
     setMessages((m) => [...m, { role: "user", text }]);
 
+    const traceSnapshot: TraceStep[] = [];
+
     const controller = new AbortController();
 
     const chatTimeoutMs = 900_000;
@@ -735,32 +738,41 @@ export function App() {
         const finished = prev.map((s) =>
           s.status === "running" ? { ...s, status: "done" as const, finishedAt: now } : s,
         );
-        return [
+        const next = [
           ...finished,
           { ...step, id, startedAt: step.startedAt ?? now } as TraceStep,
         ];
+        traceSnapshot.length = 0;
+        traceSnapshot.push(...next);
+        return next;
       });
       return id;
     };
 
     const finishStep = (id: number, patch?: Partial<TraceStep>) => {
       const now = Date.now();
-      setTraceSteps((prev) =>
-        prev.map((s) =>
+      setTraceSteps((prev) => {
+        const next = prev.map((s) =>
           s.id === id
-            ? { ...s, status: "done", finishedAt: now, ...patch }
+            ? { ...s, status: "done" as const, finishedAt: now, ...patch }
             : s,
-        ),
-      );
+        );
+        traceSnapshot.length = 0;
+        traceSnapshot.push(...next);
+        return next;
+      });
     };
 
     const finishAllRunning = () => {
       const now = Date.now();
-      setTraceSteps((prev) =>
-        prev.map((s) =>
-          s.status === "running" ? { ...s, status: "done", finishedAt: now } : s,
-        ),
-      );
+      setTraceSteps((prev) => {
+        const next = prev.map((s) =>
+          s.status === "running" ? { ...s, status: "done" as const, finishedAt: now } : s,
+        );
+        traceSnapshot.length = 0;
+        traceSnapshot.push(...next);
+        return next;
+      });
     };
 
     const toolStepIdByName = new Map<string, number>();
@@ -1031,18 +1043,10 @@ export function App() {
         reply.trim() === "No response from model." ||
         isUnpersistedAssistantFallback(reply);
 
-      if (emptyish) {
-        const friendly = FRIENDLY_SPOTIFY_GUIDANCE;
-        setTraceSteps((steps) => {
-          setMessages((m) => [...m, { role: "assistant", text: friendly, trace: steps }]);
-          return steps;
-        });
-      } else {
-        setTraceSteps((steps) => {
-          setMessages((m) => [...m, { role: "assistant", text: reply, trace: steps }]);
-          return steps;
-        });
-      }
+      const assistantText = emptyish ? FRIENDLY_SPOTIFY_GUIDANCE : reply;
+      const traceCopy = traceSnapshot.map((s) => ({ ...s }));
+      setMessages((m) => [...m, { role: "assistant", text: assistantText, trace: traceCopy }]);
+      setTraceSteps([]);
 
     } catch (e) {
 
@@ -1199,6 +1203,10 @@ export function App() {
           onDismiss={() => {
             setShowSetupWizard(false);
             setWizardAutoOpened(false);
+          }}
+          onSettingsSaved={() => {
+            void refreshLlm();
+            void refreshSetup();
           }}
           onComplete={() => {
             setSetupComplete(true);
@@ -1769,8 +1777,6 @@ export function App() {
                 disabled={!session?.signed_in || loadingDevices}
 
               >
-
-                <option value="">{loadingDevices ? "Loading…" : "Auto (active device)"}</option>
 
                 {deviceOptions.map((o) => (
 

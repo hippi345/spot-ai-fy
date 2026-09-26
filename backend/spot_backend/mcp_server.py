@@ -185,6 +185,15 @@ def spotify_artist_albums(
 
 
 @mcp.tool()
+def spotify_artist_latest_album(artist_id: str, include_groups: str = "album,single") -> str:
+    """Newest album or single for an artist (by release_date)."""
+    return _runner.run(
+        "spotify_artist_latest_album",
+        {"artist_id": artist_id, "include_groups": include_groups},
+    )
+
+
+@mcp.tool()
 def spotify_get_artist(artist_id: str, market: str = "") -> str:
     """Get artist profile (genres, popularity)."""
     args: dict = {"artist_id": artist_id}
