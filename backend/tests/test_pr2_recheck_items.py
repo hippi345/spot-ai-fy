@@ -113,7 +113,6 @@ def test_item03_single_track_play_uses_album_context(data_dir, signed_in_tokens)
         )
     )
     runner = SpotifyToolRunner(settings=Settings())
-    runner._session_known_ids.add(track_id)
     raw = runner.run(
         "spotify_start_resume_playback",
         {"uris": [f"spotify:track:{track_id}"]},
@@ -175,12 +174,17 @@ def test_item04_play_playlist_routes_album_uri(data_dir, signed_in_tokens) -> No
 
 
 def test_item04_play_playlist_rejects_unknown_id(data_dir, signed_in_tokens) -> None:
+    unknown = "bbbbbbbbbbbbbbbbbbbbbb"
+    respx.get(f"https://api.spotify.com/v1/playlists/{unknown}").mock(
+        return_value=httpx.Response(404, json={"error": {"status": 404, "message": "Not found"}})
+    )
     runner = SpotifyToolRunner(settings=Settings())
     runner._session_known_ids.add("aaaaaaaaaaaaaaaaaaaaaa")
-    raw = runner.run("spotify_play_playlist", {"playlist_id": "bbbbbbbbbbbbbbbbbbbbbb"})
+    raw = runner.run("spotify_play_playlist", {"playlist_id": unknown})
     runner.close()
     data = json.loads(raw)
-    assert "Unknown" in data["error"] or "search" in data.get("hint", "").lower()
+    assert "error" in data
+    assert "404" in data["error"] or "search" in data.get("hint", "").lower()
 
 
 def test_item05_ipv6_loopback_url_keeps_brackets(monkeypatch: pytest.MonkeyPatch) -> None:

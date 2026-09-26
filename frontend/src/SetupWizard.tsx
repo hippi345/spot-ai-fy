@@ -11,7 +11,7 @@ import {
 type Props = {
   onComplete: () => void;
   onDismiss?: () => void;
-  onSettingsSaved?: () => void;
+  onSettingsSaved?: (patch?: { provider?: "ollama" | "gemini" }) => void;
   allowDismiss: boolean;
   closeOnComplete?: boolean;
 };
@@ -41,7 +41,7 @@ export function SetupWizard({
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [cpuHint, setCpuHint] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (opts?: { preserveStep?: boolean }) => {
     const s = await fetchSetupStatus();
     setStatus(s);
     setProvider(s.provider === "gemini" ? "gemini" : "ollama");
@@ -50,9 +50,11 @@ export function SetupWizard({
     else if (!ollamaModel) setOllamaModel("qwen3:4b-instruct");
     if (s.gemini_model) setGeminiModel(s.gemini_model);
     if (closeOnComplete && s.setup_complete) onComplete();
-    if (s.setup_complete) setStep(1);
-    else if (s.spotify_configured && s.spotify_signed_in) setStep(2);
-  }, [onComplete, closeOnComplete]);
+    if (!opts?.preserveStep) {
+      if (s.setup_complete) setStep(1);
+      else if (s.spotify_configured && s.spotify_signed_in) setStep(2);
+    }
+  }, [onComplete, closeOnComplete, ollamaModel]);
 
   useEffect(() => {
     void refresh();
@@ -124,8 +126,8 @@ export function SetupWizard({
       const profile = (out as { ollama_cpu_profile?: { message?: string | null } }).ollama_cpu_profile;
       setCpuHint(profile?.message ?? null);
       setSavedNotice("Saved — settings tested successfully.");
-      await refresh();
-      onSettingsSaved?.();
+      await refresh({ preserveStep: true });
+      onSettingsSaved?.({ provider });
     } catch (e) {
       setError(e instanceof Error ? e.message : "LLM setup failed");
     } finally {

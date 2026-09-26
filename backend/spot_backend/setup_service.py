@@ -127,6 +127,27 @@ def _ollama_cpu_profile(base_url: str, model_tag: str) -> dict[str, Any]:
         "recommend_gemini": False,
         "message": None,
     }
+    probe_prompt = (
+        'You are a Spotify assistant. The user said "play something chill". '
+        "Reply with one short sentence — no tools."
+    )
+    try:
+        t0 = time.perf_counter()
+        gen = httpx.post(
+            f"{base}/api/generate",
+            json={
+                "model": model_tag,
+                "prompt": probe_prompt,
+                "stream": False,
+                "keep_alive": "5m",
+            },
+            timeout=120.0,
+        )
+        gen.raise_for_status()
+        out["probe_seconds"] = round(time.perf_counter() - t0, 1)
+    except httpx.HTTPError:
+        pass
+    gpu_evidence = False
     try:
         ps = httpx.get(f"{base}/api/ps", timeout=5.0)
         ps.raise_for_status()
@@ -148,25 +169,12 @@ def _ollama_cpu_profile(base_url: str, model_tag: str) -> dict[str, Any]:
                     break
         if vram is not None:
             out["cpu_only"] = vram == 0
-    except httpx.HTTPError:
-        pass
-    probe_prompt = (
-        'You are a Spotify assistant. The user said "play something chill". '
-        "Reply with one short sentence — no tools."
-    )
-    try:
-        t0 = time.perf_counter()
-        gen = httpx.post(
-            f"{base}/api/generate",
-            json={"model": model_tag, "prompt": probe_prompt, "stream": False},
-            timeout=120.0,
-        )
-        gen.raise_for_status()
-        out["probe_seconds"] = round(time.perf_counter() - t0, 1)
+            gpu_evidence = vram > 0
     except httpx.HTTPError:
         pass
     probe = out.get("probe_seconds")
-    if out.get("cpu_only"):
+    cpu_only = out.get("cpu_only")
+    if cpu_only is True or (cpu_only is None and not gpu_evidence):
         probe_note = (
             f" (~{probe}s measured for a short prompt)" if isinstance(probe, (int, float)) else ""
         )

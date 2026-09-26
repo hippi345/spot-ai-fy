@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any, Callable
 
@@ -296,6 +297,67 @@ def _gemini_finish_reason_is_empty(fr: Any) -> bool:
     return False
 
 
+def gemini_candidate_is_effectively_empty(cand: dict[str, Any]) -> bool:
+    """True when the model returned no tool call and no user-visible text."""
+    fr = cand.get("finishReason")
+    has_fc, has_visible = _gemini_candidate_has_tool_or_text(cand)
+    if _gemini_finish_reason_is_empty(fr):
+        return True
+    if fr == "STOP" and not has_fc and not has_visible:
+        return True
+    return not has_fc and not has_visible
+
+
+def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
+    """Restrict ANY-mode tool calls for obvious single-intent control commands."""
+    t = (user_text or "").strip().lower()
+    if not t:
+        return None
+    if re.search(r"\b(pause|stop playback)\b", t):
+        return ["spotify_pause"]
+    if re.search(r"\b(resume|unpause|continue playing)\b", t):
+        return ["spotify_start_resume_playback", "spotify_play_playlist"]
+    if re.search(r"\b(skip next|next song|skip)\b", t) and "playlist" not in t:
+        return ["spotify_skip_next"]
+    if re.search(r"\b(previous|go back|last song)\b", t):
+        return ["spotify_skip_previous"]
+    if re.search(r"\b(volume|louder|quieter|turn (it )?(up|down))\b", t):
+        return ["spotify_set_volume"]
+    if re.search(r"\b(what'?s playing|now playing|current(ly)? playing|what song)\b", t):
+        return ["spotify_playback_state"]
+    if re.search(r"\b(recently played|listening history|what did i (just )?play)\b", t):
+        return ["spotify_recently_played"]
+    if re.search(r"\b(like this|save this|add to (my )?library)\b", t):
+        return [
+            "spotify_save_tracks",
+            "spotify_save_albums",
+            "spotify_follow_playlist",
+            "spotify_follow_artist",
+        ]
+    return None
+
+
+def _gemini_generation_config_for_model(model: str) -> dict[str, Any]:
+    cfg: dict[str, Any] = {"maxOutputTokens": 8192}
+    low = model.lower()
+    if "2.5" in low or "thinking" in low:
+        cfg["thinkingConfig"] = {"includeThoughts": False, "thinkingBudget": 1024}
+    return cfg
+
+
+def _log_gemini_empty_candidate(data: dict[str, Any], cand: dict[str, Any], *, label: str) -> None:
+    pf = data.get("promptFeedback")
+    safety = cand.get("safetyRatings")
+    logger.debug(
+        "gemini_%s finish_reason=%s prompt_feedback=%s safety_ratings=%s parts=%s",
+        label,
+        cand.get("finishReason"),
+        json.dumps(pf)[:800] if pf is not None else None,
+        json.dumps(safety)[:800] if safety is not None else None,
+        json.dumps((cand.get("content") or {}).get("parts"))[:1500],
+    )
+
+
 _GEMINI_TOOL_NUDGE = (
     "Spot-AI-fy: You did not call any Spotify tools yet. The user question requires live Spotify data. "
     "Decompose high-level requests: playlist by name → spotify_user_playlists; artist/tracks → spotify_search; "
@@ -339,7 +401,7 @@ def run_chat_turn_gemini(
     had_tool_results = False
     successful_tools: set[str] = set()
     action_claim_reprompted = False
-    empty_turn_retries = 1
+    empty_turn_retries = 3
     # Gemini 2.5-flash with our 40-tool catalog is *unreliable* in AUTO function-
     # calling mode — measured empty-content rate is 12/15 (80%) even with a
     # short system prompt. ANY mode forces the model to emit a tool call, which
@@ -356,15 +418,22 @@ def run_chat_turn_gemini(
     try:
         with httpx.Client(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
             for _ in range(settings.agent_max_steps):
-                if wants_spotify and not had_tool_results:
+                intent_tools = gemini_intent_allowed_function_names(user_text)
+                if intent_tools:
+                    fc_mode = "ANY"
+                elif wants_spotify and not had_tool_results:
                     fc_mode = "ANY"
                 else:
                     fc_mode = "AUTO"
+                fc_cfg: dict[str, Any] = {"mode": fc_mode}
+                if fc_mode == "ANY" and intent_tools:
+                    fc_cfg["allowedFunctionNames"] = intent_tools
                 body: dict[str, Any] = {
                     "systemInstruction": {"parts": [{"text": full_system}]},
                     "contents": contents,
                     "tools": [{"functionDeclarations": declarations}],
-                    "toolConfig": {"functionCallingConfig": {"mode": fc_mode}},
+                    "toolConfig": {"functionCallingConfig": fc_cfg},
+                    "generationConfig": _gemini_generation_config_for_model(model),
                 }
 
                 resp = _gemini_post_with_retry(client, url, params=params, json_body=body)
@@ -381,14 +450,16 @@ def run_chat_turn_gemini(
 
                 fr = cand.get("finishReason")
                 has_fc, has_visible = _gemini_candidate_has_tool_or_text(cand)
-                if _gemini_finish_reason_is_empty(fr) or (not has_fc and not has_visible):
+                if gemini_candidate_is_effectively_empty(cand):
+                    _log_gemini_empty_candidate(data, cand, label="empty_turn")
                     if empty_turn_retries > 0:
                         empty_turn_retries -= 1
-                        body["toolConfig"] = {
-                            "functionCallingConfig": {
-                                "mode": "ANY" if wants_spotify else "AUTO",
-                            }
+                        retry_fc: dict[str, Any] = {
+                            "mode": "ANY" if (wants_spotify or intent_tools) else "AUTO",
                         }
+                        if intent_tools:
+                            retry_fc["allowedFunctionNames"] = intent_tools
+                        body["toolConfig"] = {"functionCallingConfig": retry_fc}
                         logger.info(
                             "gemini_empty_turn_retry finish_reason=%s remaining=%s",
                             fr,

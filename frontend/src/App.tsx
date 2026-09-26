@@ -4,6 +4,12 @@ import { SetupWizard } from "./SetupWizard";
 import { fetchSetupStatus, type SetupStatus } from "./lib/api";
 import { FRIENDLY_SPOTIFY_GUIDANCE, isUnpersistedAssistantFallback } from "./lib/chatMessages";
 import { isChatBlockedBySetup } from "./lib/setupGate";
+import {
+  type TraceStep,
+  reduceTraceFinishAllRunning,
+  reduceTraceFinishStep,
+  reduceTracePushStep,
+} from "./lib/chatTrace";
 
 
 
@@ -36,17 +42,6 @@ type ChatMessage = { role: "user" | "assistant"; text: string; trace?: TraceStep
 
 
 
-type TraceStepKind = "status" | "round" | "tool";
-
-type TraceStep = {
-  id: number;
-  kind: TraceStepKind;
-  label: string;
-  detail?: string;
-  startedAt: number;
-  finishedAt?: number;
-  status: "running" | "done" | "error";
-};
 
 
 
@@ -720,7 +715,7 @@ export function App() {
 
     setMessages((m) => [...m, { role: "user", text }]);
 
-    const traceSnapshot: TraceStep[] = [];
+    let traceAccum: TraceStep[] = [];
 
     const controller = new AbortController();
 
@@ -734,45 +729,24 @@ export function App() {
     const pushStep = (step: Omit<TraceStep, "id" | "startedAt"> & { startedAt?: number }) => {
       const id = newStepId();
       const now = Date.now();
-      setTraceSteps((prev) => {
-        const finished = prev.map((s) =>
-          s.status === "running" ? { ...s, status: "done" as const, finishedAt: now } : s,
-        );
-        const next = [
-          ...finished,
-          { ...step, id, startedAt: step.startedAt ?? now } as TraceStep,
-        ];
-        traceSnapshot.length = 0;
-        traceSnapshot.push(...next);
-        return next;
-      });
+      const next = reduceTracePushStep(traceAccum, step, id, now);
+      traceAccum = next;
+      setTraceSteps(next);
       return id;
     };
 
     const finishStep = (id: number, patch?: Partial<TraceStep>) => {
       const now = Date.now();
-      setTraceSteps((prev) => {
-        const next = prev.map((s) =>
-          s.id === id
-            ? { ...s, status: "done" as const, finishedAt: now, ...patch }
-            : s,
-        );
-        traceSnapshot.length = 0;
-        traceSnapshot.push(...next);
-        return next;
-      });
+      const next = reduceTraceFinishStep(traceAccum, id, patch, now);
+      traceAccum = next;
+      setTraceSteps(next);
     };
 
     const finishAllRunning = () => {
       const now = Date.now();
-      setTraceSteps((prev) => {
-        const next = prev.map((s) =>
-          s.status === "running" ? { ...s, status: "done" as const, finishedAt: now } : s,
-        );
-        traceSnapshot.length = 0;
-        traceSnapshot.push(...next);
-        return next;
-      });
+      const next = reduceTraceFinishAllRunning(traceAccum, now);
+      traceAccum = next;
+      setTraceSteps(next);
     };
 
     const toolStepIdByName = new Map<string, number>();
@@ -1044,7 +1018,7 @@ export function App() {
         isUnpersistedAssistantFallback(reply);
 
       const assistantText = emptyish ? FRIENDLY_SPOTIFY_GUIDANCE : reply;
-      const traceCopy = traceSnapshot.map((s) => ({ ...s }));
+      const traceCopy = traceAccum.map((s) => ({ ...s }));
       setMessages((m) => [...m, { role: "assistant", text: assistantText, trace: traceCopy }]);
       setTraceSteps([]);
 
@@ -1204,7 +1178,11 @@ export function App() {
             setShowSetupWizard(false);
             setWizardAutoOpened(false);
           }}
-          onSettingsSaved={() => {
+          onSettingsSaved={(patch) => {
+            const nextProvider = patch?.provider;
+            if (nextProvider === "gemini" || nextProvider === "ollama") {
+              setSetupStatus((prev) => (prev ? { ...prev, provider: nextProvider } : prev));
+            }
             void refreshLlm();
             void refreshSetup();
           }}

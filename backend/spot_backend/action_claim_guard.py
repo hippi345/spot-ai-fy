@@ -38,17 +38,35 @@ _LIBRARY_REMOVE_TOOLS = frozenset(
     }
 )
 
+# Only match first-person or direct assistant action claims — not how-to questions or
+# informational replies that mention "liked" in passing.
 _CLAIM_RULES: list[tuple[re.Pattern[str], frozenset[str]]] = [
-    (re.compile(r"\bnow playing\b", re.I), _PLAYBACK_TOOLS),
-    (re.compile(r"\b(started|starting) (playing|playback)\b", re.I), _PLAYBACK_TOOLS),
-    (re.compile(r"\bplaying\b.+\b(on|in) your\b", re.I), _PLAYBACK_TOOLS),
-    (re.compile(r"\b(play(ing)? (music|songs|tracks) by)\b", re.I), _PLAYBACK_TOOLS),
-    (re.compile(r"\b(paused|pause(d)? playback)\b", re.I), _PAUSE_TOOLS),
-    (re.compile(r"\b(skipped|skipping)\b", re.I), _SKIP_TOOLS),
-    (re.compile(r"\b(volume (is )?set|set (the )?volume)\b", re.I), _VOLUME_TOOLS),
-    (re.compile(r"\b(liked|saved|added to (your )?library)\b", re.I), _LIBRARY_SAVE_TOOLS),
-    (re.compile(r"\b(followed|now following)\b", re.I), _LIBRARY_SAVE_TOOLS | frozenset({"spotify_follow_artist"})),
-    (re.compile(r"\b(unliked|removed from (your )?library|unfollowed)\b", re.I), _LIBRARY_REMOVE_TOOLS),
+    (re.compile(r"\b(?:I(?:'ve| have)?\s+)?now playing\b", re.I), _PLAYBACK_TOOLS),
+    (re.compile(r"\b(?:I(?:'ve| have)?\s+)?(?:started|starting) (?:playing|playback)\b", re.I), _PLAYBACK_TOOLS),
+    (re.compile(r"\b(?:I(?:'m| am)\s+)?playing\b.+\b(?:on|in) your\b", re.I), _PLAYBACK_TOOLS),
+    (re.compile(r"\b(?:I(?:'ve| have)?\s+)?paused(?: playback)?\b", re.I), _PAUSE_TOOLS),
+    (re.compile(r"\b(?:I(?:'ve| have)?\s+)?(?:skipped|skipping)\b", re.I), _SKIP_TOOLS),
+    (re.compile(r"\b(?:I(?:'ve| have)?\s+)?set (?:the )?volume\b", re.I), _VOLUME_TOOLS),
+    (re.compile(r"\bvolume (?:is )?now (?:at|set to)\b", re.I), _VOLUME_TOOLS),
+    (re.compile(r"\b(?:I(?:'ve| have)?\s+)?saved(?:\s+(?:that|the|this|it))?\b", re.I), _LIBRARY_SAVE_TOOLS),
+    (re.compile(r"\b(?:I(?:'ve| have)?\s+)?liked (?:that|the|this|it)\b", re.I), _LIBRARY_SAVE_TOOLS),
+    (
+        re.compile(r"\b(?:I(?:'ve| have)?\s+)?added (?:it )?to (?:your )?library\b", re.I),
+        _LIBRARY_SAVE_TOOLS,
+    ),
+    (re.compile(r"\b(?:I(?:'ve| have)?\s+)?followed\b", re.I), _LIBRARY_SAVE_TOOLS),
+    (re.compile(r"\b(?:I(?:'m| am) )?now following\b", re.I), _LIBRARY_SAVE_TOOLS),
+    (
+        re.compile(
+            r"\b(?:I(?:'ve| have)?\s+)?(?:removed|unliked|unfollowed)\b",
+            re.I,
+        ),
+        _LIBRARY_REMOVE_TOOLS,
+    ),
+    (
+        re.compile(r"\bremoved .+ from (?:your )?(?:library|liked songs|saved)\b", re.I),
+        _LIBRARY_REMOVE_TOOLS,
+    ),
 ]
 
 _ACTION_CLAIM_REPROMPT = (

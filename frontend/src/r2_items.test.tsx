@@ -113,7 +113,7 @@ describe("r2_itemG_header_refreshes_provider_after_wizard_save", () => {
   it("invokes onSettingsSaved after Save & test so the host can refresh header status", async () => {
     const onSettingsSaved = vi.fn();
     vi.spyOn(api, "fetchSetupStatus").mockResolvedValue(
-      completeStatus({ provider: "gemini", llm_ready: false }),
+      completeStatus({ provider: "gemini", llm_ready: false, setup_complete: false }),
     );
     vi.spyOn(api, "saveLlmSetup").mockResolvedValue({
       reachable: true,
@@ -129,12 +129,11 @@ describe("r2_itemG_header_refreshes_provider_after_wizard_save", () => {
         onSettingsSaved={onSettingsSaved}
       />,
     );
-    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /Continue to LLM setup/i }));
-    await waitFor(() => expect(document.getElementById("llm-provider")).toBeTruthy());
-    fireEvent.change(document.getElementById("llm-provider")!, { target: { value: "ollama" } });
+    await waitFor(() => expect(screen.getByRole("heading", { name: /Step 2 — Language model/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText(/Provider/i)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText(/Provider/i), { target: { value: "ollama" } });
     fireEvent.click(screen.getByRole("button", { name: /Save & test/i }));
-    await waitFor(() => expect(onSettingsSaved).toHaveBeenCalled());
+    await waitFor(() => expect(onSettingsSaved).toHaveBeenCalledWith({ provider: "ollama" }));
   });
 
   it("shows refreshed setup provider in the App header while the wizard stays open", async () => {
