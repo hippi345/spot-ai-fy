@@ -767,7 +767,6 @@ export function App() {
 
 
 
-    let streamOk = false;
     let lastStreamEventAt = Date.now();
     let idleTimer: number | undefined;
 
@@ -1038,13 +1037,11 @@ export function App() {
           setMessages((m) => [...m, { role: "assistant", text: friendly, trace: steps }]);
           return steps;
         });
-        streamOk = true;
       } else {
         setTraceSteps((steps) => {
           setMessages((m) => [...m, { role: "assistant", text: reply, trace: steps }]);
           return steps;
         });
-        streamOk = true;
       }
 
     } catch (e) {
