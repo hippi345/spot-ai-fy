@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 
+from spot_backend.play_artist_intent import extract_play_artist_name
 from spot_backend.spotify_tools import SpotifyToolRunner
 
 _LIKE_THIS_RE = re.compile(
@@ -44,6 +45,19 @@ def try_deterministic_chat_reply(user_text: str, runner: SpotifyToolRunner) -> s
         if "nothing" in err.lower() or "required" in err.lower() or not data:
             return "There is nothing from the last successful save that I can undo."
         return "I could not undo the last action — nothing was changed."
+
+    artist_name = extract_play_artist_name(t)
+    if artist_name:
+        play_raw = runner.run("spotify_play_playlist", {"playlist_id": artist_name})
+        play = _parse_tool_json(play_raw)
+        if play.get("ok") is True or (
+            isinstance(play.get("playback"), dict) and play["playback"].get("ok") is True
+        ):
+            return f"Playing {artist_name} on Spotify."
+        err = str(play.get("error") or play.get("playback", {}).get("error") or "")
+        if err:
+            return f"I could not start playback for {artist_name}: {err}"
+        return f"I could not start playback for {artist_name} just now."
 
     if _LIKE_THIS_RE.match(t) or _SAVE_SONG_RE.match(t):
         state_raw = runner.run("spotify_playback_state", {})

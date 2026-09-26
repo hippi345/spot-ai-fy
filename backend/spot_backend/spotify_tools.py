@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+
+# Delay before a single 404 device-not-active play retry (tests patch this).
+PLAY_DEVICE_404_RETRY_DELAY_SECONDS = 0.75
 from typing import Any
 
 import httpx
@@ -133,7 +136,7 @@ def collect_catalog_ids_from_tool_json(obj: Any) -> set[str]:
     """Walk any tool JSON and collect Spotify catalog ids / URI bare ids."""
     found: set[str] = set()
 
-    def walk(node: Any) -> None:
+    def walk(node: Any) -> None:  # pylint: disable=too-many-nested-blocks
         if isinstance(node, dict):
             for key, val in node.items():
                 if key in ("id", "uri", "context_uri") and isinstance(val, str):
@@ -789,9 +792,8 @@ class SpotifyToolRunner:
             return self._format_http_error(name, arguments, e, err)
         except Exception as e:
             return json.dumps({"error": f"{type(e).__name__}: {e}"})
-        else:
-            self._remember_tool_catalog_ids(name, result)
-            return result
+        self._remember_tool_catalog_ids(name, result)
+        return result
 
     def _verify_catalog_id_on_spotify(self, kind: str, bare_id: str) -> tuple[bool, str | None]:
         """GET Spotify catalog object; return (exists, user-facing error)."""
@@ -3501,11 +3503,15 @@ class SpotifyToolRunner:
         track_uri = str(uris[0]).strip()
         if not track_uri.startswith("spotify:track:"):
             return body
-        artist_id = _pick_arg(arguments, "artist_id", "artistId")
+        artist_id = _pick_arg(arguments, "artist_id", "artistId", "artist_name", "artist")
         if artist_id:
             norm = _normalize_spotify_id(str(artist_id), "artist")
             if _looks_like_spotify_catalog_id(norm):
                 return {"context_uri": f"spotify:artist:{norm}"}
+            market = _normalize_market(_pick_arg(arguments, "market", "country"))
+            resolved = self._canonical_artist_id(str(artist_id).strip(), market)
+            if resolved:
+                return {"context_uri": f"spotify:artist:{resolved}"}
         session_artist = self._last_primary_artist_id
         if not session_artist:
             return body
@@ -3581,6 +3587,77 @@ class SpotifyToolRunner:
             return {k: v for k, v in body.items() if k != "uris"}
         return body
 
+    def _safe_playback_recovery_once(self, body: dict[str, Any], device_id: str) -> bool:
+        """One transfer + replay attempt when post-play verification fails."""
+        chosen = self._resolve_target_device(device_id)
+        if not chosen:
+            return False
+        try:
+            self.client.api_put(
+                "/me/player",
+                json_body={"device_ids": [chosen], "play": False},
+            )
+        except httpx.HTTPStatusError:
+            return False
+        time.sleep(0.4)
+        try:
+            self._try_play(chosen, body)
+        except httpx.HTTPStatusError:
+            return False
+        return True
+
+    def _playback_outcome_after_play(
+        self,
+        body: dict[str, Any],
+        device_id: str,
+        device_note: str | None = None,
+    ) -> str:
+        """Read /me/player after play; one recovery attempt, then a clear success or failure."""
+        if self._playback_matches(body, attempts=4, delay_s=0.35):
+            payload: dict[str, Any] = {
+                "ok": True,
+                "device_id": device_id or None,
+                "body": body,
+                "playback_verified": True,
+            }
+            if device_note:
+                payload["device_fallback_note"] = device_note
+            return json.dumps(payload)
+        if self._safe_playback_recovery_once(body, device_id):
+            if self._playback_matches(body, attempts=4, delay_s=0.35):
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "device_id": device_id or None,
+                        "body": body,
+                        "playback_verified": True,
+                        "note": (
+                            "Playback did not match immediately after play; retried once on the "
+                            "active device and verified."
+                        ),
+                    }
+                )
+        snapshot = self._current_playback_snapshot()
+        return json.dumps(
+            {
+                "ok": False,
+                "error": (
+                    "Spotify did not switch to the requested music after play. "
+                    "Nothing is playing on the expected context, or playback is still on the previous item."
+                ),
+                "hint": (
+                    "Open Spotify on your device, tap play on any track, then retry — or ask me to "
+                    "transfer playback to a specific device."
+                ),
+                "requested_body": body,
+                "current_state": snapshot,
+                "device_id": device_id or None,
+                "playback_verified": False,
+                "reconnect_spotify_unnecessary": True,
+                "sign_out_not_recommended": True,
+            }
+        )
+
     def _start_playback(self, arguments: dict[str, Any]) -> str:
         raw_device = str(arguments.get("device_id", "")).strip()
         device_id = raw_device
@@ -3615,126 +3692,7 @@ class SpotifyToolRunner:
                 if device_note:
                     payload["device_fallback_note"] = device_note
                 return json.dumps(payload)
-            # Spotify frequently returns 200 while the device controller keeps playing the
-            # previous track/context. Verify the current track/context actually switched —
-            # if not, force a transfer to the intended device and retry once, then verify.
-            if self._playback_matches(body, attempts=6, delay_s=0.5):
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "device_id": device_id or None,
-                        "body": body,
-                        "playback_verified": True,
-                    }
-                )
-            # Spotify Connect sometimes refuses to switch from a held session when we only
-            # send context_uri. Fetch the first track of the target context and retry with
-            # an explicit offset.uri — that both gives us a concrete target to verify and
-            # enables the force-skip salvage path below.
-            if not self._body_has_target(body):
-                first_uri = self._first_track_uri_of_context(body.get("context_uri") or "")
-                if first_uri:
-                    logger.info(
-                        "spotify_play: verification failed for context-only play %s; "
-                        "re-issuing with explicit offset.uri=%s",
-                        body.get("context_uri"),
-                        first_uri,
-                    )
-                    body = {**body, "offset": {"uri": first_uri}}
-                    try:
-                        self._try_play(device_id, body)
-                    except httpx.HTTPStatusError:
-                        pass
-                    if self._playback_matches(body, attempts=6, delay_s=0.5):
-                        return json.dumps(
-                            {
-                                "ok": True,
-                                "device_id": device_id or None,
-                                "body": body,
-                                "playback_verified": True,
-                                "note": (
-                                    "Context-only play was not reflected on the device; "
-                                    "retried with the playlist's first track as the offset."
-                                ),
-                            }
-                        )
-            chosen = self._resolve_target_device(device_id)
-            if chosen:
-                try:
-                    self.client.api_put(
-                        "/me/player",
-                        json_body={"device_ids": [chosen], "play": False},
-                    )
-                except httpx.HTTPStatusError:
-                    pass
-                time.sleep(0.4)
-                try:
-                    self._try_play(chosen, body)
-                except httpx.HTTPStatusError:
-                    pass
-                if self._playback_matches(body, attempts=8, delay_s=0.5):
-                    return json.dumps(
-                        {
-                            "ok": True,
-                            "device_id": chosen,
-                            "body": body,
-                            "playback_verified": True,
-                            "note": "Playback did not switch on the first attempt; forced a transfer to the target device and retried.",
-                        }
-                    )
-            # Last resort A: if Spotify treated the offset as "up next" (common when already
-            # playing from the same context), skip forward until the target track becomes current.
-            if self._force_to_target_track(body, device_id=chosen or device_id):
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "device_id": chosen or device_id or None,
-                        "body": body,
-                        "playback_verified": True,
-                        "note": (
-                            "Spotify queued the target as 'up next' instead of jumping — forced skip(s) "
-                            "to advance to the requested track."
-                        ),
-                    }
-                )
-            # Last resort B: pause current playback first, then replay. This unsticks the
-            # Spotify Connect client in cases where a lingering session on the same device
-            # keeps the previous track playing even after transfer+replay.
-            if self._pause_then_play(body, device_id=chosen or device_id):
-                return json.dumps(
-                    {
-                        "ok": True,
-                        "device_id": chosen or device_id or None,
-                        "body": body,
-                        "playback_verified": True,
-                        "note": (
-                            "Device refused to switch — paused the current session, waited, "
-                            "then replayed the requested context."
-                        ),
-                    }
-                )
-            snapshot = self._current_playback_snapshot()
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": (
-                        "Spotify accepted the play command (HTTP 200) but playback did not switch "
-                        "to the requested context/track. The previous song is still playing."
-                    ),
-                    "hint": (
-                        "A different device or session may be holding playback. Ask the user to tap "
-                        "play briefly in Spotify on the intended device, or call spotify_devices + "
-                        "spotify_transfer_playback to move control, then retry. Do not tell the user "
-                        "playback started — it did not."
-                    ),
-                    "requested_body": body,
-                    "current_state": snapshot,
-                    "device_id": device_id or None,
-                    "playback_verified": False,
-                    "reconnect_spotify_unnecessary": True,
-                    "sign_out_not_recommended": True,
-                }
-            )
+            return self._playback_outcome_after_play(body, device_id, device_note)
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
             if status == 403 and _spotify_error_is_restriction_violated(e):
@@ -3873,6 +3831,7 @@ class SpotifyToolRunner:
                     )
                 except httpx.HTTPStatusError:
                     pass
+                time.sleep(PLAY_DEVICE_404_RETRY_DELAY_SECONDS)
                 try:
                     self._try_play(chosen, body)
                     verified = (
@@ -3915,7 +3874,7 @@ class SpotifyToolRunner:
             path = f"{path}?device_id={device_id}"
         self.client.api_put(path, json_body=body if body else {})
 
-    def _playback_matches(
+    def _playback_matches(  # pylint: disable=too-many-nested-blocks
         self,
         body: dict[str, Any],
         *,

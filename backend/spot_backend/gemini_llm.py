@@ -739,6 +739,8 @@ def run_chat_turn_gemini(
                     tool_nudge_used = True
                     contents.append({"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]})
                     continue
+                if tool_nudge_used and first_text_answer:
+                    return prepare_user_visible_reply(first_text_answer, tool_results)
                 return (
                     "Gemini didn't return any text on that turn. Please rephrase or try again, "
                     "or switch to Ollama in Settings if it keeps happening."

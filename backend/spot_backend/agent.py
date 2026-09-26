@@ -438,6 +438,10 @@ def _json_mode_expecting_first_tool_result(messages: list[dict[str, Any]]) -> bo
 def _forced_json_tool_calls_for_question(user_text: str) -> list[dict[str, Any]] | None:
     """Obvious Spotify intents when the model returns nothing (JSON tool mode)."""
     t = user_text.lower()
+    if re.search(r"\b(?:lately|recently)\b", t) and re.search(
+        r"\b(?:listening|played|heard)\b", t
+    ):
+        return [{"function": {"name": "spotify_recently_played", "arguments": {"limit": 20}}}]
     if "playlist" not in t:
         return None
     if any(w in t for w in ("track", "song", "album", "artist", "follow")):

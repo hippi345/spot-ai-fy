@@ -194,10 +194,13 @@ def sanitize_raw_tool_json_in_reply(text: str) -> str:
 
 
 def prepare_user_visible_reply(text: str, tool_results: list[str] | None = None) -> str:
+    from spot_backend.reply_grounding import ground_reply_artist_credits
+
     cleaned = scrub_internal_tool_references(text)
     cleaned = strip_internal_correction_leaks(cleaned)
     cleaned = sanitize_raw_tool_json_in_reply(cleaned)
     if tool_results:
+        cleaned = ground_reply_artist_credits(cleaned, tool_results)
         cleaned = append_visibility_notes_to_reply(cleaned, tool_results)
     return cleaned
 
