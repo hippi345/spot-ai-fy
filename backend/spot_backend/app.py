@@ -80,7 +80,7 @@ def login() -> RedirectResponse:
     s = get_settings()
     if not s.spotify_client_id.strip():
         raise HTTPException(
-            status_code=500,
+            status_code=400,
             detail=(
                 "SPOTIFY_CLIENT_ID is not set. Put it in backend/.env (gitignored) — "
                 "see backend/.env.example — or export it, then restart the API. "

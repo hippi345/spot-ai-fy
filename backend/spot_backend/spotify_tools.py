@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from spot_backend.config import Settings, get_settings
-from spot_backend.spotify_client import SpotifyAuthError, SpotifyClient
+from spot_backend.spotify_client import SpotifyAuthError, SpotifyClient, SpotifyRateLimitError
 from spot_backend.token_store import load_device
 
 logger = logging.getLogger(__name__)
@@ -538,6 +538,8 @@ class SpotifyToolRunner:
         try:
             return self._dispatch(name, arguments)
         except SpotifyAuthError as e:
+            return json.dumps({"error": str(e)})
+        except SpotifyRateLimitError as e:
             return json.dumps({"error": str(e)})
         except httpx.HTTPStatusError as e:
             detail: Any

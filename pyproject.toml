@@ -57,6 +57,10 @@ disable = [
 # disabled overall because the LLM prompts are intentionally single-line.
 max-line-length = 140
 
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["backend/tests"]
+
 [tool.pylint.reports]
 # Require at least this score, so accidental regressions still fail CI even
 # with the generous disables above.
