@@ -9,6 +9,10 @@ from typing import Any
 
 import httpx
 
+from spot_backend.chat_messages import (
+    friendly_reply_for_empty_model_output,
+    is_unpersisted_assistant_fallback,
+)
 from spot_backend.config import Settings, get_settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
 from spot_backend.llm_prefs import read_effective_llm_provider, read_effective_ollama_model
@@ -319,8 +323,39 @@ def _assistant_message_for_history(msg: dict[str, Any]) -> dict[str, Any]:
     if msg.get("tool_calls"):
         out["tool_calls"] = msg["tool_calls"]
     flat = _message_content_str(msg)
+    if is_unpersisted_assistant_fallback(flat):
+        flat = ""
     out["content"] = flat
     return out
+
+
+def _accumulate_ollama_stream_message(stream_msg: dict[str, Any], chunk_message: dict[str, Any]) -> None:
+    """Merge one Ollama NDJSON chunk into the running assistant message."""
+    if chunk_message.get("content") is not None:
+        piece = chunk_message["content"]
+        if isinstance(piece, str):
+            prev = stream_msg.get("content")
+            if isinstance(prev, str):
+                stream_msg["content"] = prev + piece
+            else:
+                stream_msg["content"] = piece
+    if chunk_message.get("role"):
+        stream_msg["role"] = chunk_message["role"]
+    if chunk_message.get("tool_calls"):
+        existing = stream_msg.get("tool_calls")
+        incoming = chunk_message["tool_calls"]
+        if isinstance(existing, list) and isinstance(incoming, list) and existing and incoming:
+            stream_msg["tool_calls"] = existing + incoming
+        else:
+            stream_msg["tool_calls"] = incoming
+    for key in ("thinking", "thought", "reasoning"):
+        if chunk_message.get(key) is not None:
+            prev = stream_msg.get(key)
+            piece = chunk_message[key]
+            if isinstance(piece, str) and isinstance(prev, str):
+                stream_msg[key] = prev + piece
+            else:
+                stream_msg[key] = piece
 
 
 def _normalize_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -400,6 +435,8 @@ def _coerce_chat_history(history: Any) -> list[dict[str, str]]:
         role = item.get("role")
         content = (item.get("content") or item.get("text") or "").strip()
         if role not in ("user", "assistant") or not content:
+            continue
+        if role == "assistant" and is_unpersisted_assistant_fallback(content):
             continue
         out.append({"role": str(role), "content": content})
     return out
@@ -552,18 +589,14 @@ def iter_ollama_chat_events(
                                     continue
                                 m = chunk.get("message")
                                 if isinstance(m, dict):
-                                    if m.get("content") is not None:
-                                        stream_msg["content"] = m["content"]
-                                    if m.get("role"):
-                                        stream_msg["role"] = m["role"]
-                                    if m.get("tool_calls"):
-                                        stream_msg["tool_calls"] = m["tool_calls"]
-                                    for key in ("thinking", "thought", "reasoning"):
-                                        if m.get(key) is not None:
-                                            stream_msg[key] = m[key]
+                                    _accumulate_ollama_stream_message(stream_msg, m)
                                 root_tc = chunk.get("tool_calls")
                                 if isinstance(root_tc, list) and root_tc:
-                                    stream_msg["tool_calls"] = root_tc
+                                    existing = stream_msg.get("tool_calls")
+                                    if isinstance(existing, list) and existing:
+                                        stream_msg["tool_calls"] = existing + root_tc
+                                    else:
+                                        stream_msg["tool_calls"] = root_tc
                                 flat = _message_content_str(stream_msg)
                                 if len(flat) > prev_flat_len:
                                     delta = flat[prev_flat_len:]
@@ -651,12 +684,7 @@ def iter_ollama_chat_events(
                         nudge_attempt += 1
                         continue
 
-                    hint = (
-                        "The model returned no assistant text and no tool calls (Ollama may stream reasoning "
-                        "without a final answer, or the run was cut short). Try: (1) a shorter, one-step question, "
-                        "(2) another Ollama tag if this one misbehaves with tools, (3) Gemini in Spot-AI-fy, or "
-                        "(4) concrete examples in backend/AGENT_CONTEXT.md."
-                    )
+                    hint = friendly_reply_for_empty_model_output(user_text)
                     if parse_src:
                         content_only = _message_content_str(msg).strip()
                         if not content_only and parse_src:
@@ -666,6 +694,8 @@ def iter_ollama_chat_events(
                             final_text = parse_src
                     else:
                         final_text = hint
+                    if is_unpersisted_assistant_fallback(final_text):
+                        final_text = friendly_reply_for_empty_model_output(user_text)
                     yield {"type": "final", "text": final_text}
                     return
 
@@ -706,14 +736,9 @@ def iter_chat_events(
     """Yields progress for Spot-AI-fy chat (Ollama streaming or Gemini)."""
     provider = read_effective_llm_provider(settings.data_dir, settings.llm_provider)
     if provider == "gemini":
-        yield {"type": "status", "message": "Calling Gemini…"}
-        try:
-            from spot_backend.gemini_llm import run_chat_turn_gemini
+        from spot_backend.gemini_llm import iter_gemini_chat_events
 
-            text = run_chat_turn_gemini(user_text, settings, history=history)
-            yield {"type": "final", "text": text}
-        except Exception as e:
-            yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+        yield from iter_gemini_chat_events(user_text, settings, history=history)
         return
 
     yield from iter_ollama_chat_events(user_text, settings, history=history)

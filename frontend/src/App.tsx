@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { SetupWizard } from "./SetupWizard";
 import { fetchSetupStatus, type SetupStatus } from "./lib/api";
+import { FRIENDLY_SPOTIFY_GUIDANCE, isUnpersistedAssistantFallback } from "./lib/chatMessages";
 import { isChatBlockedBySetup } from "./lib/setupGate";
 
 
@@ -11,6 +12,8 @@ type Session = {
   device_id: string | null;
   spotify_granted_scopes?: string | null;
   spotify_playlist_write_ok?: boolean | null;
+  spotify_missing_scopes?: string[] | null;
+  spotify_reauth_recommended?: boolean;
 };
 
 
@@ -29,7 +32,7 @@ type SpotifyDevice = {
 
 
 
-type ChatMessage = { role: "user" | "assistant"; text: string };
+type ChatMessage = { role: "user" | "assistant"; text: string; trace?: TraceStep[] };
 
 
 
@@ -189,7 +192,10 @@ export function App() {
 
   const [setupComplete, setSetupComplete] = useState(false);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
+  const [wizardAutoOpened, setWizardAutoOpened] = useState(false);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  const [streamStalled, setStreamStalled] = useState(false);
+  const streamIdleMs = 45_000;
 
   const refreshSetup = useCallback(async () => {
     try {
@@ -197,7 +203,10 @@ export function App() {
       setSetupStatus(s);
       const ready = !isChatBlockedBySetup(s) && s.spotify_configured;
       setSetupComplete(ready);
-      if (!ready) setShowSetupWizard(true);
+      if (!ready) {
+        setShowSetupWizard(true);
+        setWizardAutoOpened(true);
+      }
     } catch {
       setSetupComplete(false);
       setShowSetupWizard(true);
@@ -651,39 +660,36 @@ export function App() {
 
 
   const deviceOptions = useMemo(() => {
-
-    return devices.map((d) => ({
-
-      value: d.id,
-
-      label: `${d.name} (${d.type})${d.is_active ? " · active" : ""}`,
-
-    }));
-
+    const auto = { value: "", label: "Auto (active device)" };
+    return [
+      auto,
+      ...devices.map((d) => ({
+        value: d.id,
+        label: `${d.name} (${d.type})${d.is_active ? " · active" : ""}`,
+      })),
+    ];
   }, [devices]);
 
 
 
   const saveDevice = async () => {
-
-    if (!deviceId) return;
-
     setError(null);
+    if (!deviceId) {
+      await fetch("/api/device", { method: "DELETE" });
+      await refreshSession();
+      setBanner("Using auto (active Spotify device).");
+      return;
+    }
 
     await fetch("/api/device", {
-
       method: "POST",
-
       headers: { "Content-Type": "application/json" },
-
       body: JSON.stringify({ device_id: deviceId }),
-
     });
 
     await refreshSession();
 
     setBanner("Playback device saved.");
-
   };
 
 
@@ -694,11 +700,16 @@ export function App() {
 
     if (!text) return;
 
-    const historyPayload = messages.slice(-40).map((m) => ({ role: m.role, content: m.text }));
+    const historyPayload = messages
+      .slice(-40)
+      .filter((m) => m.role === "user" || !isUnpersistedAssistantFallback(m.text))
+      .map((m) => ({ role: m.role, content: m.text }));
 
     setSending(true);
 
     setError(null);
+
+    setStreamStalled(false);
 
     setTraceSteps([]);
 
@@ -757,6 +768,24 @@ export function App() {
 
 
     let streamOk = false;
+    let lastStreamEventAt = Date.now();
+    let idleTimer: number | undefined;
+
+    const bumpStreamActivity = () => {
+      lastStreamEventAt = Date.now();
+      setStreamStalled(false);
+    };
+
+    const armIdleTimer = () => {
+      if (idleTimer !== undefined) window.clearInterval(idleTimer);
+      idleTimer = window.setInterval(() => {
+        if (Date.now() - lastStreamEventAt >= streamIdleMs) {
+          setStreamStalled(true);
+        }
+      }, 2000);
+    };
+
+    armIdleTimer();
 
     try {
 
@@ -813,10 +842,18 @@ export function App() {
 
 
       const handleEvent = (j: Record<string, unknown>) => {
+        bumpStreamActivity();
 
         const typ = String(j.type || "");
 
         switch (typ) {
+
+          case "keepalive": {
+            const msg = String(j.message ?? "Still working…");
+            const sid = pushStep({ kind: "status", label: msg, status: "done" });
+            finishStep(sid);
+            break;
+          }
 
           case "status": {
             const msg = String(j.message ?? "");
@@ -990,22 +1027,24 @@ export function App() {
 
 
 
-      const emptyish = !reply.trim() || reply.trim() === "No response from model.";
+      const emptyish =
+        !reply.trim() ||
+        reply.trim() === "No response from model." ||
+        isUnpersistedAssistantFallback(reply);
 
       if (emptyish) {
-
-        setError(
-
-          "The model returned no assistant text and no tool calls (Ollama may stream reasoning without a final answer, or the run was cut short). Try: (1) a shorter, one-step question, (2) another Ollama tag if this one misbehaves with tools, (3) Gemini in Spot-AI-fy, or (4) concrete examples in backend/AGENT_CONTEXT.md."
-
-        );
-
-      } else {
-
-        setMessages((m) => [...m, { role: "assistant", text: reply }]);
-
+        const friendly = FRIENDLY_SPOTIFY_GUIDANCE;
+        setTraceSteps((steps) => {
+          setMessages((m) => [...m, { role: "assistant", text: friendly, trace: steps }]);
+          return steps;
+        });
         streamOk = true;
-
+      } else {
+        setTraceSteps((steps) => {
+          setMessages((m) => [...m, { role: "assistant", text: reply, trace: steps }]);
+          return steps;
+        });
+        streamOk = true;
       }
 
     } catch (e) {
@@ -1034,11 +1073,13 @@ export function App() {
 
       window.clearTimeout(timeoutId);
 
+      if (idleTimer !== undefined) window.clearInterval(idleTimer);
+
       setSending(false);
 
       setLiveReply("");
 
-      if (streamOk) setTraceSteps([]);
+      setStreamStalled(false);
 
     }
 
@@ -1085,17 +1126,19 @@ export function App() {
     return "•";
   };
 
-  const showTracePanel = llm?.provider === "ollama" && traceSteps.length > 0;
+  const showTracePanel = sending && traceSteps.length > 0;
 
   const statusChips = useMemo(() => {
     let spotifyLabel = "Spotify — Not connected";
     if (session?.signed_in) spotifyLabel = "Spotify — Connected";
     else if (setupStatus?.spotify_configured) spotifyLabel = "Spotify — Client ID saved, sign in to connect";
-    const llmName = llm?.provider === "gemini" ? "Gemini" : "Ollama";
-    const llmConnected = Boolean(setupStatus?.llm_ready ?? llm?.reachable);
+    const llmName = (showSetupWizard ? setupStatus?.provider : llm?.provider) === "gemini" ? "Gemini" : "Ollama";
+    const llmConnected = showSetupWizard
+      ? Boolean(setupStatus?.llm_ready)
+      : Boolean(setupStatus?.llm_ready ?? llm?.reachable);
     const llmLabel = `${llmName} — ${llmConnected ? "Connected" : "Not connected"}`;
     return `${spotifyLabel} · ${llmLabel}`;
-  }, [session?.signed_in, llm?.provider, llm?.reachable, setupStatus]);
+  }, [session?.signed_in, llm?.provider, llm?.reachable, setupStatus, showSetupWizard]);
 
 
 
@@ -1126,6 +1169,16 @@ export function App() {
 
 
 
+      {session?.spotify_reauth_recommended ? (
+        <div className="banner banner-warn" role="status">
+          Spotify is missing permissions ({session.spotify_missing_scopes?.slice(0, 4).join(", ")}
+          {session.spotify_missing_scopes && session.spotify_missing_scopes.length > 4 ? "…" : ""}).{" "}
+          <a href="/login">Re-authorize Spotify</a>
+        </div>
+      ) : null}
+
+
+
       {banner ? (
 
         <div className="banner" role="status">
@@ -1145,12 +1198,18 @@ export function App() {
       {showSetupWizard ? (
         <SetupWizard
           allowDismiss={setupComplete}
-          onDismiss={() => setShowSetupWizard(false)}
+          closeOnComplete={wizardAutoOpened}
+          onDismiss={() => {
+            setShowSetupWizard(false);
+            setWizardAutoOpened(false);
+          }}
           onComplete={() => {
             setSetupComplete(true);
             setShowSetupWizard(false);
+            setWizardAutoOpened(false);
             void refreshLlm();
             void refreshSession();
+            void refreshSetup();
           }}
         />
       ) : null}
@@ -1183,6 +1242,20 @@ export function App() {
             <div key={i} className={`bubble ${m.role}`}>
 
               {m.text}
+
+              {m.role === "assistant" && m.trace && m.trace.length > 0 ? (
+                <details className="message-trace">
+                  <summary>Actions taken ({m.trace.length})</summary>
+                  <ul className="trace-steps compact">
+                    {m.trace.map((step) => (
+                      <li key={step.id}>
+                        {step.label}
+                        {step.detail ? ` — ${step.detail.slice(0, 120)}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
 
             </div>
 
@@ -1240,6 +1313,15 @@ export function App() {
         ) : null}
 
         {error ? <div className="error">{error}</div> : null}
+
+        {streamStalled && sending ? (
+          <div className="error">
+            No response for {Math.round(streamIdleMs / 1000)}s — the model may still be thinking.{" "}
+            <button type="button" onClick={() => void sendChat()}>
+              Retry
+            </button>
+          </div>
+        ) : null}
 
         <textarea
 
@@ -1691,7 +1773,7 @@ export function App() {
 
               >
 
-                <option value="">{loadingDevices ? "Loading…" : "Select device"}</option>
+                <option value="">{loadingDevices ? "Loading…" : "Auto (active device)"}</option>
 
                 {deviceOptions.map((o) => (
 
@@ -1711,7 +1793,7 @@ export function App() {
 
               </button>
 
-              <button type="button" onClick={() => void saveDevice()} disabled={!session?.signed_in || !deviceId}>
+              <button type="button" onClick={() => void saveDevice()} disabled={!session?.signed_in}>
 
                 Save
 

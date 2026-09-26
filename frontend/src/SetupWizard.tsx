@@ -12,9 +12,10 @@ type Props = {
   onComplete: () => void;
   onDismiss?: () => void;
   allowDismiss: boolean;
+  closeOnComplete?: boolean;
 };
 
-export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
+export function SetupWizard({ onComplete, onDismiss, allowDismiss, closeOnComplete = false }: Props) {
   const [step, setStep] = useState<1 | 2>(1);
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [clientId, setClientId] = useState("");
@@ -30,6 +31,8 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
   const [copied, setCopied] = useState(false);
   const [ollamaAllowPublic, setOllamaAllowPublic] = useState(false);
   const [smallModelMode, setSmallModelMode] = useState<"auto" | "on" | "off">("auto");
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [cpuHint, setCpuHint] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const s = await fetchSetupStatus();
@@ -39,9 +42,9 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
     if (s.ollama_model) setOllamaModel(s.ollama_model);
     else if (!ollamaModel) setOllamaModel("qwen3:4b-instruct");
     if (s.gemini_model) setGeminiModel(s.gemini_model);
-    if (s.setup_complete) onComplete();
+    if (closeOnComplete && s.setup_complete) onComplete();
     if (s.spotify_configured && s.spotify_signed_in) setStep(2);
-  }, [onComplete]);
+  }, [onComplete, closeOnComplete]);
 
   useEffect(() => {
     void refresh();
@@ -110,6 +113,9 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
         if (provider === "ollama") setOllamaModels(out.models);
         else setGeminiModels(out.models);
       }
+      const profile = (out as { ollama_cpu_profile?: { message?: string | null } }).ollama_cpu_profile;
+      setCpuHint(profile?.message ?? null);
+      setSavedNotice("Saved — settings tested successfully.");
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "LLM setup failed");
@@ -292,6 +298,8 @@ export function SetupWizard({ onComplete, onDismiss, allowDismiss }: Props) {
                 ← Back
               </button>
             </div>
+            {savedNotice ? <p className="hint ok-text">{savedNotice}</p> : null}
+            {cpuHint ? <p className="hint">{cpuHint}</p> : null}
           </div>
         )}
 

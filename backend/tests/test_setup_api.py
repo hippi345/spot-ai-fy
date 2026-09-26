@@ -202,6 +202,12 @@ def test_setup_llm_ollama(data_dir, client: TestClient, monkeypatch: pytest.Monk
     respx.get("http://127.0.0.1:11434/api/tags").mock(
         return_value=httpx.Response(200, json={"models": [{"name": "gemma2:2b"}]})
     )
+    respx.get("http://127.0.0.1:11434/api/ps").mock(
+        return_value=httpx.Response(200, json={"models": [{"name": "gemma2:2b", "size_vram": 0}]})
+    )
+    respx.post("http://127.0.0.1:11434/api/generate").mock(
+        return_value=httpx.Response(200, json={"response": "OK"})
+    )
     r = client.post(
         "/api/setup/llm",
         json={

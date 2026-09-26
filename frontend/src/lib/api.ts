@@ -66,7 +66,7 @@ export async function saveLlmSetup(body: {
   ollama_allow_public?: boolean;
   ollama_small_model_mode?: "auto" | "on" | "off";
   test?: boolean;
-}): Promise<{ reachable?: boolean; models?: string[] }> {
+}): Promise<{ reachable?: boolean; models?: string[]; ollama_cpu_profile?: { message?: string | null; cpu_only?: boolean; probe_seconds?: number } }> {
   return readJson(
     await apiFetch("/api/setup/llm", {
       method: "POST",

@@ -516,6 +516,12 @@ def spotify_get_queue() -> str:
 
 
 @mcp.tool()
+def spotify_remove_from_queue() -> str:
+    """Explain that Spotify cannot remove queue items (offer skip instead)."""
+    return _runner.run("spotify_remove_from_queue", {})
+
+
+@mcp.tool()
 def spotify_playlists_containing_track(
     track_id: str,
     max_playlists: int = 30,

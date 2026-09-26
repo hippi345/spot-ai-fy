@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Literal
 
 import httpx
@@ -115,6 +116,60 @@ def _gemini_ready(settings: Settings, *, model_override: str | None = None) -> t
         return False, str(e)
     except httpx.HTTPStatusError as e:
         return False, f"HTTP {e.response.status_code}: {(e.response.text or '')[:200]}"
+
+
+def _ollama_cpu_profile(base_url: str, model_tag: str) -> dict[str, Any]:
+    """Detect CPU-only Ollama and time one tiny generate call for wizard guidance."""
+    base = base_url.rstrip("/")
+    out: dict[str, Any] = {
+        "cpu_only": None,
+        "probe_seconds": None,
+        "recommend_gemini": False,
+        "message": None,
+    }
+    try:
+        ps = httpx.get(f"{base}/api/ps", timeout=5.0)
+        ps.raise_for_status()
+        payload = ps.json()
+        rows = payload.get("models") if isinstance(payload, dict) else None
+        want = model_tag.strip().lower()
+        want_base = want.split(":", 1)[0]
+        vram = None
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name") or "").lower()
+                if name == want or name.split(":", 1)[0] == want_base:
+                    try:
+                        vram = int(row.get("size_vram") or 0)
+                    except (TypeError, ValueError):
+                        vram = 0
+                    break
+        if vram is not None:
+            out["cpu_only"] = vram == 0
+    except httpx.HTTPError:
+        pass
+    try:
+        t0 = time.perf_counter()
+        gen = httpx.post(
+            f"{base}/api/generate",
+            json={"model": model_tag, "prompt": "Reply with exactly: OK", "stream": False},
+            timeout=120.0,
+        )
+        gen.raise_for_status()
+        out["probe_seconds"] = round(time.perf_counter() - t0, 1)
+    except httpx.HTTPError:
+        pass
+    probe = out.get("probe_seconds")
+    if out.get("cpu_only") and isinstance(probe, (int, float)) and probe >= 8:
+        out["recommend_gemini"] = True
+        out["message"] = (
+            f"CPU-only Ollama measured ~{probe}s for a one-word test prompt — simple chat controls "
+            f"often take 8–25s and search-first requests can run 2–3 minutes. Gemini is usually "
+            f"faster if you have an API key, but local Ollama still works."
+        )
+    return out
 
 
 def _trial_settings_for_llm_test(
@@ -318,6 +373,11 @@ def save_llm_setup(
             for m in data.get("models", [])
             if isinstance(m, dict) and m.get("name") is not None
         ]
+        model_for_probe = ollama_model_eff or read_effective_ollama_model(
+            s.data_dir, merged.ollama_model
+        )
+        if model_for_probe:
+            out["ollama_cpu_profile"] = _ollama_cpu_profile(host, model_for_probe)
     return out
 
 

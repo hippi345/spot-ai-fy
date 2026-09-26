@@ -98,12 +98,18 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173). The **first-time setup wizard** walks you through:
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173) (the Vite dev server binds to `127.0.0.1`, not `localhost` IPv6). The **first-time setup wizard** walks you through:
 
 1. **Spotify** — copy the redirect URI into your [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) app, paste the Client ID, then **Connect Spotify**.
 2. **LLM** — choose **Gemini** (API key) or **Ollama** (URL + model). The backend validates the provider before saving.
 
-When setup is complete, pick a playback device in settings and start chatting. Reopen setup anytime from **Model & Spotify → Open setup wizard**.
+When setup is complete, pick a playback device in settings (**Auto (active device)** clears any saved device override) and start chatting. Reopen setup anytime from **Setup** — the wizard stays open when you open it manually even if setup is already complete.
+
+After saving Ollama settings, the wizard may show **CPU-only guidance** (from `GET /api/ps` `size_vram` plus a one-word timing probe). CPU-only runs are supported but can take tens of seconds per simple request; Gemini is faster when you have a key.
+
+If like/save/follow actions return HTTP 403, use **Re-authorize Spotify** (missing `user-library-modify`, `user-follow-modify`, etc.) — Sign out → Connect picks up the scopes in `DEFAULT_SCOPES`.
+
+Single-track **play now** uses album `context_uri` + track `offset` when possible (plain `uris: [track]` can leave the Spotify desktop app stuck with “Restriction violated”).
 
 Set `VITE_API_BASE_URL` when the UI should call a non-proxied API host (defaults to same-origin / Vite proxy).
 
@@ -252,7 +258,7 @@ The backend exposes ~35 tools to the LLM (and via MCP). A few highlights:
 - **Playlist edits (yours)**: `spotify_create_playlist`, `spotify_update_playlist`, `spotify_add_tracks_to_playlist`, `spotify_add_tracks_by_query` (composite), `spotify_remove_playlist_tracks`, `spotify_reorder_playlist_tracks`, `spotify_replace_playlist_tracks`.
 - **Playlist edits (someone else's)**: `spotify_duplicate_playlist` — Spotify's API forbids editing other users' playlists, so this composite copies a source playlist into a brand-new one **owned by you** (paginated source read + new playlist + 100-uri batched copy). The returned `new_playlist_id` is fully writable for `spotify_add_tracks_to_playlist` / `spotify_remove_playlist_tracks` / etc.
 - **Playback (play now)**: `spotify_start_resume_playback`, `spotify_play_playlist` (composite — start at track + repeat/shuffle), `spotify_pause`, `spotify_skip_next`, `spotify_skip_previous`, `spotify_seek`.
-- **Playback (queue / next)**: `spotify_add_to_queue`, `spotify_play_next`.
+- **Playback (queue / next)**: `spotify_add_to_queue`, `spotify_play_next`. Spotify cannot remove arbitrary queue items — use `spotify_remove_from_queue` for a clear explanation or offer `spotify_skip_next`.
 - **Modes & devices**: `spotify_set_repeat`, `spotify_set_shuffle`, `spotify_set_volume`, `spotify_devices`, `spotify_transfer_playback`, `spotify_playback_state`.
 
 All tools return structured JSON with explicit error flags (`stale_scopes_need_reauth`, `playlist_not_owned_by_user`, `playback_verified`, `rejected_uris`, `spotify_feb_2026_migration_possible`, ...) so the LLM stops guessing when something goes wrong.

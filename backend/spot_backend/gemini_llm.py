@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -270,6 +270,8 @@ def run_chat_turn_gemini(
     user_text: str,
     settings: Settings,
     history: list[dict[str, str]] | None = None,
+    *,
+    emit: Callable[[dict[str, Any]], None] | None = None,
 ) -> str:
     from spot_backend.agent import _coerce_chat_history
 
@@ -400,7 +402,12 @@ def run_chat_turn_gemini(
                         args: dict[str, Any] = {}
                         if isinstance(raw_args, dict):
                             args = raw_args
+                        if emit:
+                            emit({"type": "tool_start", "name": name})
                         result = runner.run(name, args)
+                        if emit:
+                            preview = result[:240] + ("…" if len(result) > 240 else "")
+                            emit({"type": "tool_done", "name": name, "preview": preview})
                         fr_parts.append(
                             {
                                 "functionResponse": {
@@ -518,3 +525,24 @@ def _gemini_friendly_error_message(exc: httpx.HTTPStatusError, model: str) -> st
         "Gemini ran into an unexpected problem on that request. Please try again in a moment, "
         "pick a different model from the Settings dropdown, or switch to Ollama in Settings."
     )
+
+
+def iter_gemini_chat_events(
+    user_text: str,
+    settings: Settings,
+    history: list[dict[str, str]] | None = None,
+):
+    """Yield SSE-style events for a Gemini chat turn (tool steps + final text)."""
+    events: list[dict[str, Any]] = []
+
+    def _emit(ev: dict[str, Any]) -> None:
+        events.append(ev)
+
+    yield {"type": "status", "message": "Calling Gemini…"}
+    try:
+        text = run_chat_turn_gemini(user_text, settings, history=history, emit=_emit)
+        for ev in events:
+            yield ev
+        yield {"type": "final", "text": text}
+    except Exception as e:
+        yield {"type": "error", "message": f"{type(e).__name__}: {e}"}

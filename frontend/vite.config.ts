@@ -10,6 +10,7 @@ export default defineConfig({
     globals: false,
   },
   server: {
+    host: "127.0.0.1",
     port: 5173,
     proxy: {
       // Chat can run for several minutes (Ollama + many tool rounds); avoid proxy cutting the connection.

@@ -93,6 +93,44 @@ def _looks_like_spotify_catalog_id(s: str) -> bool:
     return all(c.isalnum() for c in s)
 
 
+def _parse_spotify_context_ref(raw: str) -> tuple[str, str] | None:
+    """Return (playlist|album|artist|track, bare_id) or None when malformed."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    low = s.lower()
+    for segment in ("playlist", "album", "artist", "track"):
+        prefix = f"spotify:{segment}:"
+        if low.startswith(prefix):
+            tail = _normalize_spotify_id(s, segment)
+            if _looks_like_spotify_catalog_id(tail):
+                return segment, tail
+            return None
+    bare = s.split("?", 1)[0].strip()
+    if _looks_like_spotify_catalog_id(bare):
+        return "playlist", bare
+    return None
+
+
+def _spotify_http_message(exc: httpx.HTTPStatusError) -> str:
+    try:
+        payload = exc.response.json()
+        if isinstance(payload, dict):
+            err = payload.get("error")
+            if isinstance(err, dict) and isinstance(err.get("message"), str):
+                return err["message"]
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return (exc.response.text or "")[:400]
+
+
+def _spotify_error_is_restriction_violated(exc: httpx.HTTPStatusError) -> bool:
+    if exc.response.status_code != 403:
+        return False
+    msg = _spotify_http_message(exc).lower()
+    return "restriction" in msg and "violat" in msg
+
+
 def _normalize_market(m: str) -> str:
     """Spotify expects ISO 3166-1 alpha-2 or the literal from_token."""
     s = (m or "").strip()
@@ -531,6 +569,7 @@ class SpotifyToolRunner:
     def __init__(self, client: SpotifyClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or SpotifyClient(settings=settings or get_settings())
         self.settings = self.client.settings
+        self._session_known_ids: set[str] = set()
 
     def close(self) -> None:
         self.client.close()
@@ -615,8 +654,11 @@ class SpotifyToolRunner:
         pre = self._precheck_scopes(name)
         if pre:
             return pre
+        play_guard = self._precheck_play_catalog_id(name, arguments)
+        if play_guard:
+            return play_guard
         try:
-            return self._dispatch(name, arguments)
+            result = self._dispatch(name, arguments)
         except SpotifyAuthError as e:
             return json.dumps({"error": str(e)})
         except SpotifyRateLimitError as e:
@@ -625,223 +667,329 @@ class SpotifyToolRunner:
             detail: Any
             try:
                 detail = e.response.json()
-            except Exception:
-                detail = ((e.response.text or "")[:800] or str(e))
+            except (json.JSONDecodeError, ValueError):
+                detail = (e.response.text or "")[:800]
             err: dict[str, Any] = {
-                "error": f"Spotify HTTP {e.response.status_code} for {name}",
+                "error": f"Spotify HTTP {e.response.status_code}",
                 "detail": detail,
             }
-            if isinstance(detail, dict):
-                inner = detail.get("error")
-                if isinstance(inner, dict):
-                    msg = inner.get("message")
-                    if isinstance(msg, str) and msg.strip():
-                        err["spotify_api_message"] = msg.strip()
-            spot_msg = err.get("spotify_api_message")
-            if e.response.status_code == 401:
-                err["reauth_may_resolve"] = True
-            elif e.response.status_code == 403:
-                if _spotify_error_suggests_reauth_or_scope(detail, spot_msg):
-                    err["reauth_may_resolve"] = True
-                elif _spotify_403_message_is_scope_ambiguous(spot_msg) and name in _PLAYLIST_ID_ARG_TOOLS:
-                    # Generic "Forbidden" on *read* is often followed-not-owned or wrong id — do not set reauth flags
-                    # (avoids the model defaulting to Sign out). Write tools still get reauth_heuristic_ambiguous_403.
-                    if name in ("spotify_playlist_tracks", "spotify_get_playlist"):
-                        err["read_403_ambiguous"] = True
-                    else:
-                        err["reauth_may_resolve"] = True
-                        err["reauth_heuristic_ambiguous_403"] = True
-            if e.response.status_code == 403:
-                playlist_write = name in (
-                    "spotify_add_tracks_to_playlist",
-                    "spotify_remove_playlist_tracks",
-                    "spotify_replace_playlist_tracks",
-                    "spotify_reorder_playlist_tracks",
-                    "spotify_update_playlist",
+            spot_msg = _spotify_http_message(e)
+            if spot_msg:
+                err["spotify_api_message"] = spot_msg
+            return self._format_http_error(name, arguments, e, err)
+        except Exception as e:
+            return json.dumps({"error": f"{type(e).__name__}: {e}"})
+        else:
+            self._remember_tool_catalog_ids(name, result)
+            return result
+
+    def _precheck_play_catalog_id(self, name: str, arguments: dict[str, Any]) -> str | None:
+        if name not in ("spotify_play_playlist", "spotify_start_resume_playback"):
+            return None
+        if not self._session_known_ids:
+            return None
+        raw = ""
+        if name == "spotify_play_playlist":
+            raw = _pick_arg(arguments, "playlist_id", "playlistId", "id")
+        else:
+            raw = _pick_arg(arguments, "context_uri", "playlist_id", "album_id", "artist_id", "id")
+            if not raw and isinstance(arguments.get("uris"), list) and arguments["uris"]:
+                raw = str(arguments["uris"][0])
+        parsed = _parse_spotify_context_ref(raw) if raw else None
+        if parsed:
+            kind, bare = parsed
+            if bare not in self._session_known_ids:
+                return json.dumps(
+                    {
+                        "error": (
+                            f"Unknown {kind} id {bare!r} — Spotify ids must come from search or "
+                            "lookup tools in this chat, not from memory."
+                        ),
+                        "hint": "Call spotify_search, spotify_user_playlists, spotify_get_track, or similar first, "
+                        "then replay with an id from that tool output.",
+                        "reconnect_spotify_unnecessary": True,
+                        "sign_out_not_recommended": True,
+                    },
+                    ensure_ascii=False,
                 )
-                if playlist_write:
-                    err["explain_playlist_id_before_reconnect"] = True
-                    if name == "spotify_add_tracks_to_playlist":
-                        reauth = bool(err.get("reauth_may_resolve"))
-                        head = (
-                            "403 on spotify_add_tracks_to_playlist: most often playlist_id is wrong for writes "
-                            "(not the exact `id` from spotify_create_playlist in this chat, or not from "
-                            "spotify_user_playlists — e.g. a catalog/search id, or a stale/wrong id). "
-                            "Do not assume 'not owned' from the playlist title alone. "
-                            "Do not suggest creating a substitute playlist — paginate spotify_user_playlists, match "
-                            "the exact name to `id`, then retry add; optionally spotify_get_playlist + spotify_me to "
-                            "compare owner id. "
-                            "If spotify_create_playlist already succeeded for this user request, retry add with that "
-                            "response `id` and non-empty track URIs or track_ids from spotify_search. "
-                        )
-                        if reauth:
-                            if err.get("reauth_heuristic_ambiguous_403"):
-                                err["hint"] = (
-                                    head
-                                    + " Spotify returned a generic Forbidden (reauth_heuristic_ambiguous_403). "
-                                    "Common causes: (1) playlist you follow but do not own — spotify_user_playlists "
-                                    "lists both; use spotify_get_playlist and compare owner.id to spotify_me.id before "
-                                    "adding. (2) wrong 22-char id (track vs playlist). (3) missing playlist-modify-* "
-                                    "scopes — Sign out → Connect. Dashboard: https://developer.spotify.com/dashboard"
-                                )
-                            else:
-                                err["hint"] = (
-                                    head
-                                    + " Spotify's error text (spotify_api_message) suggests OAuth scope or token — "
-                                    "this JSON has reauth_may_resolve: true; Sign out → Connect in this app may help. "
-                                    "Dashboard: https://developer.spotify.com/dashboard"
-                                )
+        elif raw and not _looks_like_spotify_catalog_id(_normalize_spotify_id(raw, "playlist")):
+            return json.dumps(
+                {
+                    "error": "Malformed Spotify id or URI — use a 22-character id from spotify_search or list tools.",
+                    "hint": "Search first, then play using an id returned in the tool JSON.",
+                    "reconnect_spotify_unnecessary": True,
+                },
+                ensure_ascii=False,
+            )
+        return None
+
+    def _remember_tool_catalog_ids(self, name: str, result: str) -> None:
+        try:
+            data = json.loads(result)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+
+        def remember_id(val: Any) -> None:
+            if isinstance(val, str) and _looks_like_spotify_catalog_id(val):
+                self._session_known_ids.add(val)
+
+        if name in ("spotify_search", "spotify_search_playlists"):
+            for bucket in ("tracks", "artists", "albums", "playlists"):
+                block = data.get(bucket)
+                items = block.get("items") if isinstance(block, dict) else None
+                if isinstance(items, list):
+                    for it in items:
+                        if isinstance(it, dict):
+                            remember_id(it.get("id"))
+        if name in ("spotify_user_playlists", "spotify_user_public_playlists"):
+            items = data.get("items")
+            if isinstance(items, list):
+                for it in items:
+                    if isinstance(it, dict):
+                        remember_id(it.get("id"))
+        if name == "spotify_create_playlist":
+            remember_id(data.get("id"))
+        for key in ("id", "playlist_id", "track_id", "album_id", "artist_id"):
+            remember_id(data.get(key))
+        added = data.get("added_tracks")
+        if isinstance(added, list):
+            for row in added:
+                if isinstance(row, dict):
+                    remember_id(row.get("id"))
+
+    def _format_http_error(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        e: httpx.HTTPStatusError,
+        err: dict[str, Any],
+    ) -> str:
+        try:
+            return self._dispatch_error_json(name, arguments, e, err)
+        except Exception:  # pragma: no cover - fallback
+            return json.dumps(err, ensure_ascii=False)
+
+    def _dispatch_error_json(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        e: httpx.HTTPStatusError,
+        err: dict[str, Any],
+    ) -> str:
+        detail = err.get("detail")
+        if not isinstance(detail, (dict, str)):
+            detail = ((e.response.text or "")[:800] or str(e))
+        if isinstance(detail, dict):
+            inner = detail.get("error")
+            if isinstance(inner, dict):
+                msg = inner.get("message")
+                if isinstance(msg, str) and msg.strip():
+                    err["spotify_api_message"] = msg.strip()
+        spot_msg = err.get("spotify_api_message")
+        if e.response.status_code == 401:
+            err["reauth_may_resolve"] = True
+        elif e.response.status_code == 403:
+            if _spotify_error_suggests_reauth_or_scope(detail, spot_msg):
+                err["reauth_may_resolve"] = True
+            elif _spotify_403_message_is_scope_ambiguous(spot_msg) and name in _PLAYLIST_ID_ARG_TOOLS:
+                # Generic "Forbidden" on *read* is often followed-not-owned or wrong id — do not set reauth flags
+                # (avoids the model defaulting to Sign out). Write tools still get reauth_heuristic_ambiguous_403.
+                if name in ("spotify_playlist_tracks", "spotify_get_playlist"):
+                    err["read_403_ambiguous"] = True
+                else:
+                    err["reauth_may_resolve"] = True
+                    err["reauth_heuristic_ambiguous_403"] = True
+        if e.response.status_code == 403:
+            playlist_write = name in (
+                "spotify_add_tracks_to_playlist",
+                "spotify_remove_playlist_tracks",
+                "spotify_replace_playlist_tracks",
+                "spotify_reorder_playlist_tracks",
+                "spotify_update_playlist",
+            )
+            if playlist_write:
+                err["explain_playlist_id_before_reconnect"] = True
+                if name == "spotify_add_tracks_to_playlist":
+                    reauth = bool(err.get("reauth_may_resolve"))
+                    head = (
+                        "403 on spotify_add_tracks_to_playlist: most often playlist_id is wrong for writes "
+                        "(not the exact `id` from spotify_create_playlist in this chat, or not from "
+                        "spotify_user_playlists — e.g. a catalog/search id, or a stale/wrong id). "
+                        "Do not assume 'not owned' from the playlist title alone. "
+                        "Do not suggest creating a substitute playlist — paginate spotify_user_playlists, match "
+                        "the exact name to `id`, then retry add; optionally spotify_get_playlist + spotify_me to "
+                        "compare owner id. "
+                        "If spotify_create_playlist already succeeded for this user request, retry add with that "
+                        "response `id` and non-empty track URIs or track_ids from spotify_search. "
+                    )
+                    if reauth:
+                        if err.get("reauth_heuristic_ambiguous_403"):
+                            err["hint"] = (
+                                head
+                                + " Spotify returned a generic Forbidden (reauth_heuristic_ambiguous_403). "
+                                "Common causes: (1) playlist you follow but do not own — spotify_user_playlists "
+                                "lists both; use spotify_get_playlist and compare owner.id to spotify_me.id before "
+                                "adding. (2) wrong 22-char id (track vs playlist). (3) missing playlist-modify-* "
+                                "scopes — Sign out → Connect. Dashboard: https://developer.spotify.com/dashboard"
+                            )
                         else:
                             err["hint"] = (
                                 head
-                                + " This JSON has no reauth_may_resolve — fix playlist_id and tracks before "
-                                "suggesting sign-out. Dashboard: https://developer.spotify.com/dashboard"
+                                + " Spotify's error text (spotify_api_message) suggests OAuth scope or token — "
+                                "this JSON has reauth_may_resolve: true; Sign out → Connect in this app may help. "
+                                "Dashboard: https://developer.spotify.com/dashboard"
                             )
                     else:
                         err["hint"] = (
-                            "403 on this playlist call: most often the playlist_id is not writable for this user "
-                            "(not from spotify_create_playlist / spotify_user_playlists, or someone else's playlist). "
-                            "Retry with the id returned by spotify_create_playlist or listed in spotify_user_playlists. "
-                            "Only if the id is definitely the user's own playlist, treat as OAuth scopes or stale token: "
-                            "Sign out → Connect Spotify again in this app. Dashboard: https://developer.spotify.com/dashboard"
-                        )
-                elif name in ("spotify_playlist_tracks", "spotify_get_playlist"):
-                    if err.get("read_403_ambiguous"):
-                        err["hint"] = (
-                            "403 reading playlist (read_403_ambiguous): Spotify returned a generic Forbidden. "
-                            "Do not blame 'collaborative' or lead with Sign out. Check spotify_get_playlist.owner.id vs "
-                            "spotify_me.id — followed playlists you do not own often cannot be read track-by-track via "
-                            "this API; use spotify_start_resume_playback with context_uri instead. If you own it, "
-                            "re-verify id from spotify_user_playlists (22-char mix-ups), then Sign out → Connect only "
-                            "if owner matches and it still fails (playlist-read-collaborative / read-private). "
-                            "Dashboard: https://developer.spotify.com/dashboard"
-                        )
-                    else:
-                        err["hint"] = (
-                            "403 reading playlist: Spotify's error text suggests scope or token — Sign out → Connect "
-                            "in this app may help; quote spotify_api_message. Also verify playlist_id from "
-                            "spotify_user_playlists. Dashboard: https://developer.spotify.com/dashboard"
+                            head
+                            + " This JSON has no reauth_may_resolve — fix playlist_id and tracks before "
+                            "suggesting sign-out. Dashboard: https://developer.spotify.com/dashboard"
                         )
                 else:
                     err["hint"] = (
-                        "403: missing scopes, wrong resource, or not allowed. Check ownership and required scopes; "
-                        "if scopes may be missing, Sign out → Connect Spotify again. "
+                        "403 on this playlist call: most often the playlist_id is not writable for this user "
+                        "(not from spotify_create_playlist / spotify_user_playlists, or someone else's playlist). "
+                        "Retry with the id returned by spotify_create_playlist or listed in spotify_user_playlists. "
+                        "Only if the id is definitely the user's own playlist, treat as OAuth scopes or stale token: "
+                        "Sign out → Connect Spotify again in this app. Dashboard: https://developer.spotify.com/dashboard"
+                    )
+            elif name in ("spotify_playlist_tracks", "spotify_get_playlist"):
+                if err.get("read_403_ambiguous"):
+                    err["hint"] = (
+                        "403 reading playlist (read_403_ambiguous): Spotify returned a generic Forbidden. "
+                        "Do not blame 'collaborative' or lead with Sign out. Check spotify_get_playlist.owner.id vs "
+                        "spotify_me.id — followed playlists you do not own often cannot be read track-by-track via "
+                        "this API; use spotify_start_resume_playback with context_uri instead. If you own it, "
+                        "re-verify id from spotify_user_playlists (22-char mix-ups), then Sign out → Connect only "
+                        "if owner matches and it still fails (playlist-read-collaborative / read-private). "
                         "Dashboard: https://developer.spotify.com/dashboard"
                     )
-            elif e.response.status_code == 401:
-                err["hint"] = "401: sign in again (Connect Spotify) or refresh may have failed."
-            if (
-                name == "spotify_add_tracks_to_playlist"
-                and e.response.status_code == 404
-                and "hint" not in err
-            ):
-                err["hint"] = (
-                    "404: no playlist with this id for the current user — use the exact `id` from "
-                    "spotify_create_playlist or an id from spotify_user_playlists."
-                )
-            if e.response.status_code not in (401, 403):
-                err["reconnect_spotify_unnecessary"] = True
-            if name == "spotify_add_tracks_to_playlist":
-                err["assistant_guidance"] = _ADD_TRACKS_ASSISTANT_GUIDANCE
-                err["do_not_claim_ownership_issue"] = True
-                if e.response.status_code == 401 or err.get("reauth_may_resolve"):
-                    err["suggest_sign_out_of_spotify"] = True
-                    err["sign_out_not_recommended"] = False
                 else:
-                    err["suggest_sign_out_of_spotify"] = False
-                    err["sign_out_not_recommended"] = True
-            elif name in ("spotify_playlist_tracks", "spotify_get_playlist") and e.response.status_code == 403:
-                if err.get("read_403_ambiguous"):
-                    err["suggest_sign_out_of_spotify"] = False
-                    err["sign_out_not_recommended"] = True
-                elif err.get("reauth_may_resolve"):
-                    err["suggest_sign_out_of_spotify"] = True
-                    err["sign_out_not_recommended"] = False
-            playlist_id_len = 0
-            n_track_inputs = 0
-            arg_keys: list[str] = []
-            if isinstance(arguments, dict):
-                arg_keys = sorted(str(k) for k in arguments.keys())
-                if name in _PLAYLIST_ID_ARG_TOOLS:
-                    pl = _normalize_spotify_id(
-                        _pick_arg(arguments, "playlist_id", "playlistId", "id"), "playlist"
+                    err["hint"] = (
+                        "403 reading playlist: Spotify's error text suggests scope or token — Sign out → Connect "
+                        "in this app may help; quote spotify_api_message. Also verify playlist_id from "
+                        "spotify_user_playlists. Dashboard: https://developer.spotify.com/dashboard"
                     )
-                    playlist_id_len = len(pl)
-                if name == "spotify_add_tracks_to_playlist":
-                    n_track_inputs = len(_combined_track_inputs(arguments))
-            if name in ("spotify_playlist_tracks", "spotify_get_playlist"):
-                err["do_not_generalize_to_all_playlists"] = True
-                err["assistant_guidance_playlist_read"] = _PLAYLIST_READ_ASSISTANT_GUIDANCE
-            # Attach scope proof: what Spotify actually granted vs. what this tool requires.
-            # Distinguishes stale-consent (scope truly missing) from scope-is-fine (other cause).
-            required_any_of = _TOOL_REQUIRED_SCOPES.get(name)
-            if e.response.status_code in (401, 403) and required_any_of is not None:
-                try:
-                    granted = self.client.get_token_scopes()
-                except Exception:
-                    granted = set()
-                missing = _missing_any_of(granted, required_any_of)
-                err["granted_scopes"] = sorted(granted)
-                err["required_any_of_scopes"] = list(required_any_of)
-                err["missing_scopes"] = missing
-                if missing:
-                    reconnect_msg = _reconnect_for_scopes(missing)
-                    err["error"] = reconnect_msg
-                    err["reconnect_spotify_message"] = reconnect_msg
-                    err["feature"] = _TOOL_FEATURE_NAMES.get(name, "this feature")
-                    err["stale_scopes_need_reauth"] = True
-                    err["suggest_sign_out_of_spotify"] = True
-                    err["sign_out_not_recommended"] = False
-                    err["reauth_may_resolve"] = True
-                elif e.response.status_code == 403 and not _spotify_error_suggests_reauth_or_scope(
-                    detail, spot_msg
-                ):
-                    err["scopes_appear_sufficient"] = True
-                    # If scopes are provably fine, an ambiguous-wording-based reauth heuristic is
-                    # misleading — clear it so the LLM does not get contradictory advice.
-                    err.pop("reauth_may_resolve", None)
-                    err.pop("reauth_heuristic_ambiguous_403", None)
-                    err["suggest_sign_out_of_spotify"] = False
-                    err["sign_out_not_recommended"] = True
-                    # Spotify's Feb-2026 migration renamed several write endpoints (/tracks -> /items)
-                    # and removed others (e.g. /artists/{id}/top-tracks). A 403 on an otherwise-valid
-                    # call with correct scopes and ownership usually means we called a removed/renamed
-                    # endpoint. Note it for the LLM rather than defaulting to sign-out.
-                    err["spotify_feb_2026_migration_possible"] = True
-                    err.setdefault(
-                        "hint",
-                        "",
-                    )
-                    migration_hint = (
-                        " Spotify's Feb-2026 Web API migration removed/renamed endpoints for "
-                        "dev-mode apps (e.g. /playlists/{id}/tracks -> /playlists/{id}/items, "
-                        "GET /artists/{id}/top-tracks removed). If the backend has not been updated "
-                        "for this tool, that is the likely cause — not auth. Do NOT tell the user to "
-                        "sign out; ask them to retry so we can log the exact failing path."
-                    )
-                    if migration_hint.strip() not in err["hint"]:
-                        err["hint"] = (err["hint"] + migration_hint).strip()
-            logger.warning(
-                "spotify_tool_http_error tool=%s http_status=%s reauth_may_resolve=%s "
-                "reauth_heuristic_ambiguous_403=%s read_403_ambiguous=%s stale_scopes_need_reauth=%s "
-                "granted_scopes=%s missing_scopes=%s spotify_api_message=%r arg_keys=%s "
-                "playlist_id_len=%s n_track_inputs=%s",
-                name,
-                e.response.status_code,
-                err.get("reauth_may_resolve"),
-                err.get("reauth_heuristic_ambiguous_403"),
-                err.get("read_403_ambiguous"),
-                err.get("stale_scopes_need_reauth"),
-                err.get("granted_scopes"),
-                err.get("missing_scopes"),
-                err.get("spotify_api_message"),
-                arg_keys,
-                playlist_id_len,
-                n_track_inputs,
+            else:
+                err["hint"] = (
+                    "403: missing scopes, wrong resource, or not allowed. Check ownership and required scopes; "
+                    "if scopes may be missing, Sign out → Connect Spotify again. "
+                    "Dashboard: https://developer.spotify.com/dashboard"
+                )
+        elif e.response.status_code == 401:
+            err["hint"] = "401: sign in again (Connect Spotify) or refresh may have failed."
+        if (
+            name == "spotify_add_tracks_to_playlist"
+            and e.response.status_code == 404
+            and "hint" not in err
+        ):
+            err["hint"] = (
+                "404: no playlist with this id for the current user — use the exact `id` from "
+                "spotify_create_playlist or an id from spotify_user_playlists."
             )
-            return json.dumps(err)
-        except Exception as e:
-            return json.dumps({"error": f"{type(e).__name__}: {e}"})
+        if e.response.status_code not in (401, 403):
+            err["reconnect_spotify_unnecessary"] = True
+        if name == "spotify_add_tracks_to_playlist":
+            err["assistant_guidance"] = _ADD_TRACKS_ASSISTANT_GUIDANCE
+            err["do_not_claim_ownership_issue"] = True
+            if e.response.status_code == 401 or err.get("reauth_may_resolve"):
+                err["suggest_sign_out_of_spotify"] = True
+                err["sign_out_not_recommended"] = False
+            else:
+                err["suggest_sign_out_of_spotify"] = False
+                err["sign_out_not_recommended"] = True
+        elif name in ("spotify_playlist_tracks", "spotify_get_playlist") and e.response.status_code == 403:
+            if err.get("read_403_ambiguous"):
+                err["suggest_sign_out_of_spotify"] = False
+                err["sign_out_not_recommended"] = True
+            elif err.get("reauth_may_resolve"):
+                err["suggest_sign_out_of_spotify"] = True
+                err["sign_out_not_recommended"] = False
+        playlist_id_len = 0
+        n_track_inputs = 0
+        arg_keys: list[str] = []
+        if isinstance(arguments, dict):
+            arg_keys = sorted(str(k) for k in arguments.keys())
+            if name in _PLAYLIST_ID_ARG_TOOLS:
+                pl = _normalize_spotify_id(
+                    _pick_arg(arguments, "playlist_id", "playlistId", "id"), "playlist"
+                )
+                playlist_id_len = len(pl)
+            if name == "spotify_add_tracks_to_playlist":
+                n_track_inputs = len(_combined_track_inputs(arguments))
+        if name in ("spotify_playlist_tracks", "spotify_get_playlist"):
+            err["do_not_generalize_to_all_playlists"] = True
+            err["assistant_guidance_playlist_read"] = _PLAYLIST_READ_ASSISTANT_GUIDANCE
+        # Attach scope proof: what Spotify actually granted vs. what this tool requires.
+        # Distinguishes stale-consent (scope truly missing) from scope-is-fine (other cause).
+        required_any_of = _TOOL_REQUIRED_SCOPES.get(name)
+        if e.response.status_code in (401, 403) and required_any_of is not None:
+            try:
+                granted = self.client.get_token_scopes()
+            except Exception:
+                granted = set()
+            missing = _missing_any_of(granted, required_any_of)
+            err["granted_scopes"] = sorted(granted)
+            err["required_any_of_scopes"] = list(required_any_of)
+            err["missing_scopes"] = missing
+            if missing:
+                reconnect_msg = _reconnect_for_scopes(missing)
+                err["error"] = reconnect_msg
+                err["reconnect_spotify_message"] = reconnect_msg
+                err["feature"] = _TOOL_FEATURE_NAMES.get(name, "this feature")
+                err["stale_scopes_need_reauth"] = True
+                err["suggest_sign_out_of_spotify"] = True
+                err["sign_out_not_recommended"] = False
+                err["reauth_may_resolve"] = True
+            elif e.response.status_code == 403 and not _spotify_error_suggests_reauth_or_scope(
+                detail, spot_msg
+            ):
+                err["scopes_appear_sufficient"] = True
+                # If scopes are provably fine, an ambiguous-wording-based reauth heuristic is
+                # misleading — clear it so the LLM does not get contradictory advice.
+                err.pop("reauth_may_resolve", None)
+                err.pop("reauth_heuristic_ambiguous_403", None)
+                err["suggest_sign_out_of_spotify"] = False
+                err["sign_out_not_recommended"] = True
+                # Spotify's Feb-2026 migration renamed several write endpoints (/tracks -> /items)
+                # and removed others (e.g. /artists/{id}/top-tracks). A 403 on an otherwise-valid
+                # call with correct scopes and ownership usually means we called a removed/renamed
+                # endpoint. Note it for the LLM rather than defaulting to sign-out.
+                err["spotify_feb_2026_migration_possible"] = True
+                err.setdefault(
+                    "hint",
+                    "",
+                )
+                migration_hint = (
+                    " Spotify's Feb-2026 Web API migration removed/renamed endpoints for "
+                    "dev-mode apps (e.g. /playlists/{id}/tracks -> /playlists/{id}/items, "
+                    "GET /artists/{id}/top-tracks removed). If the backend has not been updated "
+                    "for this tool, that is the likely cause — not auth. Do NOT tell the user to "
+                    "sign out; ask them to retry so we can log the exact failing path."
+                )
+                if migration_hint.strip() not in err["hint"]:
+                    err["hint"] = (err["hint"] + migration_hint).strip()
+        logger.warning(
+            "spotify_tool_http_error tool=%s http_status=%s reauth_may_resolve=%s "
+            "reauth_heuristic_ambiguous_403=%s read_403_ambiguous=%s stale_scopes_need_reauth=%s "
+            "granted_scopes=%s missing_scopes=%s spotify_api_message=%r arg_keys=%s "
+            "playlist_id_len=%s n_track_inputs=%s",
+            name,
+            e.response.status_code,
+            err.get("reauth_may_resolve"),
+            err.get("reauth_heuristic_ambiguous_403"),
+            err.get("read_403_ambiguous"),
+            err.get("stale_scopes_need_reauth"),
+            err.get("granted_scopes"),
+            err.get("missing_scopes"),
+            err.get("spotify_api_message"),
+            arg_keys,
+            playlist_id_len,
+            n_track_inputs,
+        )
+        return json.dumps(err)
 
     def _dispatch(self, name: str, arguments: dict[str, Any]) -> str:
         match name:
@@ -895,6 +1043,8 @@ class SpotifyToolRunner:
                 return self._unfollow_artist(arguments)
             case "spotify_get_queue":
                 return self._get_queue()
+            case "spotify_remove_from_queue":
+                return self._remove_from_queue(arguments)
             case "spotify_playlists_containing_track":
                 return self._playlists_containing_track(arguments)
             case "spotify_top_artists":
@@ -1488,6 +1638,19 @@ class SpotifyToolRunner:
     def _get_queue(self) -> str:
         data = self.client.api_get("/me/player/queue")
         return _compact(data, limit=8000)
+
+    def _remove_from_queue(self, arguments: dict[str, Any]) -> str:
+        _ = arguments
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "Spotify's Web API cannot remove a specific song from the queue — only skip to the next track.",
+                "hint": "Offer spotify_skip_next (or spotify_play_next) to skip what's playing, or explain this limitation.",
+                "spotify_api_limitation": True,
+                "try_instead": ["spotify_skip_next", "spotify_play_next"],
+            },
+            ensure_ascii=False,
+        )
 
     def _playlists_containing_track(self, arguments: dict[str, Any]) -> str:
         track_id = _normalize_spotify_id(
@@ -2205,7 +2368,7 @@ class SpotifyToolRunner:
         name = str(arguments.get("name", "")).strip()
         if not name:
             return json.dumps({"error": "name is required"})
-        public = bool(arguments.get("public", True))
+        public = arguments.get("public") is True
         collaborative = bool(arguments.get("collaborative", False))
         if collaborative:
             public = False
@@ -2780,6 +2943,65 @@ class SpotifyToolRunner:
             return False
         return self._playback_matches(body, attempts=8, delay_s=0.5)
 
+    def _prepare_single_track_play_body(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Rewrite single-track `uris` play into album context + offset when possible."""
+        if body.get("context_uri"):
+            return body
+        uris = body.get("uris")
+        if not isinstance(uris, list) or len(uris) != 1:
+            return body
+        track_uri = str(uris[0]).strip()
+        if not track_uri.startswith("spotify:track:"):
+            return body
+        track_id = _normalize_spotify_id(track_uri, "track")
+        if not _looks_like_spotify_catalog_id(track_id):
+            return body
+        try:
+            track = self.client.api_get(f"/tracks/{track_id}")
+        except httpx.HTTPStatusError:
+            return body
+        if not isinstance(track, dict):
+            return body
+        album = track.get("album") if isinstance(track.get("album"), dict) else {}
+        album_id = album.get("id") if isinstance(album.get("id"), str) else ""
+        if not _looks_like_spotify_catalog_id(album_id):
+            return body
+        rewritten = {k: v for k, v in body.items() if k != "uris"}
+        rewritten["context_uri"] = f"spotify:album:{album_id}"
+        rewritten["offset"] = {"uri": track_uri}
+        return rewritten
+
+    def _retry_play_after_restriction(self, body: dict[str, Any], device_id: str) -> str | None:
+        chosen = self._resolve_target_device(device_id)
+        if not chosen:
+            return None
+        try:
+            self.client.api_put(
+                "/me/player",
+                json_body={"device_ids": [chosen], "play": False},
+            )
+        except httpx.HTTPStatusError:
+            pass
+        time.sleep(0.4)
+        try:
+            self._try_play(chosen, body)
+        except httpx.HTTPStatusError:
+            return None
+        if self._playback_matches(body, attempts=6, delay_s=0.5):
+            return json.dumps(
+                {
+                    "ok": True,
+                    "device_id": chosen,
+                    "body": body,
+                    "playback_verified": True,
+                    "note": (
+                        "Spotify returned Restriction violated — transferred playback to the "
+                        "target device and retried successfully."
+                    ),
+                }
+            )
+        return None
+
     def _start_playback(self, arguments: dict[str, Any]) -> str:
         device_id = str(arguments.get("device_id", "")).strip() or self._device_id() or ""
         body: dict[str, Any] = {}
@@ -2792,6 +3014,7 @@ class SpotifyToolRunner:
             body["context_uri"] = context_uri.strip()
         if isinstance(offset, dict):
             body["offset"] = offset
+        body = self._prepare_single_track_play_body(body)
         want_verification = bool(
             body.get("context_uri")
             or body.get("uris")
@@ -2923,6 +3146,28 @@ class SpotifyToolRunner:
             )
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
+            if status == 403 and _spotify_error_is_restriction_violated(e):
+                recovered = self._retry_play_after_restriction(body, device_id)
+                if recovered:
+                    return recovered
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": (
+                            "Spotify returned HTTP 403 Restriction violated — the desktop player is "
+                            "stuck and cannot start this playback request."
+                        ),
+                        "hint": (
+                            "Open Spotify on the intended device, tap play briefly, or pick a device in "
+                            "the Spot-AI-fy device selector, then retry. Single tracks are played via album "
+                            "context automatically when possible."
+                        ),
+                        "spotify_api_message": _spotify_http_message(e),
+                        "playback_verified": False,
+                        "reconnect_spotify_unnecessary": True,
+                    },
+                    ensure_ascii=False,
+                )
             # Spotify's edge frequently returns 502/503/504 on /me/player/play even when the
             # request reaches the player — confirm via /me/player before giving up. If playback
             # actually matches what we asked for, treat as success.
@@ -3151,17 +3396,53 @@ class SpotifyToolRunner:
         says something like "play RNB2025 starting at Kill Bill with repeat on". It plays the
         context, then (if the play call returned ok) applies repeat and shuffle.
         """
-        pid = _normalize_spotify_id(
-            _pick_arg(arguments, "playlist_id", "playlistId", "id"),
-            "playlist",
-        )
-        if not pid:
+        raw_ref = _pick_arg(arguments, "playlist_id", "playlistId", "id", "context_uri")
+        parsed = _parse_spotify_context_ref(raw_ref) if raw_ref else None
+        if parsed is None and raw_ref:
+            bare = _normalize_spotify_id(raw_ref, "playlist")
+            if _looks_like_spotify_catalog_id(bare):
+                parsed = ("playlist", bare)
+            else:
+                return json.dumps(
+                    {
+                        "error": "playlist_id must be a 22-character Spotify id or spotify:playlist:/album:/artist: URI from search tools.",
+                        "hint": "Call spotify_search or spotify_user_playlists first — do not invent ids.",
+                        "reconnect_spotify_unnecessary": True,
+                    },
+                    ensure_ascii=False,
+                )
+        if parsed is None:
             return json.dumps(
                 {
                     "error": "playlist_id is required",
-                    "hint": "Pass playlist_id (the id alone, or as spotify:playlist:<id>).",
+                    "hint": "Pass playlist_id (bare id or spotify:playlist:<id> from spotify_user_playlists or search).",
                 }
             )
+
+        kind, pid = parsed
+        if kind == "album":
+            context_uri = f"spotify:album:{pid}"
+        elif kind == "artist":
+            context_uri = f"spotify:artist:{pid}"
+        elif kind == "track":
+            play_args = {"uris": [f"spotify:track:{pid}"]}
+            device_id = _coerce_str(arguments.get("device_id"))
+            if device_id:
+                play_args["device_id"] = device_id
+            play_raw = self._start_playback(play_args)
+            try:
+                play_result = json.loads(play_raw)
+            except (json.JSONDecodeError, ValueError):
+                play_result = {"raw": play_raw}
+            return _compact(
+                {
+                    "track_id": pid,
+                    "playback": play_result,
+                    "ok": isinstance(play_result, dict) and play_result.get("ok") is True,
+                }
+            )
+        else:
+            context_uri = f"spotify:playlist:{pid}"
 
         start_at_uri_raw = _pick_arg(arguments, "start_at_uri", "track_uri", "offset_uri")
         start_at_uri = start_at_uri_raw.strip() if start_at_uri_raw else ""
@@ -3179,7 +3460,6 @@ class SpotifyToolRunner:
             else -1
         )
 
-        context_uri = f"spotify:playlist:{pid}"
         play_args: dict[str, Any] = {"context_uri": context_uri}
         if start_at_uri:
             play_args["offset"] = {"uri": start_at_uri}
@@ -3196,7 +3476,9 @@ class SpotifyToolRunner:
             play_result = {"raw": play_raw}
 
         summary: dict[str, Any] = {
-            "playlist_id": pid,
+            "context_type": kind,
+            "playlist_id": pid if kind == "playlist" else None,
+            "context_id": pid,
             "context_uri": context_uri,
             "start_at_uri": start_at_uri or None,
             "start_at_position": start_at_position if start_at_position >= 0 else None,
@@ -3351,7 +3633,11 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "description": "List the signed-in user's playlists with id, name, owner_id, collaborative, public. owner_id lets you decide write-ability: only ids where owner_id == spotify_me.id are writable via spotify_add_tracks_to_playlist. Success here proves you can enumerate — a later 403 on one id is per-playlist (ownership, wrong id, or scopes), not a blanket block. Paginate with offset.",
+            "description": (
+                "List playlists already in the signed-in user's library (owned + followed). "
+                "Do NOT use for creating playlists — use spotify_create_playlist to make a new one. "
+                "Do NOT use for top-artist analytics — use spotify_top_artists instead."
+            ),
             "name": "spotify_user_playlists",
             "parameters": {
                 "type": "object",
@@ -3599,6 +3885,17 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "spotify_remove_from_queue",
+            "description": (
+                "Explain that Spotify's Web API cannot remove arbitrary queue items — only skip forward. "
+                "Use when the user asks to remove/unqueue a song; offer spotify_skip_next instead."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "spotify_playlists_containing_track",
             "description": (
                 "Composite: scan the user's owned and followed playlists for a track id. "
@@ -3821,7 +4118,11 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "spotify_create_playlist",
-            "description": "Create a new empty playlist for the signed-in user (needs playlist-modify scopes on the token). Then add tracks with spotify_add_tracks_to_playlist.",
+            "description": (
+                "Create a brand-new empty playlist for the signed-in user (not the same as spotify_user_playlists, "
+                "which only lists existing playlists). Defaults to private unless public=true. "
+                "Then add tracks with spotify_add_tracks_to_playlist."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3931,8 +4232,9 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "spotify_play_playlist",
             "description": (
-                "PLAY NOW — immediate interruption. COMPOSITE tool: start a playlist (optionally at a "
-                "specific track via start_at_uri) AND set repeat/shuffle in one call. This is the RIGHT "
+                "PLAY NOW — immediate interruption. COMPOSITE tool: start a playlist, album, or artist context "
+                "(playlist_id accepts spotify:playlist:, spotify:album:, spotify:artist:, or bare 22-char ids from search) "
+                "(optionally at a specific track via start_at_uri) AND set repeat/shuffle in one call. This is the RIGHT "
                 "tool for ALL of these phrases: 'play [playlist]', 'start playing [playlist]', 'play "
                 "[playlist] at [track]', 'play [playlist] starting with [track]', 'begin [playlist] "
                 "with [track]', 'start playing [playlist] beginning with [track]'. It interrupts the "

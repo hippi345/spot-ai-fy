@@ -27,9 +27,11 @@ from spot_backend.llm_prefs import (
 from spot_backend.pkce import new_pkce_params
 from spot_backend.spotify_client import DEFAULT_SCOPES, SpotifyAuthError, SpotifyClient
 from spot_backend.setup_service import probe_ollama, save_llm_setup, save_spotify_app, setup_status
-from spot_backend.token_store import DeviceSelection, load_device, load_tokens, save_device
+from spot_backend.token_store import DeviceSelection, clear_device, load_device, load_tokens, save_device
 
 app = FastAPI(title="Spot-AI-fy API")
+
+SSE_KEEPALIVE_SECONDS = 12.0
 
 # state -> code_verifier for Spotify PKCE (in-memory; cleared after callback).
 _pkce_pending: dict[str, str] = {}
@@ -199,6 +201,12 @@ def _playlist_modify_scopes_ok(scope: str) -> bool | None:
     return False
 
 
+def _missing_default_scopes(granted: str) -> list[str]:
+    parts = set((granted or "").replace(",", " ").split())
+    required = set(DEFAULT_SCOPES.split())
+    return sorted(required - parts)
+
+
 @app.get("/api/session")
 def session() -> dict[str, Any]:
     s = get_settings()
@@ -206,11 +214,14 @@ def session() -> dict[str, Any]:
     device = load_device(s.resolved_device_path)
     signed = bool(bundle and bundle.access_token)
     granted = (bundle.scope or "").strip() if bundle else ""
+    missing = _missing_default_scopes(granted) if signed and granted else []
     return {
         "signed_in": signed,
         "device_id": device.device_id if device else None,
         "spotify_granted_scopes": granted if granted else None,
         "spotify_playlist_write_ok": _playlist_modify_scopes_ok(granted) if signed else None,
+        "spotify_missing_scopes": missing if signed else None,
+        "spotify_reauth_recommended": bool(missing) if signed else False,
     }
 
 
@@ -222,6 +233,14 @@ def devices() -> Any:
         return client.api_get("/me/player/devices")
     except SpotifyAuthError as e:
         raise HTTPException(status_code=401, detail=str(e)) from e
+    except httpx.HTTPStatusError as e:
+        msg = (e.response.text or "")[:300] or e.response.reason_phrase or "Spotify error"
+        raise HTTPException(
+            status_code=e.response.status_code if 400 <= e.response.status_code < 600 else 502,
+            detail=f"Could not list Spotify devices: {msg}",
+        ) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=503, detail=f"Could not reach Spotify: {e}") from e
     finally:
         client.close()
 
@@ -231,6 +250,13 @@ def set_device(body: DeviceBody) -> dict[str, str]:
     s = get_settings()
     save_device(s.resolved_device_path, DeviceSelection(device_id=body.device_id))
     return {"ok": "true", "device_id": body.device_id}
+
+
+@app.delete("/api/device")
+def reset_saved_device() -> dict[str, str]:
+    s = get_settings()
+    clear_device(s.resolved_device_path)
+    return {"ok": "true"}
 
 
 @app.post("/api/chat")
@@ -320,15 +346,34 @@ def chat(body: ChatBody) -> dict[str, str]:
 @app.post("/api/chat/stream")
 def chat_stream(body: ChatBody) -> StreamingResponse:
     """SSE stream of Spot-AI-fy agent progress (Ollama token deltas, tool steps, Gemini status)."""
+    import queue
+    import threading
+
     s = get_settings()
     hist = _dump_chat_history(body)
 
     def event_gen():
-        try:
-            for ev in iter_chat_events(body.message, s, history=hist):
-                yield sse_data(ev)
-        finally:
-            yield sse_data({"type": "done"})
+        out_q: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+        def producer() -> None:
+            try:
+                for ev in iter_chat_events(body.message, s, history=hist):
+                    out_q.put(ev)
+            finally:
+                out_q.put(None)
+
+        threading.Thread(target=producer, daemon=True).start()
+        keepalive_s = SSE_KEEPALIVE_SECONDS
+        while True:
+            try:
+                ev = out_q.get(timeout=keepalive_s)
+            except queue.Empty:
+                yield sse_data({"type": "keepalive", "message": "Still working…"})
+                continue
+            if ev is None:
+                break
+            yield sse_data(ev)
+        yield sse_data({"type": "done"})
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)

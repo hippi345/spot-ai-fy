@@ -40,7 +40,15 @@ def _is_rfc1918(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
+def _normalize_ip_for_classify(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Map IPv4-mapped IPv6 addresses to their IPv4 target before classification."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
+
+
 def _classify_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    ip = _normalize_ip_for_classify(ip)
     if _is_metadata(ip) or _is_link_local(ip):
         return "blocked"
     if _is_loopback(ip) or _is_rfc1918(ip):
@@ -56,16 +64,16 @@ def resolve_host_ips(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IP
         return [ipaddress.ip_address("127.0.0.1")]
     try:
         literal = ipaddress.ip_address(host)
-        return [literal]
+        return [_normalize_ip_for_classify(literal)]
     except ValueError:
         pass
     ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     try:
         for family, _type, _proto, _canon, sockaddr in socket.getaddrinfo(host, None):
             if family == socket.AF_INET:
-                ips.append(ipaddress.ip_address(sockaddr[0]))
+                ips.append(_normalize_ip_for_classify(ipaddress.ip_address(sockaddr[0])))
             elif family == socket.AF_INET6:
-                ips.append(ipaddress.ip_address(sockaddr[0]))
+                ips.append(_normalize_ip_for_classify(ipaddress.ip_address(sockaddr[0])))
     except OSError as e:
         raise OllamaUrlNotAllowedError(f"could not resolve host: {host}") from e
     if not ips:
@@ -97,8 +105,16 @@ def validate_ollama_base_url(url: str, *, allow_public: bool = False) -> str:
             "That Ollama host is on the public internet. Confirm external access in the setup wizard."
         )
 
+    host = parsed.hostname or ""
+    bracketed = host
+    if ":" in host and not host.startswith("["):
+        try:
+            ipaddress.IPv6Address(host)
+            bracketed = f"[{host}]"
+        except ValueError:
+            bracketed = host
     if parsed.port:
-        netloc = f"{parsed.hostname}:{parsed.port}"
+        netloc = f"{bracketed}:{parsed.port}"
     else:
-        netloc = parsed.hostname
+        netloc = bracketed
     return f"{parsed.scheme}://{netloc}".rstrip("/")
