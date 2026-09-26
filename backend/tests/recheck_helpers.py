@@ -113,7 +113,14 @@ def run_playback_restriction_violated(track_id: str, *, album_id: str = "aaaaaaa
         return_value=httpx.Response(204)
     )
     respx.get("https://api.spotify.com/v1/me/player/devices").mock(
-        return_value=httpx.Response(200, json={"devices": []})
+        return_value=httpx.Response(
+            200,
+            json={
+                "devices": [
+                    {"id": "retry_device_1", "is_restricted": False, "is_active": True, "name": "Desk"},
+                ]
+            },
+        )
     )
     respx.get("https://api.spotify.com/v1/me/player").mock(return_value=httpx.Response(200, json={}))
     runner = SpotifyToolRunner(settings=Settings())

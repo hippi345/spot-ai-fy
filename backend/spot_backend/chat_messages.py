@@ -52,6 +52,21 @@ _FC_SYNTAX_SCRUB = re.compile(
     r"\bspotify_[a-z0-9_]+\s*\(\s*[^)]*\)",
     re.I,
 )
+_CODE_SPAN_SCRUB = re.compile(r"`[^`]*`")
+_TOOL_PARAMETER_SCRUB = re.compile(
+    r"\b(?:the\s+)?[`']?(?:Spotify|spotify)[`']?\s+tool\b",
+    re.I,
+)
+_PARAMETER_WORD_SCRUB = re.compile(
+    r"\b(?:set|change)\s+the\s+[`']?[a-z_]+[`']?\s+parameter\b",
+    re.I,
+)
+
+PROMISE_AFTER_ID_ERROR_NUDGE = (
+    "Spot-AI-fy: The last Spotify tool failed because an id/uri was invalid. "
+    "Do not reply with only a promise — call spotify_search or another lookup tool now, "
+    "then answer with what you found."
+)
 
 
 def assistant_reply_is_promise_only(text: str) -> bool:
@@ -92,9 +107,13 @@ def append_visibility_notes_to_reply(text: str, tool_results: list[str]) -> str:
 
 def scrub_internal_tool_references(text: str) -> str:
     """Remove internal spotify_* tool names and function-call syntax from user-visible replies."""
-    out = _FC_SYNTAX_SCRUB.sub("", text or "")
+    out = _CODE_SPAN_SCRUB.sub("", text or "")
+    out = _FC_SYNTAX_SCRUB.sub("", out)
     out = _TOOL_NAME_SCRUB.sub("Spotify", out)
+    out = _TOOL_PARAMETER_SCRUB.sub("Spotify", out)
+    out = _PARAMETER_WORD_SCRUB.sub("", out)
     out = re.sub(r"\bSpotify\s+Spotify\b", "Spotify", out)
+    out = re.sub(r"\bparameter[s]?\b", "", out, flags=re.I)
     out = re.sub(r"\s{2,}", " ", out)
     return out.strip()
 

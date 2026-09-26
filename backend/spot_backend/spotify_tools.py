@@ -3148,6 +3148,35 @@ class SpotifyToolRunner:
                 return True
         return False
 
+    def _known_device_ids(self) -> set[str]:
+        try:
+            data = self.client.api_get("/me/player/devices") or {}
+        except Exception:
+            return set()
+        devices = data.get("devices") if isinstance(data, dict) else []
+        if not isinstance(devices, list):
+            return set()
+        out: set[str] = set()
+        for d in devices:
+            if isinstance(d, dict) and isinstance(d.get("id"), str) and d.get("id"):
+                out.add(d["id"])
+        return out
+
+    def _coerce_playback_device_id(self, explicit: str) -> tuple[str, str | None]:
+        """Resolve device_id for playback, ignoring unknown explicit ids."""
+        preferred = (explicit or "").strip() or (self._device_id() or "")
+        known = self._known_device_ids()
+        if preferred and known and preferred not in known:
+            fallback = self._resolve_target_device("")
+            note = (
+                f"Spotify does not recognize device_id {preferred!r} among your available devices. "
+                f"Using {'the active device' if fallback else 'automatic device selection'} instead."
+            )
+            return fallback, note
+        if preferred:
+            return preferred, None
+        return self._resolve_target_device(""), None
+
     def _resolve_target_device(self, preferred: str = "") -> str:
         """Pick the best device id to target.
 
@@ -3155,7 +3184,11 @@ class SpotifyToolRunner:
         non-restricted available device. Returns "" if nothing usable is available.
         """
         if preferred:
-            return preferred
+            known = self._known_device_ids()
+            if known and preferred not in known:
+                preferred = ""
+            else:
+                return preferred
         try:
             ps = self.client.api_get("/me/player")
             if isinstance(ps, dict):
@@ -3166,7 +3199,7 @@ class SpotifyToolRunner:
             pass
         try:
             data = self.client.api_get("/me/player/devices") or {}
-        except httpx.HTTPStatusError:
+        except Exception:
             return ""
         devices = data.get("devices") if isinstance(data, dict) else []
         if not isinstance(devices, list):
@@ -3342,7 +3375,9 @@ class SpotifyToolRunner:
         return body
 
     def _start_playback(self, arguments: dict[str, Any]) -> str:
-        device_id = str(arguments.get("device_id", "")).strip() or self._device_id() or ""
+        raw_device = str(arguments.get("device_id", "")).strip()
+        device_id = raw_device
+        device_note: str | None = None
         body: dict[str, Any] = {}
         uris = arguments.get("uris")
         context_uri = arguments.get("context_uri")
@@ -3364,10 +3399,14 @@ class SpotifyToolRunner:
             or body.get("uris")
             or (isinstance(body.get("offset"), dict) and body["offset"].get("uri"))
         )
+        device_id, device_note = self._coerce_playback_device_id(raw_device)
         try:
             self._try_play(device_id, body)
             if not want_verification:
-                return json.dumps({"ok": True, "device_id": device_id or None, "body": body})
+                payload: dict[str, Any] = {"ok": True, "device_id": device_id or None, "body": body}
+                if device_note:
+                    payload["device_fallback_note"] = device_note
+                return json.dumps(payload)
             # Spotify frequently returns 200 while the device controller keeps playing the
             # previous track/context. Verify the current track/context actually switched —
             # if not, force a transfer to the intended device and retry once, then verify.
@@ -3609,11 +3648,18 @@ class SpotifyToolRunner:
             devices = dev.get("devices") if isinstance(dev, dict) else []
             devices = devices if isinstance(devices, list) else []
             non_restricted = [d for d in devices if isinstance(d, dict) and not d.get("is_restricted")]
+            known_ids = {
+                d.get("id")
+                for d in non_restricted
+                if isinstance(d.get("id"), str) and d.get("id")
+            }
             chosen = None
-            if device_id:
+            if device_id and device_id in known_ids:
                 chosen = device_id
             elif len(non_restricted) == 1 and isinstance(non_restricted[0].get("id"), str):
                 chosen = non_restricted[0]["id"]
+            elif not device_id:
+                chosen = self._resolve_target_device("")
             if chosen:
                 try:
                     self.client.api_put(

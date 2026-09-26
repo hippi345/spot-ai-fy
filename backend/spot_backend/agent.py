@@ -16,11 +16,19 @@ from spot_backend.action_claim_guard import (
     reply_claims_unbacked_action,
 )
 from spot_backend.chat_messages import (
+    PROMISE_AFTER_ID_ERROR_NUDGE,
     assistant_reply_is_promise_only,
     friendly_reply_for_empty_model_output,
     is_unpersisted_assistant_fallback,
     prepare_user_visible_reply,
     tool_result_is_rejected_or_invalid_id,
+)
+from spot_backend.prompt_intent import (
+    INFORMATIONAL_REPLY_SYSTEM_SUFFIX,
+    filter_ollama_tools_for_prompt,
+    prompt_is_informational,
+    refused_mutating_tool_result,
+    spotify_tool_is_mutating,
 )
 from spot_backend.config import Settings, get_settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
@@ -132,13 +140,6 @@ _JSON_PLAIN_ANSWER_FOLLOWUP = (
     "Do not start your reply with `{`, `[`, or a markdown code fence. "
     "Use a single ```json ... ``` tool block only if you still need another Spotify API call."
 )
-
-_PROMISE_AFTER_ID_ERROR_NUDGE = (
-    "Spot-AI-fy: The last Spotify tool failed because an id/uri was invalid. "
-    "Do not reply with only a promise — call spotify_search or another lookup tool now, "
-    "then answer with what you found."
-)
-
 
 def _apply_ollama_tuning(
     body: dict[str, Any],
@@ -491,6 +492,14 @@ def iter_ollama_chat_events(
             SMALL_MODEL_SYSTEM_PROMPT if small_model else _SYSTEM
         ) + load_optional_agent_context_markdown(settings)
         active_tools = filter_ollama_tools(OLLAMA_TOOLS, small=small_model)
+        informational_turn = prompt_is_informational(user_text)
+        if informational_turn:
+            base_system = base_system + INFORMATIONAL_REPLY_SYSTEM_SUFFIX
+        active_tools = filter_ollama_tools_for_prompt(
+            active_tools,
+            informational=informational_turn,
+            allow_read_only=False,
+        )
         messages: list[dict[str, Any]] = [{"role": "system", "content": base_system}]
         history_turns = _coerce_chat_history(history)
         hist_cap = int(getattr(settings, "ollama_history_messages", 0) or 0)
@@ -749,7 +758,8 @@ def iter_ollama_chat_events(
                         and not promise_nudge_used
                     ):
                         promise_nudge_used = True
-                        messages.append({"role": "user", "content": _PROMISE_AFTER_ID_ERROR_NUDGE})
+                        messages.append(_assistant_message_for_history(msg))
+                        messages.append({"role": "user", "content": PROMISE_AFTER_ID_ERROR_NUDGE})
                         yield {
                             "type": "status",
                             "message": "Last tool failed on id validation — nudging the model to retry…",
@@ -771,6 +781,22 @@ def iter_ollama_chat_events(
                         continue
                     if not isinstance(args, dict):
                         args = {}
+                    if informational_turn and spotify_tool_is_mutating(name):
+                        yield {"type": "tool_start", "name": name}
+                        result = refused_mutating_tool_result(name)
+                        preview = result[:240] + ("…" if len(result) > 240 else "")
+                        yield {"type": "tool_done", "name": name, "preview": preview}
+                        tool_results.append(result)
+                        if native_tools:
+                            messages.append({"role": "tool", "name": name, "content": result})
+                        else:
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": f"Tool `{name}` result:\n{result}",
+                                },
+                            )
+                        continue
                     yield {"type": "tool_start", "name": name}
                     result = runner.run(name, args)
                     record_successful_tool(successful_tools, name, result)

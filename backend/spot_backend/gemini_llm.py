@@ -18,7 +18,18 @@ from spot_backend.action_claim_guard import (
 )
 from spot_backend.config import Settings
 from spot_backend.chat_messages import (
+    PROMISE_AFTER_ID_ERROR_NUDGE,
+    assistant_reply_is_promise_only,
     prepare_user_visible_reply,
+    tool_result_is_rejected_or_invalid_id,
+)
+from spot_backend.prompt_intent import (
+    INFORMATIONAL_REPLY_SYSTEM_SUFFIX,
+    gemini_declarations_for_prompt,
+    gemini_should_use_any_first_round,
+    prompt_is_informational,
+    refused_mutating_tool_result,
+    spotify_tool_is_mutating,
 )
 from spot_backend.context_loader import load_optional_agent_context_markdown
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
@@ -317,6 +328,12 @@ def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
     t = (user_text or "").strip().lower()
     if not t:
         return None
+    if re.fullmatch(r"play\s*", t) or t in ("play", "resume"):
+        return ["spotify_start_resume_playback"]
+    if re.search(r"\bshuffle\s+(?:on|off)\b", t) or re.fullmatch(r"shuffle(?:\s+on)?", t):
+        return ["spotify_set_shuffle"]
+    if re.search(r"\brepeat\s+(?:off|track|context|album|playlist)\b", t) or t == "repeat":
+        return ["spotify_set_repeat"]
     if re.search(r"\b(pause|stop playback)\b", t):
         return ["spotify_pause"]
     if re.search(r"\b(resume|unpause|continue playing)\b", t):
@@ -402,7 +419,10 @@ def run_chat_turn_gemini(
     model = read_effective_gemini_model(settings.data_dir, settings.gemini_model) or _DEFAULT_GEMINI_MODEL
     declarations = _openai_tools_to_gemini_declarations(OLLAMA_TOOLS)
     runner = SpotifyToolRunner(settings=settings)
+    informational_turn = prompt_is_informational(user_text)
     full_system = _SYSTEM + load_optional_agent_context_markdown(settings)
+    if informational_turn:
+        full_system = full_system + INFORMATIONAL_REPLY_SYSTEM_SUFFIX
 
     hist = _coerce_chat_history(history)
     contents: list[dict[str, Any]] = []
@@ -422,6 +442,7 @@ def run_chat_turn_gemini(
     last_tool_signature: str | None = None
     last_tool_result: str | None = None
     action_claim_reprompted = False
+    promise_nudge_used = False
     empty_turn_retries = 3
     # Gemini 2.5-flash with our 40-tool catalog is *unreliable* in AUTO function-
     # calling mode — measured empty-content rate is 12/15 (80%) even with a
@@ -440,22 +461,28 @@ def run_chat_turn_gemini(
         with httpx.Client(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
             for _ in range(settings.agent_max_steps):
                 intent_tools = gemini_intent_allowed_function_names(user_text)
-                if intent_tools and not had_tool_results:
-                    fc_mode = "ANY"
-                elif wants_spotify and not had_tool_results:
-                    fc_mode = "ANY"
-                else:
-                    fc_mode = "AUTO"
+                use_any = gemini_should_use_any_first_round(
+                    user_text,
+                    had_tool_results=had_tool_results,
+                    intent_tools=intent_tools,
+                    wants_spotify=wants_spotify,
+                )
+                fc_mode = "ANY" if use_any else "AUTO"
                 fc_cfg: dict[str, Any] = {"mode": fc_mode}
                 if fc_mode == "ANY" and intent_tools:
                     fc_cfg["allowedFunctionNames"] = intent_tools
+                decls = gemini_declarations_for_prompt(
+                    declarations,
+                    informational=informational_turn,
+                )
                 body: dict[str, Any] = {
                     "systemInstruction": {"parts": [{"text": full_system}]},
                     "contents": contents,
-                    "tools": [{"functionDeclarations": declarations}],
-                    "toolConfig": {"functionCallingConfig": fc_cfg},
                     "generationConfig": _gemini_generation_config_for_model(model),
                 }
+                if decls:
+                    body["tools"] = [{"functionDeclarations": decls}]
+                body["toolConfig"] = {"functionCallingConfig": fc_cfg}
 
                 resp = _gemini_post_with_retry(client, url, params=params, json_body=body)
                 data = resp.json()
@@ -474,9 +501,13 @@ def run_chat_turn_gemini(
                     _log_gemini_empty_candidate(data, cand, label="empty_turn")
                     if empty_turn_retries > 0:
                         empty_turn_retries -= 1
-                        retry_fc: dict[str, Any] = {
-                            "mode": "ANY" if (wants_spotify or intent_tools) else "AUTO",
-                        }
+                        retry_any = gemini_should_use_any_first_round(
+                            user_text,
+                            had_tool_results=had_tool_results,
+                            intent_tools=intent_tools,
+                            wants_spotify=wants_spotify,
+                        )
+                        retry_fc: dict[str, Any] = {"mode": "ANY" if retry_any else "AUTO"}
                         if intent_tools:
                             retry_fc["allowedFunctionNames"] = intent_tools
                         body["toolConfig"] = {"functionCallingConfig": retry_fc}
@@ -564,11 +595,15 @@ def run_chat_turn_gemini(
                             return prepare_user_visible_reply(repeat_reply, tool_results)
                         if emit:
                             emit({"type": "tool_start", "name": name})
-                        result = runner.run(name, args)
+                        if informational_turn and spotify_tool_is_mutating(name):
+                            result = refused_mutating_tool_result(name)
+                        else:
+                            result = runner.run(name, args)
                         last_tool_signature = sig
                         last_tool_result = result
                         tool_results.append(result)
-                        record_successful_tool(successful_tools, name, result)
+                        if not (informational_turn and spotify_tool_is_mutating(name)):
+                            record_successful_tool(successful_tools, name, result)
                         if emit:
                             preview = result[:240] + ("…" if len(result) > 240 else "")
                             emit({"type": "tool_done", "name": name, "preview": preview})
@@ -591,6 +626,18 @@ def run_chat_turn_gemini(
 
                 joined = "\n".join(t for t in visible_text_chunks if isinstance(t, str) and t.strip()).strip()
                 if joined:
+                    if (
+                        assistant_reply_is_promise_only(joined)
+                        and tool_results
+                        and tool_result_is_rejected_or_invalid_id(tool_results[-1])
+                        and not promise_nudge_used
+                    ):
+                        promise_nudge_used = True
+                        contents.append({"role": "model", "parts": [{"text": joined}]})
+                        contents.append(
+                            {"role": "user", "parts": [{"text": PROMISE_AFTER_ID_ERROR_NUDGE}]}
+                        )
+                        continue
                     if reply_claims_unbacked_action(joined, successful_tools):
                         if not action_claim_reprompted:
                             action_claim_reprompted = True
