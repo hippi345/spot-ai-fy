@@ -173,6 +173,29 @@ def prompt_is_pure_how_to(user_text: str) -> bool:
     return _prompt_is_advice_or_explanation(t)
 
 
+_RECENT_LISTENING_TIME_RE = re.compile(
+    r"\b(?:lately|recently|last few days|these days)\b",
+    re.I,
+)
+_RECENT_LISTENING_ACTIVITY_RE = re.compile(
+    r"\b(?:listening|played|heard|been\s+listening)\b",
+    re.I,
+)
+
+
+def prompt_requests_recent_listening_history(user_text: str) -> bool:
+    """True when the user wants recently played history (not top-tracks aggregates)."""
+    t = (user_text or "").strip()
+    if not t:
+        return False
+    low = t.lower()
+    if "what have i been listening" in low:
+        return True
+    if not _RECENT_LISTENING_ACTIVITY_RE.search(t):
+        return False
+    return bool(_RECENT_LISTENING_TIME_RE.search(t))
+
+
 def prompt_is_informational(user_text: str) -> bool:
     """Questions and advice without an action request → read-only tools only, no mutations."""
     t = (user_text or "").strip()

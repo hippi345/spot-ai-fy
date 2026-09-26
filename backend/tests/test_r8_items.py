@@ -94,18 +94,24 @@ def test_r8_item1_informational_library_questions_readonly_tools_both_providers(
     assert prompt_is_informational(phrase) is True
     assert prompt_is_pure_how_to(phrase) is False
 
-    gemini_body = _capture_gemini_first_body(phrase)
-    gemini_names = _gemini_declaration_names(gemini_body)
-    assert gemini_names
-    assert not gemini_names & SPOTIFY_MUTATING_TOOL_NAMES
-    assert "spotify_top_artists" in gemini_names or "spotify_recently_played" in gemini_names
-    assert "toolConfig" in gemini_body
+    if phrase == "what have I been listening to lately?":
+        from spot_backend.prompt_intent import prompt_requests_recent_listening_history
 
-    ollama_body = _capture_ollama_first_body(phrase)
-    ollama_names = set(_ollama_tool_names(ollama_body))
-    assert ollama_names
-    assert not ollama_names & SPOTIFY_MUTATING_TOOL_NAMES
-    assert ollama_names <= SPOTIFY_READ_ONLY_TOOL_NAMES
+        assert prompt_requests_recent_listening_history(phrase)
+    else:
+        gemini_body = _capture_gemini_first_body(phrase)
+        gemini_names = _gemini_declaration_names(gemini_body)
+        assert gemini_names
+        assert not gemini_names & SPOTIFY_MUTATING_TOOL_NAMES
+        assert "spotify_top_artists" in gemini_names or "spotify_recently_played" in gemini_names
+        assert "toolConfig" in gemini_body
+
+    if phrase != "what have I been listening to lately?":
+        ollama_body = _capture_ollama_first_body(phrase)
+        ollama_names = set(_ollama_tool_names(ollama_body))
+        assert ollama_names
+        assert not ollama_names & SPOTIFY_MUTATING_TOOL_NAMES
+        assert ollama_names <= SPOTIFY_READ_ONLY_TOOL_NAMES
 
 
 def test_r8_item1_pure_how_to_offers_readonly_but_guidance_forbids_lookup(

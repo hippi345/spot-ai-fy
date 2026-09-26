@@ -63,6 +63,7 @@ class ChatHistoryTurn(BaseModel):
 class ChatBody(BaseModel):
     message: str = Field(..., min_length=1, max_length=48_000)
     history: list[ChatHistoryTurn] | None = Field(default=None, max_length=48)
+    conversation_id: str | None = Field(default=None, max_length=128)
 
 
 def _dump_chat_history(body: ChatBody) -> list[dict[str, str]] | None:
@@ -281,7 +282,7 @@ def chat(body: ChatBody) -> dict[str, str]:
     gemini_model = read_effective_gemini_model(s.data_dir, s.gemini_model)
     hist = _dump_chat_history(body)
     try:
-        text = run_chat_turn(body.message, s, history=hist)
+        text = run_chat_turn(body.message, s, history=hist, conversation_id=body.conversation_id)
     except httpx.HTTPStatusError as e:
         snippet = (e.response.text or "")[:400]
         if active == "gemini":
@@ -371,7 +372,12 @@ def chat_stream(body: ChatBody) -> StreamingResponse:
 
         def producer() -> None:
             try:
-                for ev in iter_chat_events(body.message, s, history=hist):
+                for ev in iter_chat_events(
+                    body.message,
+                    s,
+                    history=hist,
+                    conversation_id=body.conversation_id,
+                ):
                     out_q.put(ev)
             finally:
                 out_q.put(None)

@@ -288,7 +288,7 @@ def test_item20_remove_from_queue_explains_limitation(data_dir, signed_in_tokens
 def test_item09_gemini_emits_tool_events(data_dir, signed_in_tokens) -> None:
     settings = Settings()
 
-    def fake_gemini(user_text, settings, history=None, *, emit=None):
+    def fake_gemini(user_text, settings, history=None, *, emit=None, conversation_id=None):
         if emit:
             emit({"type": "tool_start", "name": "spotify_me"})
             emit({"type": "tool_done", "name": "spotify_me", "preview": "{}"})

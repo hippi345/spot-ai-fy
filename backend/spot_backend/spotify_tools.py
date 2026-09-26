@@ -192,8 +192,13 @@ _UNDO_LIBRARY_MARKERS = frozenset(
 )
 
 _PLAYLIST_VISIBILITY_MISMATCH_NOTE = (
-    "Spotify still reports this playlist with the previous visibility after the update. "
-    "You may need to set visibility manually in the Spotify app."
+    "I asked Spotify to make it private, but Spotify still shows it as public "
+    "(this can lag or be a known Spotify API quirk)."
+)
+
+_PLAYBACK_START_FAILED_USER_MESSAGE = (
+    "I couldn't start playback on your device, so repeat and shuffle weren't applied. "
+    "Open Spotify on your phone or computer, press play on any song, then ask again."
 )
 
 
@@ -670,13 +675,25 @@ def _combined_track_inputs(arguments: dict[str, Any]) -> list[Any]:
 
 
 class SpotifyToolRunner:
-    def __init__(self, client: SpotifyClient | None = None, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        client: SpotifyClient | None = None,
+        settings: Settings | None = None,
+        *,
+        conversation_id: str | None = None,
+    ) -> None:
         self.client = client or SpotifyClient(settings=settings or get_settings())
         self.settings = self.client.settings
+        self.conversation_id = (conversation_id or "").strip() or None
         self._session_known_ids: set[str] = set()
         self._last_library_mutation: dict[str, Any] | None = None
         self._last_session_playlist_id: str | None = None
         self._last_primary_artist_id: str | None = None
+        from spot_backend.library_mutation_store import load_last_library_mutation
+
+        prior = load_last_library_mutation(self.conversation_id)
+        if isinstance(prior, dict):
+            self._last_library_mutation = prior
 
     def note_session_playlist_id(self, playlist_id: str) -> None:
         pid = (playlist_id or "").strip()
@@ -1205,6 +1222,8 @@ class SpotifyToolRunner:
                 return self._add_tracks(arguments)
             case "spotify_add_tracks_by_query":
                 return self._add_tracks_by_query(arguments)
+            case "spotify_play_artist":
+                return self._play_artist(arguments)
             case "spotify_play_playlist":
                 return self._play_playlist(arguments)
             case "spotify_devices":
@@ -1962,6 +1981,9 @@ class SpotifyToolRunner:
         clean = [i for i in ids if isinstance(i, str) and i.strip()]
         if clean:
             self._last_library_mutation = {"segment": segment, "ids": clean}
+            from spot_backend.library_mutation_store import record_library_mutation
+
+            record_library_mutation(self.conversation_id, segment, clean)
 
     def _resolve_library_segment_ids(
         self, arguments: dict[str, Any], segment: str, *keys: str
@@ -3662,6 +3684,7 @@ class SpotifyToolRunner:
         raw_device = str(arguments.get("device_id", "")).strip()
         device_id = raw_device
         device_note: str | None = None
+        force_interrupt = bool(arguments.get("force_interrupt"))
         body: dict[str, Any] = {}
         uris = arguments.get("uris")
         context_uri = arguments.get("context_uri")
@@ -3672,13 +3695,16 @@ class SpotifyToolRunner:
             body["context_uri"] = context_uri.strip()
         if isinstance(offset, dict):
             body["offset"] = offset
-        plain_resume = self._should_plain_resume(body)
-        if plain_resume:
-            body = self._strip_redundant_resume_uris(body)
+        if force_interrupt:
+            pass
         else:
-            body = self._rewrite_single_track_play_for_artist_context(arguments, body)
-            body = self._prepare_single_track_play_body(body)
-            body = self._strip_redundant_resume_uris(body)
+            plain_resume = self._should_plain_resume(body)
+            if plain_resume:
+                body = self._strip_redundant_resume_uris(body)
+            else:
+                body = self._rewrite_single_track_play_for_artist_context(arguments, body)
+                body = self._prepare_single_track_play_body(body)
+                body = self._strip_redundant_resume_uris(body)
         want_verification = bool(
             body.get("context_uri")
             or body.get("uris")
@@ -3962,6 +3988,98 @@ class SpotifyToolRunner:
             "device_is_restricted": (device.get("is_restricted") if isinstance(device, dict) else None),
         }
 
+    def _player_needs_artist_play_fallback(self) -> bool:
+        try:
+            state = self.client.api_get("/me/player") or {}
+        except httpx.HTTPStatusError:
+            return True
+        if not isinstance(state, dict):
+            return True
+        item = state.get("item")
+        if not isinstance(item, dict) or not item.get("uri"):
+            return True
+        return state.get("is_playing") is not True
+
+    def _play_artist(self, arguments: dict[str, Any]) -> str:
+        """Play an artist by starting their top tracks as a uris queue (not artist context_uri)."""
+        raw_ref = _pick_arg(arguments, "artist_name", "name", "artist_id", "id", "artist")
+        if not raw_ref or not str(raw_ref).strip():
+            return json.dumps(
+                {
+                    "error": "artist_name is required",
+                    "hint": "Pass the artist's name from spotify_search (e.g. Radiohead).",
+                }
+            )
+        market = _normalize_market(_pick_arg(arguments, "market", "country"))
+        parsed = _parse_spotify_context_ref(str(raw_ref))
+        if parsed and parsed[0] == "artist":
+            cid = parsed[1]
+        else:
+            cid = self._canonical_artist_id(str(raw_ref).strip(), market)
+        if not cid:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "Could not find that artist on Spotify.",
+                    "query_tried": str(raw_ref).strip(),
+                    "reconnect_spotify_unnecessary": True,
+                },
+                ensure_ascii=False,
+            )
+        top_raw = self._artist_top_tracks({"artist_id": cid, "market": market})
+        try:
+            top_data = json.loads(top_raw)
+        except (json.JSONDecodeError, ValueError):
+            top_data = {}
+        track_items = top_data.get("tracks") if isinstance(top_data, dict) else None
+        track_items = track_items if isinstance(track_items, list) else []
+        uris: list[str] = []
+        for tr in track_items[:10]:
+            if isinstance(tr, dict) and tr.get("uri"):
+                uris.append(str(tr["uri"]))
+        if not uris:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "artist_id": cid,
+                    "error": "I couldn't find playable tracks for that artist right now.",
+                    "reconnect_spotify_unnecessary": True,
+                },
+                ensure_ascii=False,
+            )
+        play_args: dict[str, Any] = {"uris": uris, "force_interrupt": True}
+        device_id = _coerce_str(arguments.get("device_id"))
+        if device_id:
+            play_args["device_id"] = device_id
+
+        def _attempt_play() -> dict[str, Any]:
+            play_raw = self._start_playback(play_args)
+            try:
+                parsed_play = json.loads(play_raw)
+            except (json.JSONDecodeError, ValueError):
+                return {"ok": False, "raw": play_raw}
+            return parsed_play if isinstance(parsed_play, dict) else {"ok": False, "raw": play_raw}
+
+        play_result = _attempt_play()
+        if self._player_needs_artist_play_fallback():
+            play_result = _attempt_play()
+        play_ok = isinstance(play_result, dict) and play_result.get("ok") is True
+        if play_ok and self._player_needs_artist_play_fallback():
+            play_ok = False
+        artist_name = top_data.get("artist_name") if isinstance(top_data, dict) else None
+        if not isinstance(artist_name, str) or not artist_name.strip():
+            artist_name = str(raw_ref).strip()
+        summary: dict[str, Any] = {
+            "artist_id": cid,
+            "artist_name": artist_name,
+            "uris": uris,
+            "playback": play_result,
+            "ok": play_ok,
+        }
+        if not play_ok:
+            summary["error"] = _PLAYBACK_START_FAILED_USER_MESSAGE
+        return _compact(summary)
+
     def _play_playlist(self, arguments: dict[str, Any]) -> str:
         """Composite tool: start a playlist (optionally at a specific track) and set repeat/shuffle in one call.
 
@@ -3979,7 +4097,17 @@ class SpotifyToolRunner:
                 market = _normalize_market(_pick_arg(arguments, "market", "country"))
                 artist_cid = self._canonical_artist_id(raw_ref.strip(), market)
                 if artist_cid:
-                    parsed = ("artist", artist_cid)
+                    return self._play_artist(
+                        {
+                            "artist_id": artist_cid,
+                            "market": market,
+                            **{
+                                k: v
+                                for k, v in arguments.items()
+                                if k not in ("playlist_id", "playlistId", "id", "context_uri", "artist_name")
+                            },
+                        }
+                    )
                 else:
                     return json.dumps(
                         {
@@ -4001,7 +4129,16 @@ class SpotifyToolRunner:
         if kind == "album":
             context_uri = f"spotify:album:{pid}"
         elif kind == "artist":
-            context_uri = f"spotify:artist:{pid}"
+            return self._play_artist(
+                {
+                    "artist_id": pid,
+                    **{
+                        k: v
+                        for k, v in arguments.items()
+                        if k not in ("playlist_id", "playlistId", "id", "context_uri")
+                    },
+                }
+            )
         elif kind == "track":
             play_args = {"uris": [f"spotify:track:{pid}"]}
             device_id = _coerce_str(arguments.get("device_id"))
@@ -4066,9 +4203,7 @@ class SpotifyToolRunner:
         play_ok = isinstance(play_result, dict) and play_result.get("ok") is True
         if not play_ok:
             summary["ok"] = False
-            summary["error"] = (
-                "Failed to start playback — repeat/shuffle were not applied. See playback.error/detail."
-            )
+            summary["error"] = _PLAYBACK_START_FAILED_USER_MESSAGE
             return _compact(summary)
 
         # Apply repeat if requested.
@@ -4824,10 +4959,37 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "spotify_play_artist",
+            "description": (
+                "PLAY NOW — play an artist by starting their top tracks (uris list, up to 10). Use for "
+                "'play Radiohead', 'play Taylor Swift', or artist_id / spotify:artist: URIs from search. "
+                "Do NOT use spotify_play_playlist for artist names."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artist_name": {
+                        "type": "string",
+                        "description": "Artist display name (e.g. Radiohead).",
+                    },
+                    "artist_id": {
+                        "type": "string",
+                        "description": "Optional 22-char artist id or spotify:artist: URI.",
+                    },
+                    "device_id": {"type": "string"},
+                    "market": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "spotify_play_playlist",
             "description": (
-                "PLAY NOW — immediate interruption. COMPOSITE tool: start a playlist, album, or artist context "
-                "(playlist_id accepts spotify:playlist:, spotify:album:, spotify:artist:, or bare 22-char ids from search) "
+                "PLAY NOW — immediate interruption. COMPOSITE tool: start a playlist or album context "
+                "(playlist_id accepts spotify:playlist:, spotify:album:, or bare 22-char ids from search). "
+                "For artist names use spotify_play_artist instead. "
                 "(optionally at a specific track via start_at_uri) AND set repeat/shuffle in one call. This is the RIGHT "
                 "tool for ALL of these phrases: 'play [playlist]', 'start playing [playlist]', 'play "
                 "[playlist] at [track]', 'play [playlist] starting with [track]', 'begin [playlist] "

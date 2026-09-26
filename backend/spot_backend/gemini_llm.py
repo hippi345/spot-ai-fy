@@ -23,7 +23,7 @@ from spot_backend.chat_messages import (
     prepare_user_visible_reply,
     tool_result_is_rejected_or_invalid_id,
 )
-from spot_backend.chat_shortcuts import try_deterministic_chat_reply
+from spot_backend.deterministic_chat import gemini_deterministic_shortcut_reply
 from spot_backend.chat_tool_state import seed_runner_from_chat_history
 from spot_backend.gemini_nudge import should_send_gemini_tool_nudge
 from spot_backend.prompt_intent import (
@@ -328,9 +328,14 @@ def gemini_candidate_is_effectively_empty(cand: dict[str, Any]) -> bool:
 
 def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
     """Restrict ANY-mode tool calls for obvious single-intent control commands."""
+    from spot_backend.play_artist_intent import extract_play_artist_name
+
     t = (user_text or "").strip().lower()
     if not t:
         return None
+    artist = extract_play_artist_name(user_text)
+    if artist:
+        return ["spotify_play_artist"]
     if re.fullmatch(r"play\s*", t) or t in ("play", "resume"):
         return ["spotify_start_resume_playback"]
     if re.search(r"\bshuffle\s+(?:on|off)\b", t) or re.fullmatch(r"shuffle(?:\s+on)?", t):
@@ -445,6 +450,7 @@ def run_chat_turn_gemini(
     history: list[dict[str, str]] | None = None,
     *,
     emit: Callable[[dict[str, Any]], None] | None = None,
+    conversation_id: str | None = None,
 ) -> str:
     from spot_backend.agent import _coerce_chat_history
 
@@ -456,13 +462,18 @@ def run_chat_turn_gemini(
 
     model = read_effective_gemini_model(settings.data_dir, settings.gemini_model) or _DEFAULT_GEMINI_MODEL
     declarations = _openai_tools_to_gemini_declarations(OLLAMA_TOOLS)
-    runner = SpotifyToolRunner(settings=settings)
+    runner = SpotifyToolRunner(settings=settings, conversation_id=conversation_id)
     hist = _coerce_chat_history(history)
     seed_runner_from_chat_history(runner, hist)
-    shortcut = try_deterministic_chat_reply(user_text, runner)
-    if shortcut is not None:
+    shortcut_reply = gemini_deterministic_shortcut_reply(
+        user_text,
+        runner,
+        conversation_id=conversation_id,
+        emit=emit,
+    )
+    if shortcut_reply is not None:
         runner.close()
-        return prepare_user_visible_reply(shortcut, [])
+        return shortcut_reply
     informational_turn = prompt_is_informational(user_text)
     full_system = _SYSTEM + load_optional_agent_context_markdown(settings)
     if informational_turn:
@@ -815,6 +826,8 @@ def iter_gemini_chat_events(
     user_text: str,
     settings: Settings,
     history: list[dict[str, str]] | None = None,
+    *,
+    conversation_id: str | None = None,
 ):
     """Yield SSE-style events for a Gemini chat turn (tool steps + final text)."""
     events: list[dict[str, Any]] = []
@@ -824,7 +837,13 @@ def iter_gemini_chat_events(
 
     yield {"type": "status", "message": "Calling Gemini…"}
     try:
-        text = run_chat_turn_gemini(user_text, settings, history=history, emit=_emit)
+        text = run_chat_turn_gemini(
+            user_text,
+            settings,
+            history=history,
+            emit=_emit,
+            conversation_id=conversation_id,
+        )
         for ev in events:
             yield ev
         yield {"type": "final", "text": text}

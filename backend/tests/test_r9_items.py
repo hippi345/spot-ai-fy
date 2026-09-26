@@ -167,13 +167,26 @@ def test_r9_item2_play_artist_fresh_session_uses_context_uri(
     respx.get(f"https://api.spotify.com/v1/artists/{artist_id}").mock(
         return_value=httpx.Response(200, json={"id": artist_id, "name": "Radiohead"})
     )
-    play_calls: list[bytes] = []
+    tid = "bbbbbbbbbbbbbbbbbbbbbb"
+    respx.get(f"https://api.spotify.com/v1/tracks/{tid}").mock(
+        return_value=httpx.Response(200, json={"id": tid})
+    )
 
-    def capture_play(request: httpx.Request) -> httpx.Response:
-        play_calls.append(request.content or b"")
-        return httpx.Response(204)
+    def search_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("type") == "track":
+            return httpx.Response(
+                200,
+                json={"tracks": {"items": [{"uri": f"spotify:track:{tid}", "id": tid}]}},
+            )
+        return httpx.Response(
+            200,
+            json={"artists": {"items": [{"id": artist_id, "name": "Radiohead"}]}},
+        )
 
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(side_effect=capture_play)
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(side_effect=search_handler)
+    play = respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
     respx.get("https://api.spotify.com/v1/me/player").mock(
         return_value=httpx.Response(
             200,
@@ -188,13 +201,17 @@ def test_r9_item2_play_artist_fresh_session_uses_context_uri(
         return_value=httpx.Response(200, json={"devices": [{"id": "dev1", "is_active": True}]})
     )
     runner = SpotifyToolRunner(settings=Settings())
-    reply = try_deterministic_chat_reply("can you play Radiohead?", runner)
+    outcome = try_deterministic_chat_reply("can you play Radiohead?", runner)
     runner.close()
-    assert reply and "Radiohead" in reply
-    assert play_calls
-    sent = json.loads(play_calls[0].decode() or "{}")
-    assert sent.get("context_uri") == f"spotify:artist:{artist_id}"
-    assert not sent.get("uris")
+    assert outcome and "Radiohead" in outcome.reply
+    assert outcome.tool_names() == ["spotify_play_artist"]
+    assert play.called
+    play_req = next(
+        c.request for c in reversed(play.calls) if "/player/play" in str(c.request.url)
+    )
+    sent = json.loads(play_req.content or b"{}")
+    assert sent.get("uris")
+    assert not sent.get("context_uri")
 
 
 @respx.mock
@@ -345,7 +362,7 @@ def test_r9_item3_like_this_saves_current_track(data_dir, signed_in_tokens) -> N
     runner = SpotifyToolRunner(settings=Settings())
     reply = try_deterministic_chat_reply("like this", runner)
     runner.close()
-    assert reply and "Kill Bill" in reply
+    assert reply and "Kill Bill" in reply.reply
     assert lib.called
 
 
@@ -363,9 +380,9 @@ def test_r9_item3_save_and_heart_phrases_save_track(
     )
     lib = respx.put("https://api.spotify.com/v1/me/library").mock(return_value=httpx.Response(200))
     runner = SpotifyToolRunner(settings=Settings())
-    reply = try_deterministic_chat_reply(phrase, runner)
+    outcome = try_deterministic_chat_reply(phrase, runner)
     runner.close()
-    assert reply and "SO GOOD" in reply
+    assert outcome and "SO GOOD" in outcome.reply
     assert lib.called
 
 
@@ -389,7 +406,7 @@ def test_r9_item3_undo_after_save_unsaves_exact_track(data_dir, signed_in_tokens
     try_deterministic_chat_reply("like this", runner)
     undo = try_deterministic_chat_reply("undo that", runner)
     runner.close()
-    assert undo and "removed" in undo.lower()
+    assert undo and "removed" in undo.reply.lower()
     assert delete_route.called
     assert queue_route.call_count == 0
 
@@ -405,7 +422,7 @@ def test_r9_item3_undo_without_save_does_not_touch_queue(data_dir, signed_in_tok
     runner = SpotifyToolRunner(settings=Settings())
     reply = try_deterministic_chat_reply("undo that", runner)
     runner.close()
-    assert reply and "nothing" in reply.lower()
+    assert reply and "nothing" in reply.reply.lower()
     assert not delete_route.called
     assert not queue_route.called
 
@@ -417,8 +434,8 @@ def test_r9_item3_like_nothing_playing_clear_message_no_json(data_dir, signed_in
     reply = try_deterministic_chat_reply("like this", runner)
     runner.close()
     assert reply
-    assert "something is playing" in reply.lower()
-    assert "{" not in reply
+    assert "something is playing" in reply.reply.lower()
+    assert "{" not in reply.reply
 
 
 def test_r9_item3_false_liked_claim_detected_without_save_tool() -> None:

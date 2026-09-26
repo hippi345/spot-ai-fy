@@ -119,11 +119,15 @@ def collect_visibility_warnings(tool_results: list[str]) -> list[str]:
 def append_visibility_notes_to_reply(text: str, tool_results: list[str]) -> str:
     """Append deterministic playlist-visibility notes from tool JSON (all LLM providers)."""
     base = (text or "").rstrip()
+    base_low = base.lower()
     for note in collect_visibility_warnings(tool_results):
         if note in base:
             continue
+        if "still shows it as public" in base_low:
+            continue
         suffix = f"\n\nNote: {note}"
         base = base + suffix
+        base_low = base.lower()
     return base
 
 

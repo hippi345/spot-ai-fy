@@ -23,7 +23,7 @@ from spot_backend.chat_messages import (
     prepare_user_visible_reply,
     tool_result_is_rejected_or_invalid_id,
 )
-from spot_backend.chat_shortcuts import try_deterministic_chat_reply
+from spot_backend.deterministic_chat import ollama_deterministic_shortcut_events
 from spot_backend.chat_tool_state import seed_runner_from_chat_history
 from spot_backend.prompt_intent import (
     filter_ollama_tools_for_prompt,
@@ -437,11 +437,11 @@ def _json_mode_expecting_first_tool_result(messages: list[dict[str, Any]]) -> bo
 
 def _forced_json_tool_calls_for_question(user_text: str) -> list[dict[str, Any]] | None:
     """Obvious Spotify intents when the model returns nothing (JSON tool mode)."""
-    t = user_text.lower()
-    if re.search(r"\b(?:lately|recently)\b", t) and re.search(
-        r"\b(?:listening|played|heard)\b", t
-    ):
+    from spot_backend.prompt_intent import prompt_requests_recent_listening_history
+
+    if prompt_requests_recent_listening_history(user_text):
         return [{"function": {"name": "spotify_recently_played", "arguments": {"limit": 20}}}]
+    t = user_text.lower()
     if "playlist" not in t:
         return None
     if any(w in t for w in ("track", "song", "album", "artist", "follow")):
@@ -484,14 +484,20 @@ def iter_ollama_chat_events(
     user_text: str,
     settings: Settings,
     history: list[dict[str, str]] | None = None,
+    *,
+    conversation_id: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yields Spot-AI-fy progress events for the Ollama agent; ends with ``final`` or ``error``."""
-    runner = SpotifyToolRunner(settings=settings)
+    runner = SpotifyToolRunner(settings=settings, conversation_id=conversation_id)
     history_turns = _coerce_chat_history(history)
     seed_runner_from_chat_history(runner, history_turns)
-    shortcut = try_deterministic_chat_reply(user_text, runner)
-    if shortcut is not None:
-        yield {"type": "final", "text": prepare_user_visible_reply(shortcut, [])}
+    shortcut_events = ollama_deterministic_shortcut_events(
+        user_text,
+        runner,
+        conversation_id=conversation_id,
+    )
+    if shortcut_events is not None:
+        yield from shortcut_events
         runner.close()
         return
     successful_tools: set[str] = set()
@@ -840,25 +846,44 @@ def iter_chat_events(
     user_text: str,
     settings: Settings,
     history: list[dict[str, str]] | None = None,
+    *,
+    conversation_id: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yields progress for Spot-AI-fy chat (Ollama streaming or Gemini)."""
     provider = read_effective_llm_provider(settings.data_dir, settings.llm_provider)
     if provider == "gemini":
         from spot_backend.gemini_llm import iter_gemini_chat_events
 
-        yield from iter_gemini_chat_events(user_text, settings, history=history)
+        yield from iter_gemini_chat_events(
+            user_text,
+            settings,
+            history=history,
+            conversation_id=conversation_id,
+        )
         return
 
-    yield from iter_ollama_chat_events(user_text, settings, history=history)
+    yield from iter_ollama_chat_events(
+        user_text,
+        settings,
+        history=history,
+        conversation_id=conversation_id,
+    )
 
 
 def run_chat_turn_ollama(
     user_text: str,
     settings: Settings | None = None,
     history: list[dict[str, str]] | None = None,
+    *,
+    conversation_id: str | None = None,
 ) -> str:
     settings = settings or get_settings()
-    for ev in iter_ollama_chat_events(user_text, settings, history=history):
+    for ev in iter_ollama_chat_events(
+        user_text,
+        settings,
+        history=history,
+        conversation_id=conversation_id,
+    ):
         if ev.get("type") == "final":
             return str(ev.get("text") or "")
         if ev.get("type") == "error":
@@ -870,11 +895,23 @@ def run_chat_turn(
     user_text: str,
     settings: Settings | None = None,
     history: list[dict[str, str]] | None = None,
+    *,
+    conversation_id: str | None = None,
 ) -> str:
     settings = settings or get_settings()
     provider = read_effective_llm_provider(settings.data_dir, settings.llm_provider)
     if provider == "gemini":
         from spot_backend.gemini_llm import run_chat_turn_gemini
 
-        return run_chat_turn_gemini(user_text, settings, history=history)
-    return run_chat_turn_ollama(user_text, settings, history=history)
+        return run_chat_turn_gemini(
+            user_text,
+            settings,
+            history=history,
+            conversation_id=conversation_id,
+        )
+    return run_chat_turn_ollama(
+        user_text,
+        settings,
+        history=history,
+        conversation_id=conversation_id,
+    )

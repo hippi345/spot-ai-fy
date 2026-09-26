@@ -151,21 +151,51 @@ def test_r2_itemC_action_guard_reprompts_when_claim_without_tool(data_dir, signe
 def test_r2_itemC_play_playlist_resolves_artist_name(data_dir, signed_in_tokens) -> None:
     artist_id = "aaaaaaaaaaaaaaaaaaaaaa"
     mock_artist_name_search(artist_id, "Radiohead")
+    respx.get(f"https://api.spotify.com/v1/artists/{artist_id}").mock(
+        return_value=httpx.Response(200, json={"id": artist_id, "name": "Radiohead"})
+    )
+    tid = "bbbbbbbbbbbbbbbbbbbbbb"
+    respx.get(f"https://api.spotify.com/v1/tracks/{tid}").mock(
+        return_value=httpx.Response(200, json={"id": tid})
+    )
+
+    def search_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("type") == "track":
+            return httpx.Response(
+                200,
+                json={"tracks": {"items": [{"uri": f"spotify:track:{tid}", "id": tid}]}},
+            )
+        return httpx.Response(
+            200,
+            json={"artists": {"items": [{"id": artist_id, "name": "Radiohead"}]}},
+        )
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(side_effect=search_handler)
     play = respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
         return_value=httpx.Response(204)
     )
     respx.get("https://api.spotify.com/v1/me/player").mock(
         return_value=httpx.Response(
             200,
-            json={"is_playing": True, "context": {"uri": f"spotify:artist:{artist_id}"}, "item": {}},
+            json={
+                "is_playing": True,
+                "item": {"uri": "spotify:track:bbbbbbbbbbbbbbbbbbbbbb"},
+            },
         )
     )
     runner = SpotifyToolRunner(settings=Settings())
     raw = runner.run("spotify_play_playlist", {"playlist_id": "Radiohead"})
     runner.close()
     data = json.loads(raw)
-    assert data.get("context_uri") == f"spotify:artist:{artist_id}"
+    assert data.get("ok") is True
+    assert data.get("uris")
     assert play.called
+    play_req = next(
+        c.request for c in reversed(play.calls) if "/player/play" in str(c.request.url)
+    )
+    sent = json.loads(play_req.content or b"{}")
+    assert sent.get("uris")
+    assert not sent.get("context_uri")
 
 
 @respx.mock

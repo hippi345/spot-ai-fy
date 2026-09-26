@@ -376,6 +376,19 @@ def spotify_add_tracks_by_query(
 
 
 @mcp.tool()
+def spotify_play_artist(artist_name: str = "", artist_id: str = "", device_id: str = "") -> str:
+    """Play an artist by starting their top tracks (uris list)."""
+    args: dict[str, Any] = {}
+    if artist_name.strip():
+        args["artist_name"] = artist_name.strip()
+    if artist_id.strip():
+        args["artist_id"] = artist_id.strip()
+    if device_id.strip():
+        args["device_id"] = device_id.strip()
+    return _runner.run("spotify_play_artist", args)
+
+
+@mcp.tool()
 def spotify_play_playlist(
     playlist_id: str,
     device_id: str = "",
