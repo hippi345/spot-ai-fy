@@ -1,5 +1,9 @@
 # Spot-AI-fy
 
+[![pytest](https://github.com/hippi345/spot-ai-fy/actions/workflows/pytest.yml/badge.svg)](https://github.com/hippi345/spot-ai-fy/actions/workflows/pytest.yml)
+[![pylint](https://github.com/hippi345/spot-ai-fy/actions/workflows/pylint.yml/badge.svg)](https://github.com/hippi345/spot-ai-fy/actions/workflows/pylint.yml)
+[![frontend build](https://github.com/hippi345/spot-ai-fy/actions/workflows/webpack.yml/badge.svg)](https://github.com/hippi345/spot-ai-fy/actions/workflows/webpack.yml)
+
 **Ask Spotify in plain language — search, playlists, playback.**
 
 Spot-AI-fy is a local-first natural-language front end for the Spotify Web API. You type things like *"add a SZA song from 2024 to RNB2025 and play the playlist starting at that track with repeat on"* and an LLM translates that into a sequence of Spotify API calls — search, dedupe against the playlist, add, verify, play, set repeat — returning one short summary.
@@ -37,9 +41,10 @@ Spot-AI-fy is a local-first natural-language front end for the Spotify Web API. 
 ┌─────────────────┐      HTTP / SSE       ┌──────────────────────────┐      HTTPS       ┌─────────────────┐
 │ React + Vite UI │ ───────────────────▶  │ FastAPI backend          │ ───────────────▶ │ Spotify Web API │
 │  localhost:5173 │                       │  /login /callback        │                  └─────────────────┘
-└─────────────────┘                       │  /chat /chat/stream      │
-                                          │  /me /devices /playback  │                  ┌─────────────────┐
-                                          │  /llm/provider           │  Ollama HTTP ──▶ │ Ollama (local)  │
+└─────────────────┘                       │  /api/chat (SSE stream)  │
+                                          │  /api/session /devices   │                  ┌─────────────────┐
+                                          │  /api/chat /api/health   │  Ollama HTTP ──▶ │ Ollama (local)  │
+                                          │  /api/llm/provider       │                  │                 │
                                           │  SpotifyToolRunner       │  or Gemini API   │ or Gemini cloud │
                                           └────────────┬─────────────┘                  └─────────────────┘
                                                        │
@@ -57,7 +62,7 @@ Refresh tokens, device choice, and LLM preferences persist in `%USERPROFILE%\.sp
 
 ### Prerequisites
 
-- Python 3.12+ and Node 20+.
+- Python 3.12+ and Node 20+. On Debian/Ubuntu, install the `python3.12-venv` package before `python3 -m venv` (the `venv` module is not bundled with the interpreter package alone).
 - A Spotify Developer app — create one at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard). Add `http://127.0.0.1:8765/callback` as a Redirect URI. Copy the **Client ID** (you do **not** need a client secret for the default PKCE flow).
 - Either [Ollama](https://ollama.com/download) running locally **or** a [Google AI Studio API key](https://aistudio.google.com/apikey) for Gemini.
 
@@ -99,6 +104,8 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173), click **Connect Spotify**, pick a playback device, and start chatting.
 
+The Vite dev server proxies `/api/*`, `/login`, and `/logout` to the backend on port 8765. Spotify’s OAuth redirect still hits `http://127.0.0.1:8765/callback` directly (register that URI on the Spotify dashboard).
+
 ### 3. (Optional) MCP server
 
 ```powershell
@@ -108,6 +115,26 @@ python run_mcp.py
 ```
 
 Point any MCP client at this stdio server to use the same Spotify tools from inside Claude Desktop, Cursor, etc.
+
+## Running tests
+
+From the repo root (no Spotify or LLM credentials required — HTTP is mocked with [respx](https://github.com/lundberg/respx)):
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+cd ..
+pytest backend/tests
+```
+
+Pylint (same command as CI):
+
+```bash
+pip install -r backend/requirements.txt pylint
+pylint $(git ls-files '*.py')
+```
 
 ## Bring your own LLM
 
@@ -253,4 +280,4 @@ If you'd like to contribute a new provider, the shape to match is the existing `
 
 ## License
 
-TBD — add a `LICENSE` file before publishing broadly. Until then, the repo is "all rights reserved" by default.
+[MIT](LICENSE) — Copyright (c) 2026 Joel Shearon.
