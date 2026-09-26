@@ -24,8 +24,8 @@ from spot_backend.chat_messages import (
     tool_result_is_rejected_or_invalid_id,
 )
 from spot_backend.prompt_intent import (
-    INFORMATIONAL_REPLY_SYSTEM_SUFFIX,
     filter_ollama_tools_for_prompt,
+    informational_system_suffix,
     prompt_is_informational,
     refused_mutating_tool_result,
     spotify_tool_is_mutating,
@@ -494,11 +494,10 @@ def iter_ollama_chat_events(
         active_tools = filter_ollama_tools(OLLAMA_TOOLS, small=small_model)
         informational_turn = prompt_is_informational(user_text)
         if informational_turn:
-            base_system = base_system + INFORMATIONAL_REPLY_SYSTEM_SUFFIX
+            base_system = base_system + informational_system_suffix(user_text)
         active_tools = filter_ollama_tools_for_prompt(
             active_tools,
             informational=informational_turn,
-            allow_read_only=False,
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": base_system}]
         history_turns = _coerce_chat_history(history)

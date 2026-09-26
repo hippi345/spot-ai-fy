@@ -24,9 +24,9 @@ from spot_backend.chat_messages import (
     tool_result_is_rejected_or_invalid_id,
 )
 from spot_backend.prompt_intent import (
-    INFORMATIONAL_REPLY_SYSTEM_SUFFIX,
     gemini_declarations_for_prompt,
     gemini_should_use_any_first_round,
+    informational_system_suffix,
     prompt_is_informational,
     refused_mutating_tool_result,
     spotify_tool_is_mutating,
@@ -395,6 +395,22 @@ def apply_gemini_function_calling_tools(
         body.pop("toolConfig", None)
 
 
+def build_gemini_generate_content_body(
+    *,
+    system_text: str,
+    user_prompt: str,
+    decls: list[dict[str, Any]],
+    fc_mode: str = "AUTO",
+) -> dict[str, Any]:
+    """Shared generateContent body shape for chat and diagnostics."""
+    body: dict[str, Any] = {
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+    }
+    apply_gemini_function_calling_tools(body, decls=decls, fc_cfg={"mode": fc_mode})
+    return body
+
+
 def _log_gemini_empty_candidate(data: dict[str, Any], cand: dict[str, Any], *, label: str) -> None:
     pf = data.get("promptFeedback")
     safety = cand.get("safetyRatings")
@@ -437,7 +453,7 @@ def run_chat_turn_gemini(
     informational_turn = prompt_is_informational(user_text)
     full_system = _SYSTEM + load_optional_agent_context_markdown(settings)
     if informational_turn:
-        full_system = full_system + INFORMATIONAL_REPLY_SYSTEM_SUFFIX
+        full_system = full_system + informational_system_suffix(user_text)
 
     hist = _coerce_chat_history(history)
     contents: list[dict[str, Any]] = []

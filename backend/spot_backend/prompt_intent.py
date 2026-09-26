@@ -92,20 +92,6 @@ _POLITE_ACTION_REQUEST_RE = re.compile(
     re.I,
 )
 
-# Live catalog / library lookups — allow tools even when phrased as questions.
-_CATALOG_DATA_QUESTION_RE = re.compile(
-    r"(?:"
-    r"\bwhat(?:'s|s| is)\s+(?:on|playing|in)\b"
-    r"|"
-    r"\bwhat\s+(?:songs?|tracks?|albums?|artists?|playlists?)\s+(?:are|is)\b"
-    r"|"
-    r"\bwhich\s+(?:songs?|tracks?|albums?|artists?|playlists?)\b"
-    r"|"
-    r"\bwhat\s+did\s+i\s+(?:just\s+)?play\b"
-    r")",
-    re.I,
-)
-
 _QUESTION_START_RE = re.compile(
     r"^\s*(?:what|where|when|why|how|which|who|can|could|should|would|is|are|do|does|did|any)\b",
     re.I,
@@ -157,14 +143,42 @@ def _prompt_is_advice_or_explanation(text: str) -> bool:
     return bool(_ADVICE_EXPLANATION_RE.search(text))
 
 
+def _prompt_asks_for_user_spotify_data(text: str) -> bool:
+    """Structural: user-specific library / listening questions (may use read-only tools)."""
+    t = text.strip().lower()
+    if not t:
+        return False
+    if re.search(r"\bmy\b", t):
+        return True
+    if re.search(r"\bwhat(?:'s|s| is)\s+playing\b", t):
+        return True
+    if re.search(r"\bwhat\s+did\s+i\b", t):
+        return True
+    if re.search(r"\bhow\s+many\b", t) and re.search(r"\b(?:i|my|me)\b", t):
+        return True
+    return False
+
+
+def prompt_is_pure_how_to(user_text: str) -> bool:
+    """App how-to / advice only — informational but should not call lookup tools."""
+    if not prompt_is_informational(user_text):
+        return False
+    if _prompt_asks_for_user_spotify_data(user_text):
+        return False
+    t = user_text.strip()
+    if re.search(r"\bhow\s+(?:do|can|should|would)\s+i\b", t, re.I):
+        return True
+    if re.search(r"\bwhere\s+(?:do|can)\s+i\b", t, re.I):
+        return True
+    return _prompt_is_advice_or_explanation(t)
+
+
 def prompt_is_informational(user_text: str) -> bool:
-    """Questions and advice without an action request → read-only / no mutations."""
+    """Questions and advice without an action request → read-only tools only, no mutations."""
     t = (user_text or "").strip()
     if not t:
         return False
     if _prompt_has_action_request(t):
-        return False
-    if _CATALOG_DATA_QUESTION_RE.search(t):
         return False
     return _prompt_is_question_form(t) or _prompt_is_advice_or_explanation(t)
 
@@ -201,12 +215,9 @@ def filter_ollama_tools_for_prompt(
     tools: list[dict[str, Any]],
     *,
     informational: bool,
-    allow_read_only: bool = False,
 ) -> list[dict[str, Any]]:
     if not informational:
         return tools
-    if not allow_read_only:
-        return []
     allowed = SPOTIFY_READ_ONLY_TOOL_NAMES
     out: list[dict[str, Any]] = []
     for entry in tools:
@@ -223,7 +234,8 @@ def gemini_declarations_for_prompt(
 ) -> list[dict[str, Any]]:
     if not informational:
         return declarations
-    return []
+    allowed = SPOTIFY_READ_ONLY_TOOL_NAMES
+    return [d for d in declarations if isinstance(d, dict) and d.get("name") in allowed]
 
 
 def refused_mutating_tool_result(tool_name: str) -> str:
@@ -245,13 +257,27 @@ def refused_mutating_tool_result(tool_name: str) -> str:
 
 INFORMATIONAL_REPLY_SYSTEM_SUFFIX = """
 
-INFORMATIONAL / HOW-TO TURN (no Spotify mutations):
-- The user is asking how something works, not asking you to do it now.
+INFORMATIONAL TURN (read-only Spotify data allowed; no mutations):
 - Do NOT call tools that create, edit, play, pause, queue, save, follow, shuffle, repeat, or otherwise change Spotify state.
-- Answer in everyday language: what to type in this chat, or where to tap in the Spotify desktop/mobile app.
+- You MAY use read-only lookup tools when the user asks about their library, playlists, listening history, playback, or catalog facts.
+- Answer in everyday language where possible; use tools when live Spotify data is needed.
 - To save a track to Liked Songs in the Spotify app: tap the heart icon, or use '+' / Add to Liked Songs. That action is Spotify's "like". Never tell the user liking is impossible or that the app lacks a heart / save control.
 - Never mention internal tool names, function names, parameters, or code spans in your reply.
 """
+
+PURE_HOW_TO_NO_LOOKUP_SUFFIX = """
+
+PURE HOW-TO (app instructions only):
+- The user only wants to know how to do something in the Spotify app or what to type here later — not a live report of their library.
+- Do NOT call Spotify lookup tools on this turn; explain steps from general Spotify knowledge.
+"""
+
+
+def informational_system_suffix(user_text: str) -> str:
+    base = INFORMATIONAL_REPLY_SYSTEM_SUFFIX
+    if prompt_is_pure_how_to(user_text):
+        return base + PURE_HOW_TO_NO_LOOKUP_SUFFIX
+    return base
 
 
 def gemini_should_use_any_first_round(

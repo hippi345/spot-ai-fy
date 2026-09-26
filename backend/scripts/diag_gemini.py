@@ -35,6 +35,7 @@ from spot_backend.gemini_llm import (
     _GEMINI_REST,
     _SYSTEM,
     _openai_tools_to_gemini_declarations,
+    build_gemini_generate_content_body,
 )
 from spot_backend.llm_prefs import read_effective_gemini_model
 from spot_backend.spotify_tools import OLLAMA_TOOLS
@@ -76,12 +77,12 @@ def main() -> int:
     decls_by_name = {d["name"]: d for d in declarations}
 
     def _probe(label: str, decls_subset: list[dict], prompt: str, client: httpx.Client) -> bool:
-        body: dict = {
-            "systemInstruction": {"parts": [{"text": _SYSTEM}]},
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "tools": [{"functionDeclarations": decls_subset}],
-            "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
-        }
+        body = build_gemini_generate_content_body(
+            system_text=_SYSTEM,
+            user_prompt=prompt,
+            decls=decls_subset,
+            fc_mode="AUTO",
+        )
         resp = client.post(url, params={"key": key}, json=body)
         if resp.status_code != 200:
             print(f"  [{label}] HTTP {resp.status_code}: {resp.text[:600]}")
@@ -106,13 +107,13 @@ def main() -> int:
             print(f"VARIANT: {variant_name}")
             print("=" * 78)
             for prompt in PROMPTS:
-                body: dict = {
-                    "systemInstruction": {"parts": [{"text": _SYSTEM}]},
-                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                }
-                if tools_block is not None:
-                    body["tools"] = tools_block
-                    body["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
+                decls = tools_block[0]["functionDeclarations"] if tools_block else []
+                body = build_gemini_generate_content_body(
+                    system_text=_SYSTEM,
+                    user_prompt=prompt,
+                    decls=decls,
+                    fc_mode="AUTO",
+                )
                 resp = client.post(url, params={"key": key}, json=body)
                 print(f"\n>>> prompt: {prompt!r}")
                 print(f"    status: {resp.status_code}")
