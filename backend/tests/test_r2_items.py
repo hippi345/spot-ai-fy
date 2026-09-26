@@ -24,6 +24,7 @@ from tests.recheck_helpers import (
     install_cpu_only_ollama_profile_mocks,
     make_gemini_post_recorder,
     mock_artist_name_search,
+    run_artist_latest_album_tool,
 )
 from fastapi.testclient import TestClient
 
@@ -215,22 +216,13 @@ def test_r2_itemK_latest_album_picks_2025_deluxe_over_2022_original() -> None:
 @respx.mock
 def test_r2_itemK_artist_latest_album_tool(data_dir, signed_in_tokens) -> None:
     artist_id = "aaaaaaaaaaaaaaaaaaaaaa"
-    respx.get(f"https://api.spotify.com/v1/artists/{artist_id}/albums").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "items": [
-                    {"name": "Old", "release_date": "2020-01-01"},
-                    {"name": "New deluxe", "release_date": "2025-03-01"},
-                ]
-            },
-        )
+    data = run_artist_latest_album_tool(
+        artist_id,
+        [
+            {"name": "Old", "release_date": "2020-01-01"},
+            {"name": "New deluxe", "release_date": "2025-03-01"},
+        ],
     )
-    runner = SpotifyToolRunner(settings=Settings())
-    runner._session_known_ids.add(artist_id)
-    raw = runner.run("spotify_artist_latest_album", {"artist_id": artist_id})
-    runner.close()
-    data = json.loads(raw)
     assert data["latest_album"]["name"] == "New deluxe"
 
 

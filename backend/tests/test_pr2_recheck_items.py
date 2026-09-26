@@ -26,6 +26,7 @@ from spot_backend.ollama_agent_profile import SMALL_MODEL_TOOL_NAMES
 from spot_backend.setup_service import _ollama_cpu_profile
 from spot_backend.spotify_client import DEFAULT_SCOPES
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner, _parse_spotify_context_ref
+from tests.recheck_helpers import run_playback_restriction_violated
 from spot_backend.token_store import DeviceSelection, load_device, save_device
 from spot_backend.url_safety import validate_ollama_base_url
 from fastapi.testclient import TestClient
@@ -144,26 +145,7 @@ def test_item03_single_track_play_uses_album_context(data_dir, signed_in_tokens)
 @respx.mock
 def test_item03_restriction_violated_returns_clear_error(data_dir, signed_in_tokens) -> None:
     track_id = "1111111111111111111111"
-    respx.get(url__regex=rf"https://api\.spotify\.com/v1/tracks/{track_id}").mock(
-        return_value=httpx.Response(200, json={"id": track_id, "album": {"id": "2222222222222222222222"}})
-    )
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(
-            403,
-            json={"error": {"status": 403, "message": "Restriction violated"}},
-        )
-    )
-    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
-        return_value=httpx.Response(200, json={"devices": []})
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(200, json={"is_playing": False})
-    )
-    runner = SpotifyToolRunner(settings=Settings())
-    runner._session_known_ids.add(track_id)
-    raw = runner.run("spotify_start_resume_playback", {"uris": [f"spotify:track:{track_id}"]})
-    runner.close()
-    data = json.loads(raw)
+    data = run_playback_restriction_violated(track_id, album_id="2222222222222222222222")
     assert data.get("ok") is False
     assert "stuck state" in data.get("error", "").lower()
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 import httpx
@@ -75,6 +76,51 @@ def gemini_any_pause_then_auto_text_handler(
         return httpx.Response(200, json=payload, request=req)
 
     return handler
+
+
+def mock_artist_albums(artist_id: str, items: list[dict[str, Any]]) -> None:
+    respx.get(f"https://api.spotify.com/v1/artists/{artist_id}/albums").mock(
+        return_value=httpx.Response(200, json={"items": items})
+    )
+
+
+def run_artist_latest_album_tool(artist_id: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    from spot_backend.config import Settings
+    from spot_backend.spotify_tools import SpotifyToolRunner
+
+    mock_artist_albums(artist_id, items)
+    runner = SpotifyToolRunner(settings=Settings())
+    runner._session_known_ids.add(artist_id)
+    raw = runner.run("spotify_artist_latest_album", {"artist_id": artist_id})
+    runner.close()
+    return json.loads(raw)
+
+
+def run_playback_restriction_violated(track_id: str, *, album_id: str = "aaaaaaaaaaaaaaaaaaaaaa") -> dict[str, Any]:
+    from spot_backend.config import Settings
+    from spot_backend.spotify_tools import SpotifyToolRunner
+
+    respx.get(f"https://api.spotify.com/v1/tracks/{track_id}").mock(
+        return_value=httpx.Response(200, json={"id": track_id, "album": {"id": album_id}})
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(
+            403,
+            json={"error": {"status": 403, "message": "Restriction violated"}},
+        )
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player(\?.*)?$").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
+        return_value=httpx.Response(200, json={"devices": []})
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(return_value=httpx.Response(200, json={}))
+    runner = SpotifyToolRunner(settings=Settings())
+    runner._session_known_ids.add(track_id)
+    raw = runner.run("spotify_start_resume_playback", {"uris": [f"spotify:track:{track_id}"]})
+    runner.close()
+    return json.loads(raw)
 
 
 def make_gemini_post_recorder(

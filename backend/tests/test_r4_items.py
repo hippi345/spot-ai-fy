@@ -30,6 +30,7 @@ from spot_backend.spotify_tools import SpotifyToolRunner, collect_catalog_ids_fr
 from tests.recheck_helpers import (
     gemini_any_pause_then_auto_text_handler,
     make_gemini_post_recorder,
+    run_playback_restriction_violated,
 )
 
 # r4-item1 — Gemini ANY only on first intent-scoped round + repeat guard
@@ -211,27 +212,7 @@ def test_r4_item8_resume_drops_current_track_uri(data_dir, signed_in_tokens) -> 
 @respx.mock
 def test_r4_item8_restriction_violated_user_message(data_dir, signed_in_tokens) -> None:
     track_id = "2222222222222222222222"
-    respx.get(f"https://api.spotify.com/v1/tracks/{track_id}").mock(
-        return_value=httpx.Response(200, json={"id": track_id, "album": {"id": "aaaaaaaaaaaaaaaaaaaaaa"}})
-    )
-    respx.get("https://api.spotify.com/v1/me/player").mock(return_value=httpx.Response(200, json={}))
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
-        return_value=httpx.Response(
-            403,
-            json={"error": {"status": 403, "message": "Restriction violated"}},
-        )
-    )
-    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player(\?.*)?$").mock(
-        return_value=httpx.Response(204)
-    )
-    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
-        return_value=httpx.Response(200, json={"devices": []})
-    )
-    runner = SpotifyToolRunner(settings=Settings())
-    runner._session_known_ids.add(track_id)
-    raw = runner.run("spotify_start_resume_playback", {"uris": [f"spotify:track:{track_id}"]})
-    runner.close()
-    data = json.loads(raw)
+    data = run_playback_restriction_violated(track_id)
     assert "stuck state" in data.get("error", "").lower()
     assert data.get("sign_out_not_recommended") is True
 

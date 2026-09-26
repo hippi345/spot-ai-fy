@@ -24,6 +24,7 @@ from tests.recheck_helpers import (
     gemini_thought_then_pause_then_text_handler,
     make_gemini_post_recorder,
     mock_artist_name_search,
+    run_artist_latest_album_tool,
 )
 
 
@@ -267,26 +268,18 @@ def test_r3_item07_cpu_profile_unknown_shows_hint(monkeypatch: pytest.MonkeyPatc
 @respx.mock
 def test_r3_item10_latest_album_skips_feature_single(data_dir, signed_in_tokens) -> None:
     artist_id = "aaaaaaaaaaaaaaaaaaaaaa"
-    respx.get(f"https://api.spotify.com/v1/artists/{artist_id}/albums").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "items": [
-                    {
-                        "name": "is it cool? (feat. SZA)",
-                        "release_date": "2025-01-01",
-                        "album_type": "single",
-                    },
-                    {"name": "Real Album", "release_date": "2024-01-01", "album_type": "album"},
-                ]
+    data = run_artist_latest_album_tool(
+        artist_id,
+        [
+            {
+                "name": "is it cool? (feat. SZA)",
+                "release_date": "2025-01-01",
+                "album_type": "single",
             },
-        )
+            {"name": "Real Album", "release_date": "2024-01-01", "album_type": "album"},
+        ],
     )
-    runner = SpotifyToolRunner(settings=Settings())
-    runner._session_known_ids.add(artist_id)
-    raw = runner.run("spotify_artist_latest_album", {"artist_id": artist_id})
-    runner.close()
-    assert json.loads(raw)["latest_album"]["name"] == "Real Album"
+    assert data["latest_album"]["name"] == "Real Album"
 
 
 @respx.mock
