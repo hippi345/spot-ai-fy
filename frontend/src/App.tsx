@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { NowPlayingBar, type NowPlayingBarHandle } from "./components/NowPlayingBar";
+import { nowPlayingUsesMock } from "./lib/nowPlaying";
 import { SetupWizard } from "./SetupWizard";
 import { fetchSetupStatus, type SetupStatus } from "./lib/api";
 import {
@@ -128,6 +130,8 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
 
 
+
+  const nowPlayingRef = useRef<NowPlayingBarHandle | null>(null);
 
   const [input, setInput] = useState("");
 
@@ -1083,6 +1087,8 @@ export function App() {
 
       setStreamStalled(false);
 
+      void nowPlayingRef.current?.refresh();
+
     }
 
   };
@@ -1345,6 +1351,11 @@ export function App() {
             </button>
           </div>
         ) : null}
+
+        <NowPlayingBar
+          ref={nowPlayingRef}
+          signedIn={nowPlayingUsesMock() || Boolean(session?.signed_in)}
+        />
 
         <textarea
 

@@ -6,7 +6,7 @@ from typing import Any, Literal
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from spot_backend.agent import iter_chat_events, run_chat_turn
@@ -30,7 +30,8 @@ from spot_backend.llm_provider_lists import (
     ollama_model_name_matches_installed,
 )
 from spot_backend.pkce import new_pkce_params
-from spot_backend.spotify_client import DEFAULT_SCOPES, SpotifyAuthError, SpotifyClient
+from spot_backend.now_playing import get_now_playing, player_next, player_previous, player_toggle
+from spot_backend.spotify_client import DEFAULT_SCOPES, SpotifyAuthError, SpotifyClient, SpotifyRateLimitError
 from spot_backend.setup_service import probe_ollama, save_llm_setup, save_spotify_app, setup_status
 from spot_backend.token_store import DeviceSelection, clear_device, load_device, load_tokens, save_device
 
@@ -229,6 +230,79 @@ def session() -> dict[str, Any]:
         "spotify_missing_scopes": missing if signed else None,
         "spotify_reauth_recommended": bool(missing) if signed else False,
     }
+
+
+def _now_playing_unsigned() -> JSONResponse:
+    return JSONResponse(status_code=401, content={"signed_in": False})
+
+
+def _run_now_playing(client: SpotifyClient, fn) -> Any:
+    try:
+        return fn()
+    except SpotifyAuthError:
+        return _now_playing_unsigned()
+    except SpotifyRateLimitError:
+        return get_now_playing(client)
+
+
+@app.get("/api/now-playing")
+def api_now_playing() -> Any:
+    s = get_settings()
+    bundle = load_tokens(s.resolved_token_path)
+    if not bundle or not bundle.access_token:
+        return _now_playing_unsigned()
+    client = SpotifyClient(settings=s)
+    try:
+        return _run_now_playing(client, lambda: get_now_playing(client))
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=503, detail=f"Could not reach Spotify: {e}") from e
+    finally:
+        client.close()
+
+
+@app.post("/api/player/toggle")
+def api_player_toggle() -> Any:
+    s = get_settings()
+    bundle = load_tokens(s.resolved_token_path)
+    if not bundle or not bundle.access_token:
+        return _now_playing_unsigned()
+    client = SpotifyClient(settings=s)
+    try:
+        return _run_now_playing(client, lambda: player_toggle(client))
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=503, detail=f"Could not reach Spotify: {e}") from e
+    finally:
+        client.close()
+
+
+@app.post("/api/player/next")
+def api_player_next() -> Any:
+    s = get_settings()
+    bundle = load_tokens(s.resolved_token_path)
+    if not bundle or not bundle.access_token:
+        return _now_playing_unsigned()
+    client = SpotifyClient(settings=s)
+    try:
+        return _run_now_playing(client, lambda: player_next(client))
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=503, detail=f"Could not reach Spotify: {e}") from e
+    finally:
+        client.close()
+
+
+@app.post("/api/player/previous")
+def api_player_previous() -> Any:
+    s = get_settings()
+    bundle = load_tokens(s.resolved_token_path)
+    if not bundle or not bundle.access_token:
+        return _now_playing_unsigned()
+    client = SpotifyClient(settings=s)
+    try:
+        return _run_now_playing(client, lambda: player_previous(client))
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=503, detail=f"Could not reach Spotify: {e}") from e
+    finally:
+        client.close()
 
 
 @app.get("/api/devices")
