@@ -17,6 +17,7 @@ export type NowPlayingBarHandle = {
 
 type Props = {
   signedIn: boolean;
+  onBackgroundArtChange?: (info: { artUrl: string | null; hasTrack: boolean }) => void;
 };
 
 function artistLine(artists: string[]): string {
@@ -50,7 +51,7 @@ function ArtImg({
 }
 
 export const NowPlayingBar = forwardRef<NowPlayingBarHandle, Props>(function NowPlayingBar(
-  { signedIn },
+  { signedIn, onBackgroundArtChange },
   ref,
 ) {
   const [payload, setPayload] = useState<NowPlayingPayload | null>(null);
@@ -116,6 +117,18 @@ export const NowPlayingBar = forwardRef<NowPlayingBarHandle, Props>(function Now
     const id = window.setInterval(() => setTick(Date.now()), 500);
     return () => window.clearInterval(id);
   }, [payload?.is_playing, payload?.fetched_at]);
+
+  useEffect(() => {
+    if (!signedIn) {
+      onBackgroundArtChange?.({ artUrl: null, hasTrack: false });
+      return;
+    }
+    const track = payload?.track ?? null;
+    onBackgroundArtChange?.({
+      artUrl: track?.art_url ?? null,
+      hasTrack: Boolean(track),
+    });
+  }, [signedIn, payload?.track, onBackgroundArtChange]);
 
   if (!signedIn) {
     return null;

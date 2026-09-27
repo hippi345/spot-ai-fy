@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 
 import { app, BrowserWindow, ipcMain, session, shell } from "electron";
@@ -36,6 +37,76 @@ function applySecurity(sessionInstance: Electron.Session): void {
   });
 }
 
+const DEMO_SETUP_STATUS = {
+  spotify_configured: true,
+  spotify_signed_in: true,
+  llm_ready: true,
+  provider: "ollama",
+  redirect_uri: "http://127.0.0.1:8765/callback",
+  setup_complete: true,
+};
+
+const DEMO_LLM = {
+  provider: "ollama",
+  configured_model: "qwen3:4b-instruct",
+  reachable: true,
+  models: ["qwen3:4b-instruct"],
+  error: null,
+};
+
+async function injectDemoApiMocks(win: BrowserWindow, signedIn: boolean): Promise<void> {
+  const script = `
+    (function() {
+      const signedIn = ${JSON.stringify(signedIn)};
+      const setup = ${JSON.stringify(DEMO_SETUP_STATUS)};
+      const llm = ${JSON.stringify(DEMO_LLM)};
+      const realFetch = window.fetch.bind(window);
+      window.fetch = function(input, init) {
+        const url = String(input);
+        if (url.includes("/api/session")) {
+          return Promise.resolve(new Response(JSON.stringify({ signed_in: signedIn, device_id: null }), {
+            headers: { "Content-Type": "application/json" },
+          }));
+        }
+        if (url.includes("/api/setup/status")) {
+          return Promise.resolve(new Response(JSON.stringify(setup), {
+            headers: { "Content-Type": "application/json" },
+          }));
+        }
+        if (url.includes("/api/llm")) {
+          return Promise.resolve(new Response(JSON.stringify(llm), {
+            headers: { "Content-Type": "application/json" },
+          }));
+        }
+        return realFetch(input, init);
+      };
+    })();
+  `;
+  await win.webContents.executeJavaScript(script);
+  await win.webContents.reload();
+}
+
+async function runScreenshotCapture(win: BrowserWindow): Promise<void> {
+  const dir = process.env.SPOT_AI_FY_SCREENSHOT_DIR;
+  const file = process.env.SPOT_AI_FY_SCREENSHOT_FILE;
+  if (!dir || !file) return;
+
+  const variant = process.env.SPOT_AI_FY_SCREENSHOT_VARIANT || "idle";
+  const signedIn = process.env.SPOT_AI_FY_UI_DEMO_SIGNED_IN !== "0";
+  await injectDemoApiMocks(win, signedIn);
+  await new Promise((r) => setTimeout(r, 900));
+  if (variant === "settings") {
+    await win.webContents.executeJavaScript(
+      `document.querySelector('.header-gear-btn')?.click();`,
+    );
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  const image = await win.webContents.capturePage();
+  fs.writeFileSync(path.join(dir, file), image.toPNG());
+  app.quit();
+}
+
 function persistBounds(win: BrowserWindow): void {
   if (win.isDestroyed()) return;
   const bounds = win.getBounds();
@@ -49,14 +120,15 @@ function persistBounds(win: BrowserWindow): void {
 }
 
 async function createMainWindow(uiOrigin: string, apiOrigin: string): Promise<void> {
+  const screenshotMode = Boolean(process.env.SPOT_AI_FY_SCREENSHOT_FILE);
   const saved = ensureOnScreen(loadWindowState());
   const preloadPath = path.join(__dirname, "preload.js");
 
   mainWindow = new BrowserWindow({
-    width: saved.width,
-    height: saved.height,
-    x: saved.x,
-    y: saved.y,
+    width: screenshotMode ? 820 : saved.width,
+    height: screenshotMode ? 720 : saved.height,
+    x: screenshotMode ? undefined : saved.x,
+    y: screenshotMode ? undefined : saved.y,
     minWidth: windowMinSize.width,
     minHeight: windowMinSize.height,
     frame: false,
@@ -83,6 +155,10 @@ async function createMainWindow(uiOrigin: string, apiOrigin: string): Promise<vo
   await mainWindow.loadURL(loadUrl);
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
+    if (process.env.SPOT_AI_FY_SCREENSHOT_FILE && mainWindow) {
+      void runScreenshotCapture(mainWindow);
+      return;
+    }
     if (process.env.SPOT_AI_FY_SMOKE === "1") {
       setTimeout(() => app.quit(), 500);
     }

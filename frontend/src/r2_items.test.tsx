@@ -143,7 +143,8 @@ describe("r2_itemG_header_refreshes_provider_after_wizard_save", () => {
       completeStatus({ provider: "ollama", llm_ready: true }),
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Setup" }));
+    fireEvent.click(screen.getByRole("button", { name: /Model and Spotify settings/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Open setup wizard" }));
     await waitFor(() => expect(screen.getByText(/Ollama — Connected/i)).toBeInTheDocument());
   });
 });

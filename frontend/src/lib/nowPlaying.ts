@@ -32,7 +32,7 @@ export const MOCK_NOW_PLAYING_PLAYING: NowPlayingPayload = {
     name: "Neon Harbor Lights",
     artists: ["The Glass Foxes"],
     album: "Velvet Lanterns",
-    art_url: "https://placehold.co/64x64/1a2d22/1ed760/png?text=NP",
+    art_url: "https://placehold.co/512x512/e63946/ffd166/png?text=Velvet",
     duration_ms: 240_000,
   },
   progress_ms: 82_000,

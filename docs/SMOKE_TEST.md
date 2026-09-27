@@ -7,7 +7,7 @@
 1. Start the backend (`cd backend && uvicorn spot_backend.app:app --reload --port 8765` or your usual command).
 2. Start the frontend (`cd frontend && npm run dev`) and open the Vite URL (typically http://127.0.0.1:5173).
 3. Complete setup if needed, then **Connect Spotify** and sign in.
-4. Open Spotify on a phone, desktop, or web player so at least one **Connect** device is available; save that device in **Model & Spotify → Device**.
+4. Open Spotify on a phone, desktop, or web player so at least one **Connect** device is available; open **⚙ settings** in the header and save that device under **Device**.
 
 ### Desktop (Electron)
 
