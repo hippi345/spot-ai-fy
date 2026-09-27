@@ -109,8 +109,4 @@ jobs:
         working-directory: desktop
         run: |
           npm run build:main
-          case "${{ matrix.platform }}" in
-            linux) npx electron-builder --linux --publish never ;;
-            win) npx electron-builder --win --publish never ;;
-            mac) npx electron-builder --mac --publish never ;;
-          esac
+          npx electron-builder --${{ matrix.platform }} --publish never
