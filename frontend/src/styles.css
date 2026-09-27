@@ -354,6 +354,174 @@ select {
 
 
 
+.np-bar-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 8px;
+}
+
+.np-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.np-bar--idle {
+  opacity: 0.85;
+}
+
+.np-bar:focus-visible {
+  outline: 2px solid var(--accent-dim);
+  outline-offset: 2px;
+}
+
+.np-art {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0f0f14;
+}
+
+.np-art-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.np-art-placeholder {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, #1a2d22, #0f0f14);
+}
+
+.np-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.np-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.np-subtitle {
+  font-size: 0.78rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.np-progress {
+  margin-top: 6px;
+  height: 3px;
+  background: #0f0f14;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.np-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.25s linear;
+}
+
+.np-device {
+  font-size: 0.7rem;
+  color: var(--muted);
+  max-width: 72px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.np-controls {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.np-btn {
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 0.85rem;
+  background: #0f0f14;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.np-btn:hover {
+  background: #22222c;
+}
+
+.np-queue {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px 10px;
+  background: #121218;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 12px 12px;
+}
+
+.np-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 0.8rem;
+}
+
+.np-queue-art {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #0f0f14;
+}
+
+.np-queue-art--placeholder {
+  display: inline-block;
+}
+
+.np-queue-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.np-queue-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.np-queue-artists {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.np-queue-empty {
+  color: var(--muted);
+  font-size: 0.8rem;
+  padding: 4px 0;
+}
+
 .chat-input {
 
   width: 100%;
