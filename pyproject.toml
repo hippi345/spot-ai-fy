@@ -63,6 +63,7 @@ pythonpath = ["backend"]
 testpaths = ["backend/tests"]
 markers = [
     "no_catalog_get_stub: disable default Spotify catalog GET stubs for this test",
+    "ollama_smoke: real Ollama integration smoke (requires RUN_OLLAMA_SMOKE=1)",
 ]
 
 [tool.pylint.reports]
