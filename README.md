@@ -287,6 +287,56 @@ The agent's system prompt is wired to tell you plainly when something isn't poss
 - **Listening history beyond the most recent ~50 items** — not in the API.
 - **Private playlist visibility in Development Mode** — Spot-AI-fy always sends `public: false` on create/update and re-reads the playlist, but Spotify may still report `public: true` afterward. The [February 2026 Web API migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide) documents dev-mode limits (Premium owner, user caps, library endpoint changes, removed batch/browse routes) and does **not** state whether dev-mode apps can create truly private playlists; when a tool result includes `visibility_warning`, the assistant reply appends that note server-side.
 
+## Where the data comes from
+
+### Playback UI (now-playing bar, queue, device label, transport controls)
+
+The React mini-player does **not** read OS media state. There is no use of SMTC, MPRIS, `MediaSession`, global media keys, or the local Spotify desktop client’s files in the frontend, backend, or Electron shell.
+
+| UI piece | Source |
+| --- | --- |
+| Track, progress, playing/paused, device name in the bar | Backend `GET /api/now-playing` → Spotify `GET /me/player` and `GET /me/player/queue` |
+| Queue list in the expanded bar | Same response (`queue` field), trimmed server-side |
+| Play / pause / skip | Backend `POST /api/player/toggle|next|previous` → Spotify `PUT /me/player/play|pause`, `POST /me/player/next|previous` (optional `device_id` from your saved device) |
+| Device picker options | Backend `GET /api/devices` → Spotify `GET /me/player/devices` |
+| Saved playback device | Your choice written to `device.json` under `DATA_DIR`; controls pass that id to Spotify when set |
+
+**Client-only behavior (not OS media):**
+
+- The bar **polls** the backend on an interval and **interpolates** the progress bar between polls from the last Spotify `progress_ms` + `fetched_at` timestamp (`interpolateProgress` in the frontend).
+- **Dev/demo mocks** return fixed JSON when `VITE_MOCK_NOW_PLAYING` is set or the URL has `?mockNp=1` — no Spotify calls in that mode.
+- The backend keeps a **short-lived in-memory cache** of the last good now-playing payload when Spotify returns rate limits (not written to disk).
+
+Chat answers such as “what’s playing?” use the same Spotify Web API via agent tools / shortcuts (`/me/player`), not local media APIs.
+
+The Electron **preload** only exposes API base URL, window chrome IPC, and opening `/login` in the system browser — it does not surface playback state.
+
+### What is stored locally
+
+Default data directory: `~/.spot_ai_fy` on macOS/Linux and `%USERPROFILE%\.spot_ai_fy` on Windows. Override with the `DATA_DIR` environment variable (or `data_dir` in settings). Optional `TOKEN_FILE` overrides the token path only.
+
+| What | Location | Format / notes |
+| --- | --- | --- |
+| Spotify OAuth tokens | `{DATA_DIR}/tokens.json` (or `TOKEN_FILE`) | JSON: `access_token`, `refresh_token`, `expires_at`, `scope` |
+| Saved Connect device id | `{DATA_DIR}/device.json` | JSON: `device_id` |
+| Setup wizard (non-secrets) | `{DATA_DIR}/setup.json` | JSON (e.g. Spotify client id, Ollama host); written with private file mode |
+| Secrets fallback | `{DATA_DIR}/secrets.json` (mode `0600`) | JSON when OS keychain is unavailable |
+| Gemini API key (wizard) | OS keychain service **`spot-ai-fy`** (preferred) or `secrets.json` | Not returned from API responses |
+| LLM UI overrides | `{DATA_DIR}/llm_provider.json` | JSON: `provider`, optional `ollama_model` / `gemini_model` / `ollama_small_model` |
+| Setup / secrets write lock | `{DATA_DIR}/.spot_ai_fy_setup.lock` | `filelock` sidecar while merging setup files |
+| Optional agent context | `AGENT_CONTEXT_FILE` from `.env`, else `backend/AGENT_CONTEXT.md`, else `{DATA_DIR}/Spot-AI-fy-agent-context.md` | Markdown read into the system prompt |
+| PKCE `state` → `code_verifier` | Backend process memory only | Cleared after OAuth callback |
+| Library “undo” hints per chat | Backend process memory (`library_mutation_store`) | Keyed by `conversation_id`; not a on-disk chat log |
+| Env / defaults | Repo root `.env` and `backend/.env` | Merged by pydantic-settings (`backend/.env` wins) |
+| Chat transcript (browser) | `localStorage` key `spotaify.chatSession` | JSON: `conversationId` + `messages[]` (up to what the UI keeps) |
+| Trace detail toggle | `localStorage` key `spotaify.showTraceDetail` | `"0"` or `"1"` |
+| Electron window bounds | `{userData}/window-state.json` | JSON: width, height, x, y, `isMaximized`. `userData` is Electron’s per-app folder (e.g. Windows `%APPDATA%\Spot-AI-fy`, macOS `~/Library/Application Support/Spot-AI-fy`, Linux `~/.config/Spot-AI-fy`) |
+| Album art in the UI | Loaded from **HTTPS URLs** returned by Spotify in API JSON | Browser/Electron HTTP cache only; no separate app cache file |
+
+**Not persisted on disk by the backend:** chat turns on the server (history is sent from the browser each request), now-playing rate-limit cache, or PKCE pending map. Backend logs go to the process stdout/stderr (Uvicorn / Electron child), not to a log file in the repo.
+
+**`sessionStorage`:** not used anywhere in this project.
+
 ## Security & privacy
 
 - `backend/.env` is in `.gitignore` — keep your real `SPOTIFY_CLIENT_ID` and `GEMINI_API_KEY` there, not in commits.
