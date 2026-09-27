@@ -23,6 +23,7 @@ if (!fs.existsSync(path.join(frontendDist, "index.html"))) {
 const env = {
   ...process.env,
   SPOT_AI_FY_SMOKE: "1",
+  ELECTRON_DISABLE_SANDBOX: "1",
 };
 
 const child = spawn(process.execPath, [electronCli, desktopRoot], {
