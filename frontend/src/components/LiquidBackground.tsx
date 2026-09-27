@@ -4,9 +4,11 @@ type Props = {
   /** When true, show black/green gradient instead of album art. */
   idle: boolean;
   artUrl: string | null;
+  /** Dim album glow when playback is paused. */
+  paused?: boolean;
 };
 
-export function LiquidBackground({ idle, artUrl }: Props) {
+export function LiquidBackground({ idle, artUrl, paused = false }: Props) {
   const [activeUrl, setActiveUrl] = useState<string | null>(null);
   const [previousUrl, setPreviousUrl] = useState<string | null>(null);
 
@@ -26,7 +28,12 @@ export function LiquidBackground({ idle, artUrl }: Props) {
   const mode = idle || !activeUrl ? "idle" : "art";
 
   return (
-    <div className="liquid-bg" data-testid="liquid-background" data-mode={mode} aria-hidden="true">
+    <div
+      className={`liquid-bg${paused && !idle ? " liquid-bg--paused" : ""}`}
+      data-testid="liquid-background"
+      data-mode={mode}
+      aria-hidden="true"
+    >
       <div className="liquid-bg-idle" />
       {previousUrl ? (
         <div

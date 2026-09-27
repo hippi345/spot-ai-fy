@@ -58,7 +58,7 @@ body {
 
   z-index: 1;
 
-  max-width: 720px;
+  max-width: 960px;
 
   margin: 0 auto;
 
@@ -106,18 +106,24 @@ body {
 
   position: absolute;
 
-  inset: -12%;
+  inset: -20%;
 
   background-size: cover;
 
   background-position: center;
 
-  filter: blur(72px) saturate(1.35);
+  filter: blur(88px) saturate(1.85);
 
-  transform: scale(1.15);
+  transform: scale(1.38);
 
-  opacity: 0.55;
+  opacity: 0.88;
 
+}
+
+.liquid-bg--paused .liquid-bg-layer {
+  opacity: 0.52;
+  filter: blur(80px) saturate(1.45);
+  transform: scale(1.28);
 }
 
 
@@ -142,7 +148,7 @@ body {
 
   from { opacity: 0; }
 
-  to { opacity: 0.55; }
+  to { opacity: 0.88; }
 
 }
 
@@ -150,7 +156,7 @@ body {
 
 @keyframes liquid-bg-fade-out {
 
-  from { opacity: 0.55; }
+  from { opacity: 0.88; }
 
   to { opacity: 0; }
 
@@ -173,17 +179,7 @@ body {
 
 
 .app-scrim {
-
-  position: fixed;
-
-  inset: 0;
-
-  z-index: 0;
-
-  pointer-events: none;
-
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.72) 100%);
-
+  display: none;
 }
 
 
@@ -206,7 +202,7 @@ body {
 
 .glass-panel {
 
-  background: var(--panel-solid);
+  background: rgba(10, 10, 14, 0.82);
 
   border: 1px solid var(--border);
 
@@ -222,11 +218,11 @@ body {
 
   .glass-panel {
 
-    background: var(--panel);
+    background: rgba(12, 12, 18, 0.72);
 
-    backdrop-filter: blur(20px) saturate(1.45);
+    backdrop-filter: blur(22px) saturate(1.5);
 
-    -webkit-backdrop-filter: blur(20px) saturate(1.45);
+    -webkit-backdrop-filter: blur(22px) saturate(1.5);
 
   }
 
@@ -292,9 +288,9 @@ body {
 
   margin: 0;
 
-  font-size: 0.8rem;
+  font-size: 0.9rem;
 
-  color: var(--muted);
+  color: #d4d4de;
 
   letter-spacing: 0.01em;
 
@@ -689,17 +685,41 @@ select {
   border-radius: 999px;
   padding: 6px 10px;
   font-size: 0.9rem;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.1);
   color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   line-height: 1.2;
-  min-width: 36px;
+  min-width: 38px;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.np-btn:hover:not(:disabled) {
-  background: rgba(29, 185, 84, 0.25);
-  border-color: rgba(29, 185, 84, 0.45);
+.np-btn:hover:not(:disabled),
+.np-btn:active:not(:disabled) {
+  background: rgba(29, 185, 84, 0.28);
+  border-color: rgba(29, 185, 84, 0.55);
   color: var(--accent);
+}
+
+.np-btn--primary {
+  background: var(--accent);
+  color: #041b0d;
+  border-color: rgba(29, 185, 84, 0.9);
+  min-width: 42px;
+  min-height: 42px;
+}
+
+.np-btn--primary:hover:not(:disabled),
+.np-btn--primary:active:not(:disabled) {
+  background: #1ed760;
+  color: #041b0d;
+  filter: brightness(1.05);
+}
+
+.np-icon {
+  display: block;
 }
 
 .np-queue {
@@ -754,8 +774,8 @@ select {
 }
 
 .np-queue-artists {
-  color: var(--muted);
-  font-size: 0.72rem;
+  color: #c4c4d0;
+  font-size: 0.8rem;
 }
 
 .np-queue-empty {
@@ -900,6 +920,23 @@ button:disabled {
 
   filter: brightness(1.06);
 
+}
+
+.btn-link.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-link.ghost:hover {
+  border-color: rgba(29, 185, 84, 0.45);
+  color: var(--accent);
+}
+
+.meta-line-short {
+  cursor: help;
+  text-decoration: underline dotted rgba(255, 255, 255, 0.25);
+  text-underline-offset: 3px;
 }
 
 
@@ -1154,9 +1191,53 @@ button:disabled {
 }
 
 .trace-step-icon {
-  text-align: center;
-  font-weight: 700;
-  color: var(--muted);
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+}
+
+.trace-step-icon--dot::before {
+  content: "";
+  display: block;
+  width: 6px;
+  height: 6px;
+  margin: 4px auto;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.trace-step-icon--tool::before {
+  content: "";
+  display: block;
+  width: 8px;
+  height: 8px;
+  margin: 3px auto;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.trace-step-icon--round::before {
+  content: "";
+  display: block;
+  width: 0;
+  height: 0;
+  margin: 4px auto;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 7px solid #9aa0a6;
+}
+
+.trace-step-icon--running::before {
+  content: "";
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin: 2px auto;
+  border-radius: 50%;
+  border: 2px solid #f5c518;
+  border-top-color: transparent;
+  animation: trace-spin 1.2s linear infinite;
 }
 
 .trace-step-label {
@@ -1662,7 +1743,7 @@ body.desktop-shell .app-shell {
 body.desktop-shell .app {
   flex: 1;
   min-height: 0;
-  max-width: 720px;
+  max-width: 960px;
   margin: 0 auto;
   width: 100%;
   padding: 0 18px 16px;

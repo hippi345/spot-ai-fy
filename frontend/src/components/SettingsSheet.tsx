@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 
+import { IconClose } from "./icons/AppIcons";
+
 type Props = {
   open: boolean;
   title: string;
@@ -66,7 +68,7 @@ export function SettingsSheet({ open, title, onClose, children }: Props) {
             onClick={onClose}
             data-testid="settings-sheet-close"
           >
-            ×
+            <IconClose />
           </button>
         </div>
         <div className="settings-sheet-body">{children}</div>

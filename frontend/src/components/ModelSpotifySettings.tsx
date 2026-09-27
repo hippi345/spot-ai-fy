@@ -54,6 +54,25 @@ export type ModelSpotifySettingsProps = {
   onSaveDevice: () => void;
 };
 
+function llmModelSummary(llm: LlmStatus): { label: string; details: string } {
+  const model = (llm.configured_model || "").trim() || "—";
+  const provider = llm.provider === "gemini" ? "Gemini" : "Ollama";
+  const details: string[] = [`Backend: ${provider}`, `Model: ${model}`];
+  if (llm.provider === "ollama" && llm.configured_host) {
+    details.push(`Host: ${llm.configured_host}`);
+  }
+  if (llm.ui_override) {
+    details.push(`UI provider override (env default: ${llm.env_provider ?? "ollama"})`);
+  }
+  if (llm.provider === "gemini" && llm.gemini_model_ui_override) {
+    details.push(`Model override (env default: ${llm.env_gemini_model || "—"})`);
+  }
+  if (llm.provider === "ollama" && llm.ollama_model_ui_override) {
+    details.push(`Model override (env default: ${llm.env_ollama_model || "—"})`);
+  }
+  return { label: `Using ${model}`, details: details.join(" · ") };
+}
+
 export function ModelSpotifySettings(props: ModelSpotifySettingsProps): ReactNode {
   const {
     llm,
@@ -195,24 +214,9 @@ export function ModelSpotifySettings(props: ModelSpotifySettingsProps): ReactNod
             </div>
           ) : null}
           <p className="meta-line">
-            {llm.provider === "gemini" ? (
-              <>
-                <code>{llm.configured_model || "—"}</code>
-                {llm.gemini_model_ui_override ? (
-                  <> · override (env <code>{llm.env_gemini_model || "—"}</code>)</>
-                ) : null}
-                {llm.ui_override ? (
-                  <> · UI override (env: <code>{llm.env_provider ?? "ollama"}</code>)</>
-                ) : null}
-              </>
-            ) : (
-              <>
-                <code>{llm.configured_host || "—"}</code> · <code>{llm.configured_model || "—"}</code>
-                {llm.ollama_model_ui_override ? (
-                  <> · override (env <code>{llm.env_ollama_model || "—"}</code>)</>
-                ) : null}
-              </>
-            )}
+            <span className="meta-line-short" title={llmModelSummary(llm).details}>
+              {llmModelSummary(llm).label}
+            </span>
             {llm.reachable && llm.model_installed === false ? (
               <span className="meta-warn">
                 {" "}
@@ -244,7 +248,12 @@ export function ModelSpotifySettings(props: ModelSpotifySettingsProps): ReactNod
           </span>
         </div>
         <div className="control-row">
-          <a className="btn-link primary" href="/login">Connect Spotify</a>
+          <a
+            className={session?.signed_in ? "btn-link secondary ghost" : "btn-link primary"}
+            href="/login"
+          >
+            {session?.signed_in ? "Reconnect" : "Connect Spotify"}
+          </a>
           <button type="button" className="secondary" onClick={() => void onLogout()} disabled={!session?.signed_in}>
             Sign out
           </button>

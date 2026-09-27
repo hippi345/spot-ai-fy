@@ -5,6 +5,7 @@ import { LiquidBackground } from "./components/LiquidBackground";
 import { ModelSpotifySettings } from "./components/ModelSpotifySettings";
 import { NowPlayingBar, type NowPlayingBarHandle } from "./components/NowPlayingBar";
 import { SettingsSheet } from "./components/SettingsSheet";
+import { IconClose, IconGear } from "./components/icons/AppIcons";
 import { nowPlayingUsesMock } from "./lib/nowPlaying";
 import { SetupWizard } from "./SetupWizard";
 import { fetchSetupStatus, type SetupStatus } from "./lib/api";
@@ -226,6 +227,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [bgArtUrl, setBgArtUrl] = useState<string | null>(null);
   const [bgHasTrack, setBgHasTrack] = useState(false);
+  const [bgPlaying, setBgPlaying] = useState(false);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const [streamStalled, setStreamStalled] = useState(false);
   const streamIdleMs = 45_000;
@@ -652,6 +654,7 @@ export function App() {
     if (!session?.signed_in) {
       setBgArtUrl(null);
       setBgHasTrack(false);
+      setBgPlaying(false);
     }
   }, [session?.signed_in]);
 
@@ -659,9 +662,10 @@ export function App() {
     !session?.signed_in || !bgHasTrack;
 
   const handleBackgroundArtChange = useCallback(
-    (info: { artUrl: string | null; hasTrack: boolean }) => {
+    (info: { artUrl: string | null; hasTrack: boolean; isPlaying: boolean }) => {
       setBgArtUrl(info.artUrl);
       setBgHasTrack(info.hasTrack);
+      setBgPlaying(info.isPlaying);
     },
     [],
   );
@@ -1152,11 +1156,11 @@ export function App() {
     return `${m}m ${s.toString().padStart(2, "0")}s`;
   };
 
-  const traceIcon = (step: TraceStep): string => {
-    if (step.status === "running") return "⟳";
-    if (step.kind === "tool") return "✓";
-    if (step.kind === "round") return "▸";
-    return "•";
+  const traceIcon = (step: TraceStep): "running" | "tool" | "round" | "dot" => {
+    if (step.status === "running") return "running";
+    if (step.kind === "tool") return "tool";
+    if (step.kind === "round") return "round";
+    return "dot";
   };
 
   const showTracePanel = sending && traceSteps.length > 0;
@@ -1212,8 +1216,7 @@ export function App() {
   return (
 
     <>
-      <LiquidBackground idle={backgroundIdle} artUrl={bgArtUrl} />
-      <div className="app-scrim" aria-hidden="true" />
+      <LiquidBackground idle={backgroundIdle} artUrl={bgArtUrl} paused={!bgPlaying} />
 
       <div className="app-shell">
 
@@ -1241,7 +1244,7 @@ export function App() {
             aria-label="Model and Spotify settings"
             onClick={() => setSettingsOpen(true)}
           >
-            <span className="header-gear-icon" aria-hidden="true">⚙</span>
+            <IconGear className="header-gear-icon" />
           </button>
         </div>
 
@@ -1267,7 +1270,7 @@ export function App() {
 
           <button type="button" className="banner-dismiss" onClick={() => setBanner(null)} aria-label="Dismiss">
 
-            ×
+            <IconClose />
 
           </button>
 
@@ -1400,9 +1403,10 @@ export function App() {
                     key={step.id}
                     className={`trace-step trace-step--${step.kind} trace-step--${step.status}`}
                   >
-                    <span className="trace-step-icon" aria-hidden="true">
-                      {traceIcon(step)}
-                    </span>
+                    <span
+                      className={`trace-step-icon trace-step-icon--${traceIcon(step)}`}
+                      aria-hidden="true"
+                    />
                     <span className="trace-step-label">{step.label}</span>
                     <span className="trace-step-time">{formatElapsed(elapsed)}</span>
                     {showTraceDetail && step.detail ? (
