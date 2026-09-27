@@ -3,6 +3,7 @@ import { useCallback, useEffect, useImperativeHandle, useRef, useState, forwardR
 import {
   fetchNowPlaying,
   interpolateProgress,
+  filterUpNextQueue,
   pollIntervalMs,
   postPlayerNext,
   postPlayerPrevious,
@@ -145,7 +146,7 @@ export const NowPlayingBar = forwardRef<NowPlayingBarHandle, Props>(function Now
   const progress = payload ? interpolateProgress(payload, tick) : 0;
   const duration = track?.duration_ms ?? 0;
   const pct = duration > 0 ? Math.min(100, (progress / duration) * 100) : 0;
-  const queue = payload?.queue ?? [];
+  const queue = filterUpNextQueue(payload?.queue ?? [], payload?.track?.uri);
 
   const toggleExpanded = () => setExpanded((v) => !v);
 

@@ -101,6 +101,13 @@ async function runScreenshotCapture(win: BrowserWindow): Promise<void> {
     );
     await new Promise((r) => setTimeout(r, 500));
   }
+  if (variant === "queue-expanded") {
+    await win.setBounds({ width: 420, height: 640 });
+    await win.webContents.executeJavaScript(
+      `document.querySelector('.np-bar')?.click();`,
+    );
+    await new Promise((r) => setTimeout(r, 500));
+  }
   fs.mkdirSync(dir, { recursive: true });
   const image = await win.webContents.capturePage();
   fs.writeFileSync(path.join(dir, file), image.toPNG());
@@ -125,8 +132,16 @@ async function createMainWindow(uiOrigin: string, apiOrigin: string): Promise<vo
   const preloadPath = path.join(__dirname, "preload.js");
 
   mainWindow = new BrowserWindow({
-    width: screenshotMode ? 820 : saved.width,
-    height: screenshotMode ? 720 : saved.height,
+    width: screenshotMode
+      ? process.env.SPOT_AI_FY_SCREENSHOT_VARIANT === "queue-expanded"
+        ? 420
+        : 820
+      : saved.width,
+    height: screenshotMode
+      ? process.env.SPOT_AI_FY_SCREENSHOT_VARIANT === "queue-expanded"
+        ? 640
+        : 720
+      : saved.height,
     x: screenshotMode ? undefined : saved.x,
     y: screenshotMode ? undefined : saved.y,
     minWidth: windowMinSize.width,

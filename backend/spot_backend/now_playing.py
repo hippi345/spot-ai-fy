@@ -122,8 +122,11 @@ def _normalize_track(item: dict[str, Any] | None, *, small_art: bool = False) ->
     )
     album_name = album.get("name") if isinstance(album, dict) and isinstance(album.get("name"), str) else ""
     duration = item.get("duration_ms")
+    uri = item.get("uri")
+    track_uri = uri.strip() if isinstance(uri, str) and uri.strip() else f"spotify:track:{tid}"
     return {
         "id": tid,
+        "uri": track_uri,
         "name": name,
         "artists": _artist_names(item.get("artists")),
         "album": album_name,
@@ -147,7 +150,15 @@ def _normalize_queue_item(entry: Any) -> dict[str, Any] | None:
         prefer_largest=False,
         target_px=48,
     )
+    tr_uri = tr.get("uri")
+    tid = tr.get("id")
+    uri_out = ""
+    if isinstance(tr_uri, str) and tr_uri.strip():
+        uri_out = tr_uri.strip()
+    elif isinstance(tid, str) and tid.strip():
+        uri_out = f"spotify:track:{tid.strip()}"
     return {
+        "uri": uri_out,
         "name": name,
         "artists": _artist_names(tr.get("artists")),
         "art_url": art_url,
@@ -173,6 +184,18 @@ def _fetch_player_and_queue(client: SpotifyClient) -> tuple[dict[str, Any] | Non
                 if norm:
                     queue_raw.append(norm)
     return (player if isinstance(player, dict) else None), queue_raw
+
+
+def _drop_leading_current_from_queue(
+    queue: list[dict[str, Any]],
+    current_uri: str | None,
+) -> list[dict[str, Any]]:
+    if not queue or not current_uri:
+        return queue
+    first_uri = queue[0].get("uri") if isinstance(queue[0], dict) else None
+    if isinstance(first_uri, str) and first_uri.strip() == current_uri.strip():
+        return queue[1:]
+    return queue
 
 
 def build_now_playing_payload(
@@ -212,12 +235,15 @@ def build_now_playing_payload(
             "fetched_at": time.time(),
         }
 
+    current_uri = track.get("uri") if isinstance(track.get("uri"), str) else None
+    queue_out = _drop_leading_current_from_queue(queue, current_uri)
+
     return {
         "is_playing": is_playing,
         "track": track,
         "progress_ms": progress_ms,
         "device": device_out,
-        "queue": queue,
+        "queue": queue_out,
         "fetched_at": time.time(),
     }
 

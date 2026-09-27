@@ -202,7 +202,7 @@ def test_r14_item2_restore_shuffle_repeat_bounded(
 
 
 @respx.mock
-def test_r14_item2_manual_requeue_does_not_alter_restore_play_body(
+def test_r14_item2_restore_play_body_unchanged_and_no_queue_posts(
     data_dir, signed_in_tokens,
 ) -> None:
     album_id = "1111111111111111111111"
@@ -288,4 +288,4 @@ def test_r14_item2_manual_requeue_does_not_alter_restore_play_body(
     assert restore["context_uri"] == f"spotify:album:{album_id}"
     assert restore["offset"] == {"uri": current_track}
     assert "uris" not in restore
-    assert queue_posts == [manual]
+    assert queue_posts == []

@@ -2,6 +2,7 @@ import { apiFetch, readJson } from "./api";
 
 export type NowPlayingTrack = {
   id: string;
+  uri?: string;
   name: string;
   artists: string[];
   album: string;
@@ -10,10 +11,22 @@ export type NowPlayingTrack = {
 };
 
 export type NowPlayingQueueItem = {
+  uri?: string;
   name: string;
   artists: string[];
   art_url: string | null;
 };
+
+/** Drop only a leading queue row that duplicates the currently playing track URI. */
+export function filterUpNextQueue(
+  queue: NowPlayingQueueItem[],
+  currentUri: string | null | undefined,
+): NowPlayingQueueItem[] {
+  if (!queue.length || !currentUri?.trim()) return queue;
+  const first = queue[0]?.uri?.trim();
+  if (first && first === currentUri.trim()) return queue.slice(1);
+  return queue;
+}
 
 export type NowPlayingPayload = {
   is_playing: boolean;

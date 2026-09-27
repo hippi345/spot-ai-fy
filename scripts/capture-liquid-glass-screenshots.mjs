@@ -165,6 +165,12 @@ async function main() {
       { file: "electron-playing-mock.png", mockNp: true, variant: "playing", signedIn: true },
       { file: "electron-idle-signed-out.png", mockNp: false, variant: "idle", signedIn: false },
       { file: "electron-settings-sheet.png", mockNp: false, variant: "settings", signedIn: true },
+      {
+        file: "electron-queue-expanded-min.png",
+        mockNp: true,
+        variant: "queue-expanded",
+        signedIn: true,
+      },
     ];
 
     for (const shot of electronShots) {
@@ -182,6 +188,7 @@ async function main() {
     "electron-playing-mock.png",
     "electron-idle-signed-out.png",
     "electron-settings-sheet.png",
+    "electron-queue-expanded-min.png",
   ]) {
     const p = path.join(outDir, name);
     if (!fs.existsSync(p)) throw new Error(`Missing screenshot ${p}`);

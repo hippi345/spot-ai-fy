@@ -3765,14 +3765,14 @@ class SpotifyToolRunner:
             "offset": {"uri": uri},
         }
 
-    def _resolve_track_uri_for_queue(
+    def _resolve_track_for_queue(
         self,
         *,
         query: str = "",
         track_name: str = "",
         artist_name: str = "",
         market: str = "",
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, dict[str, Any] | None, str | None]:
         market = _normalize_market(market)
         q = (query or "").strip()
         if not q:
@@ -3782,7 +3782,7 @@ class SpotifyToolRunner:
             elif parts:
                 q = parts[0]
         if not q:
-            return None, "query or track_name is required"
+            return None, None, "query or track_name is required"
         data = self.client.api_get(
             "/search",
             params={"q": q, "type": "track", "market": market, "limit": 10},
@@ -3790,7 +3790,7 @@ class SpotifyToolRunner:
         tracks_obj = data.get("tracks") if isinstance(data, dict) else None
         items = tracks_obj.get("items") if isinstance(tracks_obj, dict) else None
         if not isinstance(items, list) or not items:
-            return None, f"No tracks found for {q!r}"
+            return None, None, f"No tracks found for {q!r}"
         best: dict[str, Any] | None = None
         best_score = -10_000
         for tr in items:
@@ -3805,14 +3805,30 @@ class SpotifyToolRunner:
                 best_score = score
                 best = tr
         if not best:
-            return None, f"No tracks found for {q!r}"
+            return None, None, f"No tracks found for {q!r}"
         uri = best.get("uri")
         if isinstance(uri, str) and uri.strip():
-            return uri.strip(), None
+            return uri.strip(), best, None
         tid = best.get("id")
         if isinstance(tid, str) and _looks_like_spotify_catalog_id(tid):
-            return f"spotify:track:{tid}", None
-        return None, "Search returned a track without a uri"
+            return f"spotify:track:{tid}", best, None
+        return None, best, "Search returned a track without a uri"
+
+    def _resolve_track_uri_for_queue(
+        self,
+        *,
+        query: str = "",
+        track_name: str = "",
+        artist_name: str = "",
+        market: str = "",
+    ) -> tuple[str | None, str | None]:
+        uri, _track, err = self._resolve_track_for_queue(
+            query=query,
+            track_name=track_name,
+            artist_name=artist_name,
+            market=market,
+        )
+        return uri, err
 
     def _rewrite_single_track_play_for_artist_context(
         self,
@@ -4499,9 +4515,6 @@ class SpotifyToolRunner:
                 self.client.api_put(pause_path)
             except httpx.HTTPStatusError:
                 pass
-        manual = prior.get("manual_queue_uris")
-        if isinstance(manual, list) and manual:
-            self._requeue_manual_uris([str(u) for u in manual if u], device_id)
         return body
 
     def _describe_requested_play(self, body: dict[str, Any], label_override: str = "") -> str:
@@ -4847,32 +4860,51 @@ class SpotifyToolRunner:
         artist_name = _pick_arg(arguments, "artist_name", "artist")
         if not track_name.strip():
             return json.dumps({"ok": False, "error": "track_name is required"})
-        uri, err = self._resolve_track_uri_for_queue(
+        uri, track_match, err = self._resolve_track_for_queue(
             track_name=track_name,
             artist_name=artist_name,
         )
         if err or not uri:
             return json.dumps({"ok": False, "error": err or "Could not resolve track"})
-        play_args: dict[str, Any] = {
-            "uris": [uri],
-            "force_interrupt": True,
-            "skip_album_context": True,
-        }
         device_id = _coerce_str(arguments.get("device_id"))
+        play_args_base: dict[str, Any] = {"force_interrupt": True}
         if device_id:
-            play_args["device_id"] = device_id
-        play_raw = self._start_playback(play_args)
-        try:
-            play_result = json.loads(play_raw)
-        except (json.JSONDecodeError, ValueError):
-            play_result = {"ok": False}
-        player = self._poll_player_state()
-        verified = bool(
-            isinstance(play_result, dict)
-            and play_result.get("playback_verified") is True
+            play_args_base["device_id"] = device_id
+        album_body = (
+            self._album_offset_body_for_track(track_match, track_uri=uri)
+            if isinstance(track_match, dict)
+            else None
         )
+        play_result: dict[str, Any] = {"ok": False}
+        if album_body:
+            play_raw = self._start_playback({**play_args_base, **album_body})
+            try:
+                play_result = json.loads(play_raw)
+            except (json.JSONDecodeError, ValueError):
+                play_result = {"ok": False}
+        verified = bool(
+            isinstance(play_result, dict) and play_result.get("playback_verified") is True
+        )
+        player = self._poll_player_state()
         if player and self._track_uri_from_player(player) == uri:
             verified = True
+        if not verified:
+            uris_args: dict[str, Any] = {
+                **play_args_base,
+                "uris": [uri],
+                "skip_album_context": True,
+            }
+            play_raw = self._start_playback(uris_args)
+            try:
+                play_result = json.loads(play_raw)
+            except (json.JSONDecodeError, ValueError):
+                play_result = {"ok": False}
+            player = self._poll_player_state()
+            verified = bool(
+                isinstance(play_result, dict) and play_result.get("playback_verified") is True
+            )
+            if player and self._track_uri_from_player(player) == uri:
+                verified = True
         summary: dict[str, Any] = {
             "ok": verified,
             "playback_verified": verified,
