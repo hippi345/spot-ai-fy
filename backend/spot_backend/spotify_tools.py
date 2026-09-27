@@ -125,6 +125,21 @@ def _safe_int(v: Any, default: int, *, lo: int | None = None, hi: int | None = N
     return x
 
 
+_PLACEHOLDER_DEVICE_IDS = frozenset(
+    {"default", "active", "auto", "none", "any", "current", "primary"}
+)
+
+
+def _sanitize_model_device_id(raw: str) -> str:
+    """Drop model-invented device placeholders; only real saved ids should be sent."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if s.lower() in _PLACEHOLDER_DEVICE_IDS:
+        return ""
+    return s
+
+
 def _pick_arg(arguments: dict[str, Any], *keys: str, default: str = "") -> str:
     for k in keys:
         s = _coerce_str(arguments.get(k), "")
@@ -4811,7 +4826,14 @@ class SpotifyToolRunner:
             uri = resolved or ""
         if not uri:
             return json.dumps({"error": "uri is required (or pass query / track_name + artist_name)"})
-        device_id = str(arguments.get("device_id", "")).strip() or self._device_id()
+        explicit = _sanitize_model_device_id(str(arguments.get("device_id", "")))
+        saved = (self._device_id() or "").strip()
+        if explicit:
+            device_id, _note = self._coerce_playback_device_id(explicit)
+        elif saved:
+            device_id, _note = self._coerce_playback_device_id(saved)
+        else:
+            device_id = ""
         params: dict[str, str] = {"uri": uri}
         if device_id:
             params["device_id"] = device_id
