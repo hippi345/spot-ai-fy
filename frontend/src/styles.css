@@ -1239,4 +1239,59 @@ details[open] > .settings-summary::before {
   padding: 6px 12px;
 }
 
+.desktop-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  background: #0a0a0e;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.desktop-titlebar-drag {
+  flex: 1;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.desktop-titlebar-title {
+  font-size: 0.8rem;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.desktop-titlebar-controls {
+  display: flex;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.desktop-win-btn {
+  width: 46px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.desktop-win-btn:hover {
+  background: #2a2a33;
+}
+
+.desktop-win-btn--close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+body.desktop-shell .app {
+  min-height: 100vh;
+}
+
 

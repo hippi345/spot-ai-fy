@@ -3,10 +3,28 @@
  * Set VITE_API_BASE_URL to talk to a remote API; otherwise same-origin / Vite proxy.
  */
 
+declare global {
+  interface Window {
+    spotAiFy?: {
+      apiBaseUrl?: string;
+      isDesktop?: boolean;
+      platform?: string;
+      windowMinimize?: () => void;
+      windowToggleMaximize?: () => void;
+      windowClose?: () => void;
+    };
+  }
+}
+
 export function apiUrl(path: string): string {
-  const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+  const bridgeBase = (typeof window !== "undefined" && window.spotAiFy?.apiBaseUrl) || "";
+  const apiBase = (bridgeBase || import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   const normalized = path.startsWith("/") ? path : `/${path}`;
   return apiBase ? `${apiBase}${normalized}` : normalized;
+}
+
+export function isDesktopShell(): boolean {
+  return Boolean(typeof window !== "undefined" && window.spotAiFy?.isDesktop);
 }
 
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {

@@ -2,7 +2,10 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+const electronBuild = process.env.ELECTRON_BUILD === "1" || process.env.ELECTRON_BUILD === "true";
+
 export default defineConfig({
+  base: electronBuild ? "./" : "/",
   plugins: [react()],
   test: {
     environment: "jsdom",

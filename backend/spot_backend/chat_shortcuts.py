@@ -8,6 +8,7 @@ import re
 from spot_backend.deterministic_chat_types import DeterministicChatResult
 from spot_backend.play_artist import format_play_artist_reply, play_artist_tool_step
 from spot_backend.play_artist_intent import extract_play_artist_name
+from spot_backend.playback_reply import format_now_playing_chat_reply, prompt_asks_whats_playing
 from spot_backend.prompt_intent import prompt_requests_recent_listening_history
 from spot_backend.queue_track_intent import extract_queue_track_request
 from spot_backend.spotify_tools import SpotifyToolRunner
@@ -142,6 +143,15 @@ def try_deterministic_chat_reply(
             "I could not undo the last action — nothing was changed.",
             steps,
         )
+
+    if prompt_asks_whats_playing(t):
+        state_raw = _run_tool(runner, "spotify_playback_state", {}, steps)
+        try:
+            state = json.loads(state_raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            state = {}
+        player = state if isinstance(state, dict) else {}
+        return DeterministicChatResult(format_now_playing_chat_reply(player), steps)
 
     artist_name = extract_play_artist_name(t)
     if artist_name:

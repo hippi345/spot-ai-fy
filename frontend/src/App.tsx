@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { DesktopTitleBar } from "./components/DesktopTitleBar";
 import { NowPlayingBar, type NowPlayingBarHandle } from "./components/NowPlayingBar";
 import { nowPlayingUsesMock } from "./lib/nowPlaying";
 import { SetupWizard } from "./SetupWizard";
@@ -1153,6 +1154,8 @@ export function App() {
   return (
 
     <div className="app">
+
+      <DesktopTitleBar />
 
       <header className="app-header">
 

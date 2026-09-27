@@ -52,12 +52,18 @@ export const MOCK_NOW_PLAYING_PLAYING: NowPlayingPayload = {
   fetched_at: Date.now() / 1000,
 };
 
-const useMock =
-  import.meta.env.VITE_MOCK_NOW_PLAYING === "true" ||
-  import.meta.env.VITE_MOCK_NOW_PLAYING === "1";
+function mockFromUrl(): boolean {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search);
+  return params.get("mockNp") === "1";
+}
 
 export function nowPlayingUsesMock(): boolean {
-  return useMock;
+  return (
+    import.meta.env.VITE_MOCK_NOW_PLAYING === "true" ||
+    import.meta.env.VITE_MOCK_NOW_PLAYING === "1" ||
+    mockFromUrl()
+  );
 }
 
 async function readNowPlayingResponse(res: Response): Promise<NowPlayingPayload | null> {
@@ -68,7 +74,7 @@ async function readNowPlayingResponse(res: Response): Promise<NowPlayingPayload 
 }
 
 export async function fetchNowPlaying(): Promise<NowPlayingPayload | null> {
-  if (useMock) {
+  if (nowPlayingUsesMock()) {
     return { ...MOCK_NOW_PLAYING_PLAYING, fetched_at: Date.now() / 1000 };
   }
   const res = await apiFetch("/api/now-playing");
@@ -76,7 +82,7 @@ export async function fetchNowPlaying(): Promise<NowPlayingPayload | null> {
 }
 
 export async function postPlayerToggle(): Promise<NowPlayingPayload | null> {
-  if (useMock) {
+  if (nowPlayingUsesMock()) {
     const cur = MOCK_NOW_PLAYING_PLAYING;
     return {
       ...cur,
@@ -85,23 +91,29 @@ export async function postPlayerToggle(): Promise<NowPlayingPayload | null> {
     };
   }
   const res = await apiFetch("/api/player/toggle", { method: "POST" });
-  return readNowPlayingResponse(res);
+  const data = await readNowPlayingResponse(res);
+  if (data) return data;
+  return fetchNowPlaying();
 }
 
 export async function postPlayerNext(): Promise<NowPlayingPayload | null> {
-  if (useMock) {
+  if (nowPlayingUsesMock()) {
     return { ...MOCK_NOW_PLAYING_PLAYING, fetched_at: Date.now() / 1000 };
   }
   const res = await apiFetch("/api/player/next", { method: "POST" });
-  return readNowPlayingResponse(res);
+  const data = await readNowPlayingResponse(res);
+  if (data) return data;
+  return fetchNowPlaying();
 }
 
 export async function postPlayerPrevious(): Promise<NowPlayingPayload | null> {
-  if (useMock) {
+  if (nowPlayingUsesMock()) {
     return { ...MOCK_NOW_PLAYING_PLAYING, fetched_at: Date.now() / 1000 };
   }
   const res = await apiFetch("/api/player/previous", { method: "POST" });
-  return readNowPlayingResponse(res);
+  const data = await readNowPlayingResponse(res);
+  if (data) return data;
+  return fetchNowPlaying();
 }
 
 /** Interpolate progress between server polls when playback is active. */

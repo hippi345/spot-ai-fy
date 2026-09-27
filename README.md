@@ -115,6 +115,17 @@ Set `VITE_API_BASE_URL` when the UI should call a non-proxied API host (defaults
 
 The Vite dev server proxies `/api/*`, `/login`, and `/logout` to the backend on port 8765. Spotify’s OAuth redirect still hits `http://127.0.0.1:8765/callback` directly (register that URI on the Spotify dashboard).
 
+### Desktop app (Electron)
+
+Run Spot-AI-fy as a **desktop window** instead of a browser tab. The Electron shell starts the FastAPI backend locally, serves the built Vite UI, and opens Spotify OAuth in your system browser.
+
+```bash
+cd frontend && ELECTRON_BUILD=1 npm run build
+cd ../desktop && npm ci && npm run dev
+```
+
+Packaging, OAuth notes, and Windows-specific tips: **[docs/DESKTOP.md](docs/DESKTOP.md)**. Manual chat smoke steps (web or desktop): **[docs/SMOKE_TEST.md](docs/SMOKE_TEST.md)**.
+
 ### 3. (Optional) MCP server
 
 ```powershell
