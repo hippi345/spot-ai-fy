@@ -35,9 +35,11 @@ jobs:
 
       - name: Build frontend (Electron)
         working-directory: frontend
+        env:
+          ELECTRON_BUILD: "1"
         run: |
           npm ci
-          ELECTRON_BUILD=1 npm run build
+          npm run build
 
       - name: Install desktop dependencies
         working-directory: desktop
@@ -93,9 +95,11 @@ jobs:
 
       - name: Build frontend (Electron)
         working-directory: frontend
+        env:
+          ELECTRON_BUILD: "1"
         run: |
           npm ci
-          ELECTRON_BUILD=1 npm run build
+          npm run build
 
       - name: Install desktop dependencies
         working-directory: desktop
