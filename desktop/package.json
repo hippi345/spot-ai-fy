@@ -1,0 +1,76 @@
+{
+  "name": "spot-ai-fy-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Spot-AI-fy desktop shell (Electron)",
+  "main": "dist-main/main.js",
+  "author": {
+    "name": "hippi345",
+    "email": "13539685+hippi345@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/hippi345/spot-ai-fy",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build:main": "tsc -p tsconfig.json",
+    "build": "npm run build:main",
+    "dev": "npm run build:main && electron .",
+    "smoke": "node scripts/smoke-headless.mjs",
+    "dist": "npm run build:main && electron-builder --publish never"
+  },
+  "dependencies": {
+    "tree-kill": "^1.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "~5.7.2"
+  },
+  "build": {
+    "appId": "com.spotaify.desktop",
+    "productName": "Spot-AI-fy",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist-main/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../frontend/dist",
+        "to": "frontend",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/.venv/**",
+          "!**/tests/**",
+          "!**/*.pyc"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.music"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "maintainer": "hippi345 <13539685+hippi345@users.noreply.github.com>"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

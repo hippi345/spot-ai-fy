@@ -9,6 +9,7 @@ import {
   postPlayerToggle,
   type NowPlayingPayload,
 } from "../lib/nowPlaying";
+import { NP_ART_PLACEHOLDER } from "../lib/spotifyImage";
 
 export type NowPlayingBarHandle = {
   refresh: () => Promise<void>;
@@ -20,6 +21,32 @@ type Props = {
 
 function artistLine(artists: string[]): string {
   return artists.length ? artists.join(", ") : "Unknown artist";
+}
+
+function ArtImg({
+  className,
+  src,
+  size,
+}: {
+  className: string;
+  src: string | null | undefined;
+  size: "main" | "queue";
+}) {
+  const [broken, setBroken] = useState(false);
+  const resolved = !src || broken ? NP_ART_PLACEHOLDER : src;
+  return (
+    <img
+      className={className}
+      src={resolved}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      onError={() => {
+        if (!broken) setBroken(true);
+      }}
+      data-np-art={size}
+    />
+  );
 }
 
 export const NowPlayingBar = forwardRef<NowPlayingBarHandle, Props>(function NowPlayingBar(
@@ -137,8 +164,8 @@ export const NowPlayingBar = forwardRef<NowPlayingBarHandle, Props>(function Now
         onKeyDown={onBodyKeyDown}
       >
         <div className="np-art" aria-hidden={idle}>
-          {track?.art_url ? (
-            <img className="np-art-img" src={track.art_url} alt="" />
+          {track ? (
+            <ArtImg className="np-art-img" src={track.art_url} size="main" />
           ) : (
             <span className="np-art-placeholder" />
           )}
@@ -185,11 +212,7 @@ export const NowPlayingBar = forwardRef<NowPlayingBarHandle, Props>(function Now
           {queue.length === 0 ? <li className="np-queue-empty">Queue is empty</li> : null}
           {queue.map((item, i) => (
             <li key={`${item.name}-${i}`} className="np-queue-item">
-              {item.art_url ? (
-                <img className="np-queue-art" src={item.art_url} alt="" />
-              ) : (
-                <span className="np-queue-art np-queue-art--placeholder" />
-              )}
+              <ArtImg className="np-queue-art" src={item.art_url} size="queue" />
               <span className="np-queue-text">
                 <span className="np-queue-title">{item.name}</span>
                 <span className="np-queue-artists">{artistLine(item.artists)}</span>

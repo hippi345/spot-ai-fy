@@ -1,0 +1,112 @@
+name: desktop build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Build frontend (Electron)
+        working-directory: frontend
+        env:
+          ELECTRON_BUILD: "1"
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Typecheck and build main process
+        working-directory: desktop
+        run: |
+          npm run typecheck
+          npm run build:main
+
+      - name: Electron smoke (xvfb)
+        working-directory: desktop
+        env:
+          ELECTRON_DISABLE_SANDBOX: "1"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          xvfb-run -a npm run smoke
+
+  package:
+    needs: smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Build frontend (Electron)
+        working-directory: frontend
+        env:
+          ELECTRON_BUILD: "1"
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Package (${{ matrix.platform }})
+        working-directory: desktop
+        run: |
+          npm run build:main
+          npx electron-builder --${{ matrix.platform }} --publish never

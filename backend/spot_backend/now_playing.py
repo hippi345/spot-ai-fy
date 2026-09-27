@@ -65,17 +65,46 @@ def _artist_names(artists: Any) -> list[str]:
     return out
 
 
-def _pick_image_url(images: Any, *, prefer_largest: bool) -> str | None:
+def _image_sort_key(im: dict[str, Any]) -> int:
+    w = im.get("width")
+    h = im.get("height")
+    if isinstance(w, (int, float)) and w > 0:
+        return int(w)
+    if isinstance(h, (int, float)) and h > 0:
+        return int(h)
+    return 300
+
+
+def _pick_image_url(images: Any, *, prefer_largest: bool, target_px: int = 64) -> str | None:
     if not isinstance(images, list) or not images:
         return None
-    valid = [im for im in images if isinstance(im, dict) and isinstance(im.get("url"), str)]
+    valid: list[dict[str, Any]] = []
+    for im in images:
+        if not isinstance(im, dict):
+            continue
+        url = im.get("url")
+        if not isinstance(url, str) or not url.strip().startswith("http"):
+            continue
+        valid.append(im)
     if not valid:
         return None
     if prefer_largest:
-        valid.sort(key=lambda im: int(im.get("width") or 0), reverse=True)
-    else:
-        valid.sort(key=lambda im: int(im.get("width") or 0))
+        valid.sort(key=_image_sort_key, reverse=True)
+        return valid[0]["url"]
+    valid.sort(key=lambda im: abs(_image_sort_key(im) - target_px))
     return valid[0]["url"]
+
+
+def _images_for_item(item: dict[str, Any]) -> Any:
+    album = item.get("album") if isinstance(item.get("album"), dict) else None
+    if album and album.get("images"):
+        return album.get("images")
+    if item.get("images"):
+        return item.get("images")
+    show = item.get("show") if isinstance(item.get("show"), dict) else None
+    if show and show.get("images"):
+        return show.get("images")
+    return None
 
 
 def _normalize_track(item: dict[str, Any] | None, *, small_art: bool = False) -> dict[str, Any] | None:
@@ -87,8 +116,9 @@ def _normalize_track(item: dict[str, Any] | None, *, small_art: bool = False) ->
         return None
     album = item.get("album") if isinstance(item.get("album"), dict) else {}
     art_url = _pick_image_url(
-        album.get("images") if isinstance(album, dict) else None,
+        _images_for_item(item),
         prefer_largest=not small_art,
+        target_px=64 if small_art else 300,
     )
     album_name = album.get("name") if isinstance(album, dict) and isinstance(album.get("name"), str) else ""
     duration = item.get("duration_ms")
@@ -112,7 +142,11 @@ def _normalize_queue_item(entry: Any) -> dict[str, Any] | None:
     if not isinstance(name, str):
         return None
     album = tr.get("album") if isinstance(tr.get("album"), dict) else {}
-    art_url = _pick_image_url(album.get("images") if isinstance(album, dict) else None, prefer_largest=False)
+    art_url = _pick_image_url(
+        _images_for_item(tr) if isinstance(tr, dict) else None,
+        prefer_largest=False,
+        target_px=48,
+    )
     return {
         "name": name,
         "artists": _artist_names(tr.get("artists")),
@@ -206,9 +240,47 @@ def get_now_playing(client: SpotifyClient) -> dict[str, Any]:
     return payload
 
 
+def _player_signature(player: dict[str, Any] | None) -> tuple[str | None, bool | None]:
+    if not isinstance(player, dict):
+        return (None, None)
+    item = player.get("item") if isinstance(player.get("item"), dict) else None
+    tid = item.get("id") if isinstance(item, dict) and isinstance(item.get("id"), str) else None
+    is_playing = bool(player.get("is_playing")) if "is_playing" in player else None
+    return (tid, is_playing)
+
+
+def _refresh_now_playing_after_player_action(
+    client: SpotifyClient,
+    *,
+    before: tuple[str | None, bool | None],
+    expect_track_change: bool,
+) -> dict[str, Any]:
+    """Re-fetch /me/player until Spotify reflects the control action (bounded wait)."""
+    deadline = time.time() + 2.0
+    last_payload: dict[str, Any] | None = None
+    while time.time() < deadline:
+        player, queue = _fetch_player_and_queue(client)
+        payload = build_now_playing_payload(player=player, queue=queue)
+        last_payload = payload
+        sig = _player_signature(player)
+        if expect_track_change:
+            if sig[0] and sig[0] != before[0]:
+                _CACHE.last_good = payload
+                return payload
+        elif sig[1] is not None and sig[1] != before[1]:
+            _CACHE.last_good = payload
+            return payload
+        time.sleep(0.15)
+    if last_payload is not None:
+        _CACHE.last_good = last_payload
+        return last_payload
+    return get_now_playing(client)
+
+
 def player_toggle(client: SpotifyClient) -> dict[str, Any]:
     params = _device_params(client)
     player = client.api_get("/me/player")
+    before = _player_signature(player if isinstance(player, dict) else None)
     is_playing = isinstance(player, dict) and bool(player.get("is_playing"))
     if is_playing:
         path = "/me/player/pause"
@@ -222,19 +294,29 @@ def player_toggle(client: SpotifyClient) -> dict[str, Any]:
             client.api_put(path, params=params)
         else:
             client.api_put(path)
-    return get_now_playing(client)
+    return _refresh_now_playing_after_player_action(
+        client, before=before, expect_track_change=False
+    )
 
 
 def player_next(client: SpotifyClient) -> dict[str, Any]:
     params = _device_params(client)
+    player = client.api_get("/me/player")
+    before = _player_signature(player if isinstance(player, dict) else None)
     client.api_post("/me/player/next", params=params or None)
-    return get_now_playing(client)
+    return _refresh_now_playing_after_player_action(
+        client, before=before, expect_track_change=True
+    )
 
 
 def player_previous(client: SpotifyClient) -> dict[str, Any]:
     params = _device_params(client)
+    player = client.api_get("/me/player")
+    before = _player_signature(player if isinstance(player, dict) else None)
     client.api_post("/me/player/previous", params=params or None)
-    return get_now_playing(client)
+    return _refresh_now_playing_after_player_action(
+        client, before=before, expect_track_change=True
+    )
 
 
 def reset_now_playing_cache_for_tests() -> None:

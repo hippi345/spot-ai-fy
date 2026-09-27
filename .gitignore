@@ -3,6 +3,9 @@ backend/.env
 backend/AGENT_CONTEXT.md
 frontend/node_modules/
 frontend/dist/
+desktop/node_modules/
+desktop/dist-main/
+desktop/release/
 __pycache__/
 *.pyc
 .DS_Store

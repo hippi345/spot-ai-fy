@@ -7,7 +7,9 @@ import re
 from typing import Any
 
 _QUOTED_TITLE_ARTIST_RE = re.compile(
-    r"[\"'“”‘’]([^\"'“”‘’]+)[\"'“”‘’]\s+by\s+([A-Z][A-Za-z0-9'’.&\-]+)",
+    r"[\"'“”‘’]([^\"'“”‘’]+)[\"'“”‘’]\s+by\s+"
+    r"([A-Za-z0-9'’.&\-]+(?:\s+[A-Za-z0-9'’.&\-]+){0,2})"
+    r"(?=\s+is\b|[\.\?!,]|\s*$)",
     re.I,
 )
 
@@ -70,7 +72,13 @@ def ground_reply_artist_credits(text: str, tool_results: list[str] | None) -> st
         return text
     replacement = allowed[0]
     out = text
+    repl_l = replacement.lower()
     for wrong in bad:
+        wrong_l = wrong.lower()
+        if wrong_l and wrong_l in repl_l and wrong_l != repl_l:
+            # Avoid turning "John Mayer" into "John Mayer Mayer" when only a first-name
+            # token was mis-parsed as the credited artist.
+            continue
         out = re.sub(
             rf"\b{re.escape(wrong)}\b",
             replacement,
