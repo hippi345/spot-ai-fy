@@ -103,30 +103,77 @@ def _dedupe_album_items_by_title(items: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _best_artist_name_for_track_search(*candidates: str | None) -> str:
+    """Pick a Spotify `artist:"..."` query name; prefer fuller alias forms (e.g. Kanye West over Ye)."""
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        label = candidate.strip()
+        if not label or _looks_like_spotify_catalog_id(label):
+            continue
+        key = normalize_artist_name_for_match(label)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(label)
+    if not unique:
+        return ""
+    if len(unique) == 1:
+        return unique[0]
+    alias_linked = [
+        name
+        for name in unique
+        if any(
+            name != other
+            and (
+                artist_query_matches_candidate_name(name, other)
+                or artist_query_matches_candidate_name(other, name)
+            )
+            for other in unique
+        )
+    ]
+    pool = alias_linked or unique
+    return max(pool, key=len)
+
+
 def _track_matches_artist(
     track: dict[str, Any],
     *,
     artist_id: str,
     artist_name: str,
+    name_hints: tuple[str, ...] = (),
 ) -> bool:
     artists = track.get("artists") if isinstance(track.get("artists"), list) else []
     if not artists:
         # artist:"..." search results are already scoped; some API tiers omit artist objects.
         return True
-    name_low = artist_name.strip().lower()
+    aid = (artist_id or "").strip()
     for row in artists:
         if not isinstance(row, dict):
             continue
         credited_id = str(row.get("id") or "").strip()
-        if artist_id and credited_id == artist_id:
+        if aid and credited_id == aid:
             return True
-        if not name_low:
+    name_pool = tuple(
+        n.strip()
+        for n in (artist_name,) + name_hints
+        if isinstance(n, str) and n.strip() and not _looks_like_spotify_catalog_id(n.strip())
+    )
+    for row in artists:
+        if not isinstance(row, dict):
             continue
         an = str(row.get("name") or "").strip()
-        if an.casefold() == name_low:
-            return True
-        if an and artist_names_match(artist_name, an):
-            return True
+        if not an:
+            continue
+        for hint in name_pool:
+            if an.casefold() == hint.casefold():
+                return True
+            if artist_query_matches_candidate_name(hint, an):
+                return True
+            if artist_names_match(hint, an):
+                return True
     return False
 
 
@@ -2187,6 +2234,8 @@ class SpotifyToolRunner:
         if not cid:
             return None, raw_ref.strip()
         name = raw_ref.strip()
+        if _looks_like_spotify_catalog_id(name):
+            name = ""
         try:
             art = self.client.api_get(f"/artists/{cid}")
             if isinstance(art, dict) and isinstance(art.get("name"), str):
@@ -2195,6 +2244,21 @@ class SpotifyToolRunner:
             pass
         return cid, name
 
+    def _artist_name_for_track_search(
+        self,
+        artist_id: str,
+        market: str,
+        *hints: str | None,
+    ) -> str:
+        api_name = ""
+        try:
+            art = self.client.api_get(f"/artists/{artist_id}")
+            if isinstance(art, dict) and isinstance(art.get("name"), str):
+                api_name = art["name"].strip()
+        except httpx.HTTPStatusError:
+            pass
+        return _best_artist_name_for_track_search(api_name, *hints)
+
     def _search_artist_tracks_for_popularity(
         self,
         *,
@@ -2202,8 +2266,10 @@ class SpotifyToolRunner:
         artist_name: str,
         market: str,
         max_pages: int = 3,
+        name_hints: tuple[str, ...] = (),
     ) -> list[dict[str, Any]]:
-        query = f'artist:"{artist_name}"' if artist_name else artist_id
+        search_name = artist_name.strip() or _best_artist_name_for_track_search(*name_hints)
+        query = f'artist:"{search_name}"' if search_name else artist_id
         collected: list[dict[str, Any]] = []
         for page_idx in range(max_pages):
             search = self.client.api_get(
@@ -2222,7 +2288,10 @@ class SpotifyToolRunner:
                 break
             for tr in items:
                 if isinstance(tr, dict) and _track_matches_artist(
-                    tr, artist_id=artist_id, artist_name=artist_name
+                    tr,
+                    artist_id=artist_id,
+                    artist_name=search_name or artist_name,
+                    name_hints=name_hints,
                 ):
                     collected.append(tr)
             if not isinstance(tracks_obj, dict) or not tracks_obj.get("next"):
@@ -2235,6 +2304,7 @@ class SpotifyToolRunner:
         artist_id: str,
         market: str,
         limit: int = 10,
+        name_hints: tuple[str, ...] = (),
     ) -> list[dict[str, Any]]:
         """Fallback when artist-name scoped search returns no playable rows."""
         aid = (artist_id or "").strip()
@@ -2251,10 +2321,65 @@ class SpotifyToolRunner:
         out: list[dict[str, Any]] = []
         for tr in items:
             if isinstance(tr, dict) and _track_matches_artist(
-                tr, artist_id=aid, artist_name=""
+                tr, artist_id=aid, artist_name="", name_hints=name_hints
             ):
                 out.append(tr)
         return out
+
+    def _play_artist_via_context_uri(
+        self,
+        *,
+        artist_id: str,
+        artist_name: str,
+        device_id: str | None,
+    ) -> dict[str, Any]:
+        play_args: dict[str, Any] = {"context_uri": f"spotify:artist:{artist_id}"}
+        if device_id:
+            play_args["device_id"] = device_id
+        play_args["playback_request_label"] = artist_name or artist_id
+        play_raw = self._start_playback(play_args)
+        try:
+            play_result = json.loads(play_raw)
+        except (json.JSONDecodeError, ValueError):
+            play_result = {"ok": False, "raw": play_raw}
+        play_ok = isinstance(play_result, dict) and play_result.get("ok") is True
+        player = self._poll_player_state(attempts=6, delay_s=0.5)
+        verified = bool(
+            isinstance(play_result, dict) and play_result.get("playback_verified") is True
+        )
+        if player:
+            ctx = player.get("context") if isinstance(player.get("context"), dict) else None
+            ctx_uri = str(ctx.get("uri") or "") if ctx else ""
+            if ctx_uri == f"spotify:artist:{artist_id}":
+                verified = True
+            elif self._player_item_features_artist(player, artist_name, artist_id=artist_id):
+                verified = True
+        summary: dict[str, Any] = {
+            "artist_id": artist_id,
+            "artist_name": artist_name,
+            "play_body": {"context_uri": f"spotify:artist:{artist_id}"},
+            "playback": play_result,
+            "player_after": player,
+            "playback_verified": verified,
+            "ok": play_ok or verified,
+            "selection_method": "artist context_uri (no track search hits)",
+        }
+        if not play_ok and not verified:
+            user_msg = play_result.get("user_message") if isinstance(play_result, dict) else None
+            if isinstance(user_msg, str) and user_msg.strip():
+                summary["user_message"] = user_msg.strip()
+                summary["error"] = user_msg.strip()
+            else:
+                summary["error"] = _PLAYBACK_START_FAILED_USER_MESSAGE
+            summary["failure_reason"] = (
+                self._playback_failure_reason_from_result(play_result)
+                if isinstance(play_result, dict)
+                else "playback_not_verified"
+            )
+            if not verified:
+                summary["failure_reason"] = "playback_not_verified"
+            self._lift_failure_fields(summary, play_result if isinstance(play_result, dict) else {})
+        return summary
 
     def _play_artist_popular_track(self, arguments: dict[str, Any]) -> str:
         raw_id = _pick_arg(arguments, "artist_id", "id")
@@ -2289,22 +2414,35 @@ class SpotifyToolRunner:
                 },
                 ensure_ascii=False,
             )
+        track_search_name = self._artist_name_for_track_search(
+            cid, market, artist_name, str(raw_ref).strip()
+        )
+        name_hints = tuple(
+            h
+            for h in (track_search_name, artist_name, str(raw_ref).strip())
+            if isinstance(h, str) and h.strip()
+        )
         tracks = self._search_artist_tracks_for_popularity(
             artist_id=cid,
-            artist_name=artist_name,
+            artist_name=track_search_name,
             market=market,
+            name_hints=name_hints,
         )
+        if not tracks:
+            tracks = self._search_tracks_by_artist_id(
+                artist_id=cid,
+                market=market,
+                name_hints=name_hints,
+            )
         picked = _pick_track_by_popularity(tracks)
         if not picked:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "artist_id": cid,
-                    "error": "I couldn't find playable tracks for that artist right now.",
-                    "reconnect_spotify_unnecessary": True,
-                },
-                ensure_ascii=False,
+            device_id = _coerce_str(arguments.get("device_id"))
+            fallback = self._play_artist_via_context_uri(
+                artist_id=cid,
+                artist_name=track_search_name or artist_name,
+                device_id=device_id,
             )
+            return _compact(fallback)
         play_body = self._album_offset_body_for_track(picked)
         if not play_body:
             return json.dumps(
@@ -5505,14 +5643,19 @@ class SpotifyToolRunner:
         name_was_free_text = not _looks_like_spotify_catalog_id(
             requested_label
         ) and not (parsed and parsed[0] == "artist")
-        _, artist_name_resolved = self._resolve_artist_id_and_name(cid, market)
+        resolve_name_ref = requested_label
+        if _looks_like_spotify_catalog_id(resolve_name_ref):
+            resolve_name_ref = _pick_arg(arguments, "artist_name", "name") or cid
+        _, artist_name_resolved = self._resolve_artist_id_and_name(resolve_name_ref, market)
         name_ok = artist_query_matches_candidate_name(
             requested_label, artist_name_resolved or ""
         )
+        resolved_search_name = ""
         if bare_play_query:
             resolved_bare = self._resolve_artist_search_query(bare_play_query, market)
             if resolved_bare and resolved_bare[0] == cid:
                 name_ok = True
+                resolved_search_name = str(resolved_bare[1] or "").strip()
         if name_was_free_text and not name_ok:
             return json.dumps(
                 {
@@ -5524,29 +5667,54 @@ class SpotifyToolRunner:
                 },
                 ensure_ascii=False,
             )
+        passed_artist_name = _pick_arg(arguments, "artist_name", "name").strip()
+        track_search_name = self._artist_name_for_track_search(
+            cid,
+            market,
+            resolved_search_name,
+            passed_artist_name,
+            requested_label,
+            bare_play_query,
+        )
+        artist_name_resolved = track_search_name or artist_name_resolved or requested_label
+        name_hints = tuple(
+            h
+            for h in (
+                track_search_name,
+                resolved_search_name,
+                passed_artist_name,
+                requested_label,
+                bare_play_query,
+            )
+            if isinstance(h, str) and h.strip() and not _looks_like_spotify_catalog_id(h.strip())
+        )
         track_dicts = self._search_artist_tracks_for_popularity(
             artist_id=cid,
-            artist_name=artist_name_resolved,
+            artist_name=track_search_name,
             market=market,
+            name_hints=name_hints,
         )
         track_dicts = [tr for tr in track_dicts if isinstance(tr, dict) and tr.get("uri")]
         if not track_dicts:
             track_dicts = self._search_tracks_by_artist_id(
                 artist_id=cid,
                 market=market,
+                name_hints=name_hints,
             )
             track_dicts = [tr for tr in track_dicts if isinstance(tr, dict) and tr.get("uri")]
         if not track_dicts:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "failure_reason": "no_tracks_for_artist",
-                    "artist_id": cid,
-                    "error": "I couldn't find playable tracks for that artist right now.",
-                    "reconnect_spotify_unnecessary": True,
-                },
-                ensure_ascii=False,
+            device_id = _coerce_str(arguments.get("device_id"))
+            summary = self._play_artist_via_context_uri(
+                artist_id=cid,
+                artist_name=artist_name_resolved,
+                device_id=device_id,
             )
+            if summary.get("ok") is True or summary.get("playback_verified") is True:
+                return _compact(summary)
+            summary["failure_reason"] = "no_tracks_for_artist"
+            if not summary.get("error"):
+                summary["error"] = "I couldn't find playable tracks for that artist right now."
+            return _compact(summary)
         first = _pick_track_by_popularity(track_dicts) or track_dicts[0]
         play_body = self._album_offset_body_for_track(first)
         if not play_body:
@@ -5864,8 +6032,12 @@ class SpotifyToolRunner:
                 if isinstance(credited_id, str) and credited_id.strip() == aid:
                     return True
             name = artist.get("name")
-            if isinstance(name, str) and artist_names_match(req, name.strip()):
-                return True
+            if isinstance(name, str):
+                credited = name.strip()
+                if artist_names_match(req, credited):
+                    return True
+                if artist_query_matches_candidate_name(req, credited):
+                    return True
         return False
 
     def _poll_player_state(self, *, attempts: int = 8, delay_s: float = 0.35) -> dict[str, Any] | None:

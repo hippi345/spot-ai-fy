@@ -68,7 +68,7 @@ def _track_search_noise() -> httpx.Response:
 
 def _artist_tracks_for_ye(request: httpx.Request) -> httpx.Response:
     q = request.url.params.get("q") or ""
-    if YE_ARTIST_ID in q or 'artist:"Ye"' in q or 'artist:"Kanye West"' in q:
+    if YE_ARTIST_ID in q or 'artist:"Kanye West"' in q or 'artist:"Ye"' in q:
         return httpx.Response(
             200,
             json={
@@ -239,6 +239,122 @@ def test_play_bare_failure_reason_artist_not_found(data_dir, signed_in_tokens) -
 
 
 @respx.mock
+def test_play_bare_ye_track_search_uses_kanye_west_not_query_mononym(
+    data_dir, signed_in_tokens
+) -> None:
+    """Resolved alias name must drive artist:\"...\" track search, not the bare query Ye."""
+    track_search_qs: list[str] = []
+
+    def search_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("type") == "artist":
+            return httpx.Response(
+                200,
+                json={
+                    "artists": {
+                        "items": [{"id": YE_ARTIST_ID, "name": "Kanye West", "popularity": 90}],
+                    }
+                },
+            )
+        q = request.url.params.get("q") or ""
+        track_search_qs.append(q)
+        if 'artist:"Kanye West"' in q:
+            return httpx.Response(
+                200,
+                json={
+                    "tracks": {
+                        "items": [
+                            {
+                                "name": "Runaway",
+                                "popularity": 80,
+                                "uri": KANYE_TRACK_URI,
+                                "album": {"id": ALBUM_ID},
+                                "artists": [{"id": YE_ARTIST_ID, "name": "Kanye West"}],
+                            }
+                        ]
+                    }
+                },
+            )
+        return httpx.Response(200, json={"tracks": {"items": []}})
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(
+        side_effect=search_handler
+    )
+    respx.get(f"https://api.spotify.com/v1/artists/{YE_ARTIST_ID}").mock(
+        return_value=httpx.Response(200, json={"id": YE_ARTIST_ID, "name": "Ye"})
+    )
+    _mock_ye_playback_success()
+
+    runner = SpotifyToolRunner(settings=Settings())
+    raw = runner.run("spotify_play_bare", {"query": "Ye"})
+    runner.close()
+    data = json.loads(raw)
+    assert data.get("ok") is True
+    assert track_search_qs
+    assert any('artist:"Kanye West"' in q for q in track_search_qs)
+    assert not any('artist:"Ye"' in q for q in track_search_qs)
+
+
+@respx.mock
+def test_play_bare_ye_falls_back_to_artist_context_when_no_tracks(
+    data_dir, signed_in_tokens
+) -> None:
+    def search_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("type") == "artist":
+            return httpx.Response(
+                200,
+                json={
+                    "artists": {
+                        "items": [{"id": YE_ARTIST_ID, "name": "Kanye West", "popularity": 90}],
+                    }
+                },
+            )
+        return httpx.Response(200, json={"tracks": {"items": []}})
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(
+        side_effect=search_handler
+    )
+    respx.get(f"https://api.spotify.com/v1/artists/{YE_ARTIST_ID}").mock(
+        return_value=httpx.Response(200, json={"id": YE_ARTIST_ID, "name": "Kanye West"})
+    )
+    play_bodies: list[dict] = []
+
+    def play_handler(request: httpx.Request) -> httpx.Response:
+        play_bodies.append(json.loads(request.content.decode()))
+        return httpx.Response(204)
+
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        side_effect=play_handler
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_playing": True,
+                "context": {"uri": f"spotify:artist:{YE_ARTIST_ID}"},
+                "item": {
+                    "name": "Runaway",
+                    "uri": KANYE_TRACK_URI,
+                    "artists": [{"id": YE_ARTIST_ID, "name": "Kanye West"}],
+                },
+            },
+        )
+    )
+    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
+        return_value=httpx.Response(200, json={"devices": []})
+    )
+
+    runner = SpotifyToolRunner(settings=Settings())
+    raw = runner.run("spotify_play_bare", {"query": "Ye"})
+    runner.close()
+    data = json.loads(raw)
+    assert data.get("ok") is True
+    assert play_bodies
+    assert play_bodies[-1].get("context_uri") == f"spotify:artist:{YE_ARTIST_ID}"
+    inner = json.loads(data["playback_result"])
+    assert inner.get("playback_verified") is True
+
+
+@respx.mock
 def test_play_bare_failure_reason_no_tracks_for_artist(data_dir, signed_in_tokens) -> None:
     def search_handler(request: httpx.Request) -> httpx.Response:
         if request.url.params.get("type") == "artist":
@@ -257,6 +373,15 @@ def test_play_bare_failure_reason_no_tracks_for_artist(data_dir, signed_in_token
     )
     respx.get(f"https://api.spotify.com/v1/artists/{YE_ARTIST_ID}").mock(
         return_value=httpx.Response(200, json={"id": YE_ARTIST_ID, "name": "Ye"})
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(404, json={"error": {"status": 404, "message": "Not found"}})
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
+        return_value=httpx.Response(200, json={"devices": []})
     )
     runner = SpotifyToolRunner(settings=Settings())
     raw = runner.run("spotify_play_bare", {"query": "Ye"})
