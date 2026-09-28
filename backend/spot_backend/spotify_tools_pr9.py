@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from spot_backend.playlist_builder_store import (
     clear_playlist_preview,
@@ -56,7 +59,18 @@ _PLAYBACK_FIRST_PRONOUN_SEGMENT: dict[str, str] = {
     "this episode": "episode",
     "that episode": "episode",
     "this podcast": "show",
+    "that podcast": "show",
 }
+
+_DEICTIC_LIBRARY_PRONOUNS = frozenset(
+    {
+        "it",
+        "that",
+        "this",
+        "this playlist",
+        "that playlist",
+    }
+)
 
 _SOUNDTRACK_MARKERS = (
     "soundtrack",
@@ -146,40 +160,102 @@ class SpotifyToolRunnerPr9Mixin:
             return [f"spotify:{segment}:{cid}"]
         return []
 
+    def _playback_not_verified_user_message(self, episode_title: str) -> str:
+        base = (
+            f"I found the latest episode, {episode_title!r}, but Spotify didn't confirm it started playing. "
+            "Try tapping play on your device or ask me to transfer playback."
+        )
+        state = self._player_state_snapshot() if hasattr(self, "_player_state_snapshot") else None
+        if not isinstance(state, dict):
+            return base
+        item = state.get("item")
+        if not isinstance(item, dict):
+            return base
+        if item.get("type") not in ("track", "episode"):
+            return base
+        name = item.get("name") if isinstance(item.get("name"), str) else None
+        artists = item.get("artists") if isinstance(item.get("artists"), list) else []
+        artist = ""
+        if artists and isinstance(artists[0], dict):
+            artist = str(artists[0].get("name") or "").strip()
+        if name and artist:
+            return f"{base} You're currently listening to {name} by {artist}."
+        if name:
+            return f"{base} You're currently listening to {name}."
+        return base
+
     def _uris_from_show_session_context(self) -> list[str]:
         last_show = getattr(self, "_last_show_search_id", None)
         if isinstance(last_show, str) and last_show.strip():
             return [f"spotify:show:{last_show.strip()}"]
+        from_mut = self._uris_from_last_library_mutation(segment="show")
+        if from_mut:
+            return from_mut
+        return []
+
+    def _uris_from_session_playlist_context(self) -> list[str]:
+        sess = getattr(self, "_last_session_playlist_id", None)
+        if isinstance(sess, str) and sess.strip():
+            return [f"spotify:playlist:{sess.strip()}"]
         return []
 
     def _resolve_pronoun_to_uris(self, pronoun: str) -> list[str]:
         low = (pronoun or "").strip().lower()
         seg = _PLAYBACK_FIRST_PRONOUN_SEGMENT.get(low)
         if seg:
-            from_playback = self._uris_from_playback_segment(seg)
-            if from_playback:
-                return from_playback
             if seg == "show":
+                from_playback = self._uris_from_playback_segment("show")
+                if from_playback:
+                    return from_playback
                 from_search = self._uris_from_show_session_context()
                 if from_search:
                     return from_search
+                from_mut = self._uris_from_last_library_mutation(segment="show")
+                if from_mut:
+                    return from_mut
+                return []
+            from_playback = self._uris_from_playback_segment(seg)
+            if from_playback:
+                return from_playback
             from_mut = self._uris_from_last_library_mutation(segment=seg)
             if from_mut:
                 return from_mut
             return []
-        if low in ("this show", "that show"):
+        if low in ("this show", "that show", "this podcast", "that podcast"):
             from_playback = self._uris_from_playback_segment("show")
             if from_playback:
                 return from_playback
             from_search = self._uris_from_show_session_context()
             if from_search:
                 return from_search
-        if low in _LIBRARY_PRONOUNS:
+            from_mut = self._uris_from_last_library_mutation(segment="show")
+            if from_mut:
+                return from_mut
+            return []
+        if low in ("this playlist", "that playlist") or low in _DEICTIC_LIBRARY_PRONOUNS:
+            from_mut = self._uris_from_last_library_mutation()
+            if from_mut:
+                return from_mut
+            from_sess = self._uris_from_session_playlist_context()
+            if from_sess:
+                return from_sess
             for try_seg in ("track", "album", "show", "episode", "playlist", "artist"):
                 from_playback = self._uris_from_playback_segment(try_seg)
                 if from_playback:
                     return from_playback
-            return self._uris_from_last_library_mutation()
+            return []
+        if low in _LIBRARY_PRONOUNS:
+            from_mut = self._uris_from_last_library_mutation()
+            if from_mut:
+                return from_mut
+            for try_seg in ("track", "album", "show", "episode", "playlist", "artist"):
+                from_playback = self._uris_from_playback_segment(try_seg)
+                if from_playback:
+                    return from_playback
+            from_sess = self._uris_from_session_playlist_context()
+            if from_sess:
+                return from_sess
+            return []
         return []
 
     def _normalize_library_uris(self, arguments: dict[str, Any]) -> list[str]:
@@ -250,6 +326,7 @@ class SpotifyToolRunnerPr9Mixin:
                 else:
                     name = label or "That item"
                     payload["user_message"] = f"No — {name} is not in your library."
+            self._record_library_mutation_from_uris(uris)
             return _compact_pr9(payload)
         return _compact_pr9(data)
 
@@ -470,20 +547,14 @@ class SpotifyToolRunnerPr9Mixin:
             payload.setdefault("failure_reason", "playback_not_verified")
             ep_title = ep.get("name") if isinstance(ep.get("name"), str) else "the latest episode"
             payload["episode_name"] = ep_title
-            payload["user_message"] = (
-                f"I found the latest episode, {ep_title!r}, but Spotify didn't confirm it started playing. "
-                "Try tapping play on your device or ask me to transfer playback."
-            )
+            payload["user_message"] = self._playback_not_verified_user_message(ep_title)
             return json.dumps(payload, ensure_ascii=False)
         if isinstance(payload, dict) and payload.get("playback_verified") is False:
             payload["ok"] = False
             payload.setdefault("failure_reason", "playback_not_verified")
             ep_title = ep.get("name") if isinstance(ep.get("name"), str) else "the latest episode"
             payload["episode_name"] = ep_title
-            payload["user_message"] = (
-                f"I found the latest episode, {ep_title!r}, but Spotify didn't confirm it started playing. "
-                "Try tapping play on your device or ask me to transfer playback."
-            )
+            payload["user_message"] = self._playback_not_verified_user_message(ep_title)
             return json.dumps(payload, ensure_ascii=False)
         return raw
 
@@ -665,6 +736,7 @@ class SpotifyToolRunnerPr9Mixin:
             return None
         if _theme_requests_nineties(theme_blob) and "year:" not in q.lower():
             q = f"{q} year:1990-1999"
+        logger.info("playlist_builder_search q=%s", q)
         data = self.client.api_get(
             "/search",
             params={
@@ -900,16 +972,13 @@ class SpotifyToolRunnerPr9Mixin:
                         }
 
         working = self._renumber_preview_tracks(working)
-        if len(working) < _MIN_BUILDER_TRACKS:
+        if not working:
             return json.dumps(
                 {
                     "ok": False,
                     "failure_reason": "playlist_preview_insufficient",
-                    "error": (
-                        f"Preview would have only {len(working)} tracks after edit "
-                        f"(need at least {_MIN_BUILDER_TRACKS})."
-                    ),
-                    "resolved_count": len(working),
+                    "error": "Preview would have no tracks after edit.",
+                    "resolved_count": 0,
                 },
                 ensure_ascii=False,
             )
@@ -1022,7 +1091,7 @@ class SpotifyToolRunnerPr9Mixin:
         }
         if not verified_private:
             payload["privacy_warning"] = _PLAYLIST_PRIVACY_USER_NOTE
-            payload["user_message"] = _PLAYLIST_PRIVACY_USER_NOTE
+            payload["user_message"] = f'Created playlist "{name}" with {len(uris)} tracks.'
         else:
             payload["user_message"] = f'Created private playlist "{name}" with {len(uris)} tracks.'
         return json.dumps(payload, ensure_ascii=False)

@@ -112,6 +112,23 @@ def test_search_playlists_exact_match_prefers_name(data_dir, signed_in_tokens) -
 
 
 @respx.mock
+def test_builder_edit_drop_below_ten_allowed(data_dir, signed_in_tokens) -> None:
+    cid = "builder-drop-9"
+    clear_playlist_preview(cid)
+    tracks = [
+        {"n": i, "uri": f"spotify:track:{i:022d}", "name": f"T{i}", "artist": "A"}
+        for i in range(1, 11)
+    ]
+    save_playlist_preview(cid, {"proposed_name": "spot-ai-fy test", "tracks": tracks})
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id=cid)
+    raw = runner.run("spotify_playlist_builder_edit", {"remove_indices": [3]})
+    runner.close()
+    data = json.loads(raw)
+    assert data.get("ok") is True
+    assert len(data["preview"]["tracks"]) == 9
+
+
+@respx.mock
 def test_builder_edit_drop_track_shrinks_preview(data_dir, signed_in_tokens) -> None:
     cid = "builder-edit"
     clear_playlist_preview(cid)

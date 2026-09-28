@@ -128,6 +128,9 @@ _VISIBILITY_NOTE_MARKERS = (
     "still shows it as public",
     "still reports this playlist as public",
     "still showing it as public",
+    "might appear public",
+    "shows this playlist as public",
+    "make it private",
 )
 
 _MODEL_VISIBILITY_DISCUSSION_MARKERS = _VISIBILITY_NOTE_MARKERS + (
@@ -280,22 +283,45 @@ def fix_playlist_visibility_contradictions(text: str, tool_results: list[str]) -
     return out.strip()
 
 
+def _visibility_note_fingerprint(note: str) -> str:
+    low = re.sub(r"\s+", " ", (note or "").lower()).strip()
+    for marker in _VISIBILITY_NOTE_MARKERS:
+        if marker in low:
+            return marker
+    if "public" in low and "private" in low:
+        return "visibility_public_private"
+    if "public" in low and any(tok in low for tok in ("still", "spotify", "app", "show")):
+        return "visibility_public"
+    return low[:120]
+
+
 def append_visibility_notes_to_reply(text: str, tool_results: list[str]) -> str:
     """Append deterministic playlist-visibility notes from tool JSON (all LLM providers)."""
     base = text or ""
-    if collect_visibility_warnings(tool_results):
+    warnings = collect_visibility_warnings(tool_results)
+    if warnings:
         base = strip_model_visibility_discussion(base)
     base = _strip_duplicate_visibility_sentences(base.rstrip())
-    for note in collect_visibility_warnings(tool_results):
+    seen_fps: set[str] = set()
+    for note in warnings:
+        fp = _visibility_note_fingerprint(note)
+        if fp in seen_fps:
+            continue
         if note in base:
+            seen_fps.add(fp)
             continue
         if _text_contains_visibility_note(note) and _text_contains_visibility_note(base):
+            seen_fps.add(fp)
             continue
         if note.strip() and note.strip() in base:
+            seen_fps.add(fp)
+            continue
+        if any(_visibility_note_fingerprint(existing) == fp for existing in seen_fps):
             continue
         suffix = f"\n\n{note.strip()}" if not base.endswith(note.strip()) else ""
         if suffix:
             base = base + suffix
+            seen_fps.add(fp)
     return base
 
 
@@ -403,6 +429,20 @@ def sanitize_raw_tool_json_in_reply(text: str) -> str:
     return text
 
 
+_NUMBERED_LIST_GLUE_RE = re.compile(r"(\S)\s+(\d{1,2}\.\s)")
+
+
+def fix_numbered_list_line_breaks(text: str) -> str:
+    """Ensure glued builder preview lines like '…artist 9. Track' break before each number."""
+    if not text or "\n" not in text and not re.search(r"\d+\.\s", text):
+        return text
+    lines = (text or "").split("\n")
+    fixed: list[str] = []
+    for line in lines:
+        fixed.append(_NUMBERED_LIST_GLUE_RE.sub(r"\1\n\2", line))
+    return "\n".join(fixed)
+
+
 def collapse_duplicate_reply_text(text: str) -> str:
     """Drop exact duplicate sentences or paragraphs while preserving first occurrence."""
     raw = (text or "").strip()
@@ -433,6 +473,7 @@ def prepare_user_visible_reply(text: str, tool_results: list[str] | None = None)
     from spot_backend.reply_grounding import ground_reply_artist_credits
 
     cleaned = collapse_duplicate_reply_text(text)
+    cleaned = fix_numbered_list_line_breaks(cleaned)
     cleaned = scrub_internal_tool_references(cleaned)
     cleaned = scrub_user_visible_spotify_errors(cleaned)
     cleaned = strip_internal_pagination_hints(cleaned)

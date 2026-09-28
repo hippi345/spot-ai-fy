@@ -808,6 +808,15 @@ def run_chat_turn_gemini(
                         fr_parts.append({"text": OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE})
                     contents.append({"role": "user", "parts": fr_parts})
                     had_tool_results = True
+                    from spot_backend.turn_reply_intent import try_deterministic_reply_after_tools
+
+                    early = try_deterministic_reply_after_tools(
+                        user_text,
+                        [n for n, _ in turn_tool_calls],
+                        tool_results,
+                    )
+                    if early is not None:
+                        return prepare_user_visible_reply(early, tool_results)
                     continue
 
                 joined = "\n".join(t for t in visible_text_chunks if isinstance(t, str) and t.strip()).strip()

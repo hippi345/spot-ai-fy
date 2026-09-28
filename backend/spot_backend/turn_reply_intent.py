@@ -187,6 +187,9 @@ def pick_primary_tool_index(
 
 
 def _play_failure_user_message(data: dict[str, Any]) -> str:
+    custom = data.get("user_message")
+    if isinstance(custom, str) and custom.strip():
+        return custom.strip()
     reason = data.get("failure_reason")
     if reason == "playback_not_verified":
         ep_name = None
@@ -268,6 +271,10 @@ def primary_tool_user_reply(
     if data.get("ok") is False and tool_name in _PLAYBACK_FAILURE_TOOLS:
         return _play_failure_user_message(data)
     if data.get("ok") is False and tool_name in _MUTATION_SUCCESS_TOOLS:
+        if data.get("failure_reason") == "owned_playlist_protected":
+            err = data.get("error")
+            if isinstance(err, str) and err.strip():
+                return err.strip()
         err = humanize_failure_reason(
             data.get("failure_reason") if isinstance(data.get("failure_reason"), str) else None,
             str(data.get("error") or ""),
@@ -334,6 +341,50 @@ def intent_needs_library_contains_fallback(user_text: str, tool_names: list[str]
     if classify_turn_primary_intent(user_text) != TurnPrimaryIntent.QUESTION_SAVED:
         return False
     return not any(n == "spotify_library_contains" for n in tool_names)
+
+
+def try_deterministic_reply_after_tools(
+    user_text: str,
+    tool_names: list[str],
+    tool_results: list[str],
+) -> str | None:
+    """When primary intent is satisfied by tools, skip another LLM round."""
+    intent = classify_turn_primary_intent(user_text)
+    if intent == TurnPrimaryIntent.UNKNOWN:
+        return None
+    idx = pick_primary_tool_index(tool_names, tool_results, intent)
+    if idx is None:
+        return None
+    name = tool_names[idx]
+    raw = tool_results[idx]
+    if intent == TurnPrimaryIntent.QUESTION_SAVED:
+        data = _parse_tool_dict(raw)
+        if not data or data.get("ok") is not True:
+            return None
+        if name != "spotify_library_contains":
+            return None
+        reply = primary_tool_user_reply(name, raw, user_text=user_text, intent=intent)
+        return reply
+    if intent == TurnPrimaryIntent.LIST_READ:
+        data = _parse_tool_dict(raw)
+        if not data or not _tool_succeeded(raw):
+            return None
+        reply = primary_tool_user_reply(name, raw, user_text=user_text, intent=intent)
+        if reply:
+            return reply
+        return None
+    if intent in (
+        TurnPrimaryIntent.ACTION_SAVE,
+        TurnPrimaryIntent.ACTION_REMOVE,
+    ):
+        data = _parse_tool_dict(raw)
+        if not data or data.get("ok") is not True:
+            return None
+        if data.get("failure_reason") in ("guard_refused", "owned_playlist_protected"):
+            return None
+        reply = primary_tool_user_reply(name, raw, user_text=user_text, intent=intent)
+        return reply
+    return None
 
 
 def library_contains_fallback_args(user_text: str) -> dict[str, Any]:

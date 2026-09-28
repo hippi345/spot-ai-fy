@@ -307,3 +307,200 @@ def test_gemini_sim_t2a_extra_tools_chain(data_dir, signed_in_tokens) -> None:
         )
     assert "Live Album" in reply
     assert "Yes" in reply or "saved" in reply.lower()
+    assert calls["n"] == 1
+
+
+@respx.mock
+def test_t26c_unfollow_wrong_id_overrides_to_last_followed_playlist(data_dir, signed_in_tokens) -> None:
+    followed = "2HfFccisPxQfprhgIHM7XH"
+    owned_wrong = "2hIbTEmTOz1XrjUxSOcoq4"
+    respx.get("https://api.spotify.com/v1/me").mock(
+        return_value=httpx.Response(200, json={"id": "meuser0000000000000001"})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/library/contains.*").mock(
+        return_value=httpx.Response(200, json=[False])
+    )
+    respx.delete(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.get(f"https://api.spotify.com/v1/playlists/{followed}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": followed,
+                "name": "90s Rock Classics",
+                "owner": {"id": "otheruser00000000000001"},
+            },
+        )
+    )
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id="t26c")
+    runner._record_library_mutation("playlist", [followed])
+    args = enforce_tool_arguments_for_turn(
+        "spotify_unfollow_playlist",
+        {"playlist_id": owned_wrong},
+        user_text="Remove it",
+        runner=runner,
+    )
+    assert args["playlist_id"] == followed
+    raw = runner.run("spotify_unfollow_playlist", args)
+    runner.close()
+    data = json.loads(raw)
+    assert data.get("ok") is True
+    assert "90s Rock Classics" in data.get("user_message", "")
+
+
+@respx.mock
+def test_t26c_owned_playlist_unfollow_refused_no_delete(data_dir, signed_in_tokens) -> None:
+    owned = "2hIbTEmTOz1XrjUxSOcoq4"
+    me_id = "meuser0000000000000001"
+    respx.get("https://api.spotify.com/v1/me").mock(
+        return_value=httpx.Response(200, json={"id": me_id})
+    )
+    respx.get(f"https://api.spotify.com/v1/playlists/{owned}").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": owned, "name": "spot-ai-fy test", "owner": {"id": me_id}},
+        )
+    )
+    delete_calls = 0
+
+    def _delete_library(request: httpx.Request) -> httpx.Response:
+        nonlocal delete_calls
+        delete_calls += 1
+        return httpx.Response(200, json={})
+
+    respx.delete(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
+        side_effect=_delete_library
+    )
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id="t26c-owned")
+    raw = runner.run(
+        "spotify_unfollow_playlist",
+        {"playlist_id": owned, "_turn_user_text": "Remove it"},
+    )
+    runner.close()
+    data = json.loads(raw)
+    assert data.get("failure_reason") == "owned_playlist_protected"
+    assert data.get("needs_confirmation") is True
+    assert delete_calls == 0
+
+
+@respx.mock
+def test_t23_save_this_show_uses_last_show_not_track_playback(data_dir, signed_in_tokens) -> None:
+    show_id = "1mNsuXxxxxxxxxxxxxxxx"
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_playing": True,
+                "item": {"type": "track", "id": "t" * 22, "name": "Some Song"},
+            },
+        )
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.get(f"https://api.spotify.com/v1/shows/{show_id}").mock(
+        return_value=httpx.Response(200, json={"id": show_id, "name": "StarTalk"})
+    )
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id="t23")
+    runner._record_library_mutation("show", [show_id])
+    args = enforce_tool_arguments_for_turn(
+        "spotify_library_save",
+        {"uris": ["spotify:show:4s0y8C1xxxxxxxxxxxxxx"]},
+        user_text="Save this show",
+        runner=runner,
+    )
+    assert show_id in json.dumps(args)
+    raw = runner.run("spotify_library_save", args)
+    runner.close()
+    data = json.loads(raw)
+    assert "StarTalk" in data.get("user_message", "")
+
+
+@respx.mock
+def test_builder_nineties_search_q_and_filters_off_decade(data_dir, signed_in_tokens) -> None:
+    captured_q: list[str] = []
+    call_n = 0
+
+    def search_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_n
+        captured_q.append(str(request.url.params.get("q")))
+        call_n += 1
+        good_id = f"{call_n:022d}"
+        bad_id = f"{100 + call_n:022d}"
+        return httpx.Response(
+            200,
+            json={
+                "tracks": {
+                    "items": [
+                        {
+                            "id": good_id,
+                            "uri": f"spotify:track:{good_id}",
+                            "name": f"90s Hit {call_n}",
+                            "artists": [{"name": "Band"}],
+                            "album": {"name": "Album", "release_date": "1995-06-01"},
+                        },
+                        {
+                            "id": bad_id,
+                            "uri": f"spotify:track:{bad_id}",
+                            "name": f"2000s Hit {call_n}",
+                            "artists": [{"name": "Band"}],
+                            "album": {"name": "Later", "release_date": "2003-01-01"},
+                        },
+                    ]
+                }
+            },
+        )
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(side_effect=search_handler)
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id="90s-theme")
+    seeds = [f"rock anthem {i}" for i in range(12)]
+    raw = runner.run(
+        "spotify_playlist_builder_preview",
+        {
+            "name": "90s mix",
+            "theme": "90s rock",
+            "track_queries": seeds,
+        },
+    )
+    runner.close()
+    data = json.loads(raw)
+    assert captured_q
+    assert any("year:1990-1999" in q for q in captured_q)
+    assert data.get("ok") is True
+    preview = data.get("preview", {}).get("tracks", [])
+    assert preview
+    assert all("2000s" not in str(t.get("name") or "") for t in preview if isinstance(t, dict))
+
+
+def test_t15_privacy_warning_once_in_finalize() -> None:
+    note = (
+        "Spotify still shows this playlist as public. To make it private, open it in the Spotify app."
+    )
+    tool_json = json.dumps(
+        {
+            "ok": True,
+            "privacy_warning": note,
+            "user_message": f'Created playlist "Mix" with 10 tracks. {note}',
+        }
+    )
+    reply = _finalize(
+        "make it",
+        f"Created your playlist. {note}",
+        ["spotify_playlist_builder_commit"],
+        [tool_json],
+    )
+    assert reply.count("still shows") == 1 or reply.lower().count("public") <= 2
+    assert reply.count(note) <= 1
+
+
+def test_builder_preview_newlines_through_finalize() -> None:
+    lines = "\n".join([f"{i}. Track{i} — Artist" for i in range(1, 12)])
+    preview = json.dumps({"ok": True, "preview_text": f'Proposed playlist "x" (11 tracks):\n{lines}'})
+    reply = _finalize("yes make it", "1. Track1 — Artist " + " ".join(f"{i}. Track{i} — Artist" for i in range(2, 12)), ["spotify_playlist_builder_preview"], [preview])
+    assert "\n9." in reply or "\n10." in reply
+    assert "9. Track9" in reply
+    assert "10. Track10" in reply

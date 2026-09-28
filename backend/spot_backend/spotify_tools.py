@@ -1186,6 +1186,8 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                 out["me_id"] = me_data["id"]
         except httpx.HTTPStatusError as e:
             out["me_status"] = e.response.status_code
+        except Exception:
+            out["me_status"] = None
         try:
             pl_data = self.client.api_get(
                 f"/playlists/{playlist_id}",
@@ -1202,6 +1204,8 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                         out["owner_name"] = owner["display_name"]
         except httpx.HTTPStatusError as e:
             out["playlist_status"] = e.response.status_code
+        except Exception:
+            out["playlist_status"] = None
         if isinstance(out["me_id"], str) and isinstance(out["owner_id"], str):
             out["is_owned"] = out["me_id"] == out["owner_id"]
         return out
@@ -2797,6 +2801,14 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         if reject:
             return reject
         pid = validated or pid
+        if "name" in arguments and arguments.get("name") is not None:
+            owned_block = self._owned_playlist_destructive_guard(
+                pid,
+                arguments,
+                action="Renaming it",
+            )
+            if owned_block:
+                return owned_block
         body: dict[str, Any] = {}
         if "name" in arguments and arguments.get("name") is not None:
             n = str(arguments.get("name", "")).strip()
@@ -2850,6 +2862,13 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         )
         if not pid:
             return json.dumps({"error": "playlist_id is required"})
+        owned_block = self._owned_playlist_destructive_guard(
+            pid,
+            arguments,
+            action="Removing tracks from it",
+        )
+        if owned_block:
+            return owned_block
         uri_list = _coerce_track_uri_list(_combined_track_inputs(arguments))
         if not uri_list:
             return json.dumps({"error": "track_uris / track_ids / tracks (non-empty list) is required"})
@@ -2996,6 +3015,78 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         raw = _pick_arg(arguments, "playlist_id", "playlistId", "id")
         return self._resolve_playlist_id_from_arg(raw)
 
+    def _turn_user_text_from_arguments(self, arguments: dict[str, Any]) -> str:
+        raw = arguments.get("_turn_user_text")
+        return raw.strip() if isinstance(raw, str) else ""
+
+    def _user_exactly_named_playlist_in_message(self, user_text: str, playlist_name: str) -> bool:
+        if not user_text or not playlist_name:
+            return False
+        want = playlist_name.strip()
+        if not want:
+            return False
+        t = user_text.strip()
+        for m in re.finditer(r'["\']([^"\']+)["\']', t):
+            if m.group(1).strip().lower() == want.lower():
+                return True
+        escaped = re.escape(want)
+        if re.search(rf"\b(?:remove|unfollow|delete|rename)\s+{escaped}\b", t, re.I):
+            return True
+        if re.search(rf"\bplaylist\s+{escaped}\b", t, re.I):
+            return True
+        return False
+
+    def _playlist_id_recently_referenced_in_library(self, playlist_id: str) -> bool:
+        mut = self._last_library_mutation
+        if not isinstance(mut, dict) or mut.get("segment") != "playlist":
+            return False
+        ids = mut.get("ids")
+        if not isinstance(ids, list):
+            return False
+        return playlist_id in [str(i).strip() for i in ids if str(i).strip()]
+
+    def _owned_playlist_destructive_guard(
+        self,
+        playlist_id: str,
+        arguments: dict[str, Any],
+        *,
+        action: str,
+    ) -> str | None:
+        """Block destructive ops on playlists the user owns unless they named that playlist."""
+        snap = self._playlist_owner_snapshot(playlist_id)
+        if snap.get("is_owned") is not True:
+            return None
+        name = snap.get("playlist_name")
+        playlist_name = name.strip() if isinstance(name, str) else "your playlist"
+        user_text = self._turn_user_text_from_arguments(arguments)
+        if self._playlist_id_recently_referenced_in_library(playlist_id):
+            return None
+        if self._user_exactly_named_playlist_in_message(user_text, playlist_name):
+            return None
+        return json.dumps(
+            {
+                "ok": False,
+                "failure_reason": "owned_playlist_protected",
+                "needs_confirmation": True,
+                "playlist_id": playlist_id,
+                "playlist_name": playlist_name,
+                "error": (
+                    f'That\'s your own playlist "{playlist_name}". {action} would take it out of your '
+                    f'library. Say "remove {playlist_name}" to confirm.'
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    def _playlist_display_name(self, playlist_id: str) -> str | None:
+        try:
+            meta = self.client.api_get(f"/playlists/{playlist_id}", params={"fields": "id,name"})
+            if isinstance(meta, dict) and isinstance(meta.get("name"), str):
+                return meta["name"].strip()
+        except httpx.HTTPStatusError:
+            return None
+        return None
+
     def _unfollow_playlist(self, arguments: dict[str, Any]) -> str:
         pid, err = self._playlist_id_from_arguments(arguments)
         if err:
@@ -3005,6 +3096,13 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         blocked = self._block_editorial_playlist_id(pid)
         if blocked:
             return blocked
+        owned_block = self._owned_playlist_destructive_guard(
+            pid,
+            arguments,
+            action="Removing it",
+        )
+        if owned_block:
+            return owned_block
         ok, verify_err = self._verify_catalog_id_on_spotify("playlist", pid)
         if not ok:
             return json.dumps(
@@ -3015,6 +3113,7 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                 },
                 ensure_ascii=False,
             )
+        display_name = self._playlist_display_name(pid)
         self._library_delete_uris([f"spotify:playlist:{pid}"])
         try:
             check = self.client.api_get(
@@ -3034,13 +3133,19 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                 },
                 ensure_ascii=False,
             )
+        self._record_library_mutation("playlist", [pid])
+        label = display_name or self._playlist_display_name(pid) or f"playlist {pid}"
         return json.dumps(
             {
                 "ok": True,
                 "playlist_id": pid,
+                "item_name": label,
+                "removed_uris": [f"spotify:playlist:{pid}"],
                 "removed_from_library": True,
                 "verified_removed": still_saved is False,
-            }
+                "user_message": f"Removed {label} from your library.",
+            },
+            ensure_ascii=False,
         )
 
     def _user_saved_tracks(self, arguments: dict[str, Any]) -> str:

@@ -168,6 +168,9 @@ _FAILURE_REASON_HUMAN: dict[str, str] = {
     "playlist_not_found": "I couldn't find a playlist with that exact name.",
     "no_exact_playlist_match": "I didn't find an exact playlist name match — pick one from the list.",
     "editorial_playlist_blocked": "Spotify editorial playlists can't be saved or modified from here.",
+    "owned_playlist_protected": (
+        "That's one of your own playlists. Say its exact name if you want me to remove or change it."
+    ),
 }
 
 
