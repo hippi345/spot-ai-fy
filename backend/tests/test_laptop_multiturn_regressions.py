@@ -1,5 +1,7 @@
 """Regression tests for laptop multi-turn chat issues (mocked Spotify + Gemini)."""
 
+# pylint: disable=unused-argument
+
 from __future__ import annotations
 
 import json

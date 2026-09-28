@@ -36,6 +36,8 @@ from spot_backend.spotify_client import DEFAULT_SCOPES, SpotifyAuthError, Spotif
 from spot_backend.setup_service import probe_ollama, save_llm_setup, save_spotify_app, setup_status
 from spot_backend.token_store import DeviceSelection, clear_device, load_device, load_tokens, save_device
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Spot-AI-fy API")
 logger = logging.getLogger(__name__)
 

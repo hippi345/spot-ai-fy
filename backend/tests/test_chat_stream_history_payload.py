@@ -1,5 +1,7 @@
 """Regression: lenient /api/chat/stream history parsing (no pre-stream hard reject)."""
 
+# pylint: disable=unused-argument
+
 from __future__ import annotations
 
 import json
@@ -13,7 +15,6 @@ from fastapi.testclient import TestClient
 
 from spot_backend.app import app
 from spot_backend.chat_messages import FRIENDLY_SPOTIFY_GUIDANCE
-from spot_backend.config import Settings
 
 
 def _collect_sse_events(stream_resp) -> list[dict[str, Any]]:
