@@ -10,24 +10,9 @@ from typing import Any, Callable
 
 import httpx
 
-from spot_backend.action_claim_guard import (
-    action_claim_honest_fallback,
-    action_claim_reprompt,
-    is_failure_boilerplate,
-    numeric_factual_claim_honest_fallback,
-    record_successful_tool,
-    reply_claims_unbacked_action,
-    reply_contains_unbacked_numeric_factual_claim,
-    tool_summarize_reprompt,
-    turn_tool_calls_all_succeeded,
-)
+from spot_backend.action_claim_guard import record_successful_tool
 from spot_backend.config import Settings
-from spot_backend.chat_messages import (
-    PROMISE_AFTER_ID_ERROR_NUDGE,
-    assistant_reply_is_promise_only,
-    prepare_user_visible_reply,
-    tool_result_is_rejected_or_invalid_id,
-)
+from spot_backend.chat_messages import prepare_user_visible_reply
 from spot_backend.deterministic_chat import gemini_deterministic_shortcut_reply
 from spot_backend.chat_tool_state import format_runner_session_context, seed_runner_from_chat_history
 from spot_backend.gemini_nudge import should_send_gemini_tool_nudge

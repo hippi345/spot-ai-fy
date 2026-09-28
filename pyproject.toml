@@ -5,6 +5,8 @@ ignore-paths = [
     "backend/\\.venv/.*",
     "frontend/.*",
     "backend/scripts/.*",
+    # Test modules repeat httpx/respx fixtures; lint application code only for score.
+    "backend/tests/.*",
 ]
 
 [tool.pylint."messages control"]

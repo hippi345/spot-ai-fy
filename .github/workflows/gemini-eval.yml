@@ -21,7 +21,9 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          cd backend && pytest -m gemini_eval -q --maxfail=1
+          cd backend && pytest -m gemini_eval -s -q --maxfail=1
+          echo "Gemini eval score summary:"
+          python3 -c "import json; d=json.load(open('tests/artifacts/gemini_eval_latest.json')); print('passed', d.get('passed'), 'failed', d.get('failed'), 'crashed', d.get('crashed'))"
       - name: Upload eval artifact
         if: always()
         uses: actions/upload-artifact@v4

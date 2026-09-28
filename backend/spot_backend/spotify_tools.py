@@ -1898,51 +1898,56 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         return _compact(data)
 
     def _search(self, arguments: dict[str, Any]) -> str:
+        from spot_backend.spotify_search_params import (
+            build_spotify_search_params,
+            default_search_limit,
+            pick_search_types_argument,
+        )
+        from spot_backend.spotify_search_slim import attach_show_search_summary, strip_null_search_items
+
         q = _pick_arg(arguments, "query", "q", "search_query")
-        types = _coerce_str(arguments.get("types"), "track,artist,album").replace(" ", "")
+        types_raw = pick_search_types_argument(arguments)
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
-        # Feb-2026 migration: /search `limit` max dropped from 50 to 10 for dev-mode apps; default 5.
-        limit = _safe_int(arguments.get("limit"), SPOTIFY_SEARCH_DEFAULT_LIMIT, lo=1, hi=10)
+        limit = _safe_int(default_search_limit(arguments), SPOTIFY_SEARCH_DEFAULT_LIMIT, lo=1, hi=10)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=950)
         if not q:
             return json.dumps({"error": "query is required", "failure_reason": "validation_error"})
+        params = build_spotify_search_params(
+            query=q,
+            types_raw=types_raw,
+            market=market,
+            limit=limit,
+            offset=offset,
+        )
         try:
-            data = self.client.api_get(
-                "/search",
-                params={"q": q, "type": types, "market": market, "limit": limit, "offset": offset},
-            )
+            data = self.client.api_get("/search", params=params)
         except httpx.HTTPStatusError as e:
             return json.dumps(
                 {
                     "ok": False,
                     "error": _spotify_http_message(e),
                     "failure_reason": _http_failure_reason(e.response.status_code, _spotify_http_message(e)),
+                    "search_params_sent": {
+                        k: params[k]
+                        for k in ("q", "type", "market", "limit", "include_external")
+                        if k in params
+                    },
                     **_spotify_http_error_fields(e),
                 },
                 ensure_ascii=False,
             )
-        # Spotify dev-mode search responses interleave literal `null` entries into every
-        # `items` array (sparsification — see backend/scripts/diag_search_and_owned.py).
-        # Small/local models read the nulls as "no results" and hallucinate an empty
-        # answer. Strip them before the LLM ever sees the payload and keep a note of the
-        # real `total` so the agent can say "found some" even when the page is sparse.
         if isinstance(data, dict):
-            for bucket_key in ("tracks", "artists", "albums", "playlists", "shows", "episodes", "audiobooks"):
-                bucket = data.get(bucket_key)
-                if not isinstance(bucket, dict):
-                    continue
-                raw_items = bucket.get("items") if isinstance(bucket.get("items"), list) else []
-                clean = [it for it in raw_items if isinstance(it, dict)]
-                bucket["items"] = clean
-                bucket["returned_count"] = len(clean)
-                if "total" in bucket:
-                    bucket["total_in_catalog"] = bucket.get("total")
-                if bucket_key == "shows" and clean:
+            strip_null_search_items(data)
+            shows = data.get("shows")
+            if isinstance(shows, dict):
+                clean = shows.get("items") if isinstance(shows.get("items"), list) else []
+                if clean:
                     first = clean[0]
                     if isinstance(first, dict) and isinstance(first.get("id"), str):
                         self._last_show_search_id = first["id"]
                         self._session_known_ids.add(first["id"])
-        return _compact(data)
+                attach_show_search_summary(data)
+        return _compact(data if isinstance(data, dict) else data)
 
     def _user_playlists(self, arguments: dict[str, Any]) -> str:
         limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
@@ -3114,6 +3119,18 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             except httpx.HTTPStatusError:
                 return None
         return state if isinstance(state, dict) else None
+
+    def playback_catalog_id(self, segment: str) -> str | None:
+        """Public wrapper for current-player catalog id (album/track/show/episode)."""
+        return self._playback_catalog_id(segment)
+
+    def note_playlist_search_query(self, query: str) -> None:
+        q = (query or "").strip()
+        if q:
+            self._last_playlist_search_query = q
+
+    def last_playlist_search_query(self) -> str | None:
+        return self._last_playlist_search_query
 
     def _playback_catalog_id(self, segment: str) -> str | None:
         state = self._player_state_snapshot()

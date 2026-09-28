@@ -344,12 +344,20 @@ class SpotifyToolRunnerPr9Mixin:
             return json.dumps({"error": "show_id is required", "failure_reason": "validation_error"})
         limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
+        market = _normalize_market(_pick_arg(arguments, "market", "country"))
+        if not market or len(market) != 2:
+            market = "from_token"
         params: dict[str, Any] = {
             "limit": limit,
             "offset": offset,
-            "market": _normalize_market(_pick_arg(arguments, "market", "country")),
+            "market": market,
         }
         data = self.client.api_get(f"/shows/{sid}/episodes", params=params)
+        if isinstance(data, dict):
+            items = data.get("items")
+            if isinstance(items, list):
+                data["items"] = [it for it in items if isinstance(it, dict)]
+                data["returned_count"] = len(data["items"])
         return _compact_pr9(data)
 
     def _get_episode(self, arguments: dict[str, Any]) -> str:
@@ -370,11 +378,14 @@ class SpotifyToolRunnerPr9Mixin:
         from spot_backend.spotify_tools import _normalize_market
 
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
+        ep_market = market if market and len(market) == 2 else "from_token"
         page = self.client.api_get(
             f"/shows/{sid}/episodes",
-            params={"limit": 1, "offset": 0, "market": market},
+            params={"limit": 1, "offset": 0, "market": ep_market},
         )
         items = page.get("items") if isinstance(page, dict) else None
+        if isinstance(items, list):
+            items = [it for it in items if isinstance(it, dict)]
         if not isinstance(items, list) or not items or not isinstance(items[0], dict):
             return json.dumps(
                 {
