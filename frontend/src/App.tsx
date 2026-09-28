@@ -640,10 +640,7 @@ export function App() {
 
     if (!text) return;
 
-    const historyPayload = messages
-      .slice(-40)
-      .filter((m) => m.role === "user" || !isUnpersistedAssistantFallback(m.text))
-      .map((m) => ({ role: m.role, content: m.text }));
+    const historyPayload = messages.map((m) => ({ role: m.role, content: m.text }));
 
     setSending(true);
 
@@ -739,15 +736,24 @@ export function App() {
         let msg = errText || res.statusText;
 
         try {
-
-          const j = JSON.parse(errText) as { detail?: string };
-
-          if (typeof j.detail === "string") msg = j.detail;
-
+          const j = JSON.parse(errText) as { detail?: unknown };
+          if (typeof j.detail === "string") {
+            msg = j.detail;
+          } else if (Array.isArray(j.detail)) {
+            msg = j.detail
+              .map((item) => {
+                if (!item || typeof item !== "object") return "";
+                const loc = Array.isArray((item as { loc?: unknown }).loc)
+                  ? (item as { loc: unknown[] }).loc.join(".")
+                  : "";
+                const part = String((item as { msg?: unknown }).msg ?? "");
+                return loc ? `${loc}: ${part}` : part;
+              })
+              .filter(Boolean)
+              .join("; ");
+          }
         } catch {
-
           /* keep */
-
         }
 
         throw new Error(msg);
