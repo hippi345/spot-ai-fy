@@ -9,6 +9,7 @@ from typing import Any, Callable
 from spot_backend.chat_shortcuts import try_deterministic_chat_reply
 from spot_backend.deterministic_chat import resolve_deterministic_chat_outcome
 from spot_backend.prompt_intent import prompt_is_surprise_me_request
+from spot_backend.playlist_builder_store import save_playlist_preview
 from spot_backend.spotify_tools import SpotifyToolRunner, OLLAMA_TOOLS
 
 
@@ -72,10 +73,131 @@ def _run_tool_script(
         last_raw = runner.run(name, args)
     data = json.loads(last_raw) if last_raw else {}
     reply = str(data.get("user_message") or data.get("message") or data.get("preview_text") or "")
+    if not reply and data.get("error"):
+        reply = str(data.get("error"))
     if not reply and data.get("ok"):
         reply = "ok"
     passed = pass_check(reply, tools, arg_rows)
     return SimulatedChatBankRow(prompt, tools, reply, passed, arg_rows, "", flow)
+
+
+def _pr9_retest_flows(
+    show_id: str,
+    episode_id: str,
+    track_id: str,
+    album_id: str,
+    stale_album_id: str,
+    live_album_id: str,
+) -> list[SimFlow]:
+    pl_exact = "2HfFccisPxQfprhgIHM7XH"
+    return [
+        SimFlow(
+            "pr9_this_album_playback_resolution",
+            [
+                SimTurn(
+                    "do I already have this album saved?",
+                    [("spotify_library_contains", {"uris": ["this album"]})],
+                    lambda reply, tools, _args: tools == ["spotify_library_contains"]
+                    and ("yes" in reply.lower() or "no" in reply.lower() or "saved" in reply.lower()),
+                    setup=lambda r, live=live_album_id, stale=stale_album_id: (
+                        setattr(r, "_last_library_mutation", {"segment": "album", "ids": [stale]}),
+                        setattr(
+                            r,
+                            "_playback_catalog_id",
+                            lambda segment, lid=live: lid if segment == "album" else None,
+                        ),
+                    ),
+                ),
+            ],
+        ),
+        SimFlow(
+            "pr9_no_hallucination_after_search_error",
+            [
+                SimTurn(
+                    "find podcasts about astronomy",
+                    [("spotify_search", {"query": "astronomy podcast", "types": "show", "limit": 5})],
+                    lambda reply, tools, _a: "spotify_search" in tools,
+                ),
+            ],
+        ),
+        SimFlow(
+            "pr9_saved_albums_not_apology",
+            [
+                SimTurn(
+                    "what albums do I have saved?",
+                    [("spotify_saved_albums", {"limit": 5})],
+                    lambda reply, tools, _a: tools == ["spotify_saved_albums"]
+                    and "apolog" not in reply.lower(),
+                ),
+            ],
+        ),
+        SimFlow(
+            "pr9_builder_drop_track_edit",
+            [
+                SimTurn(
+                    "drop track 3",
+                    [("spotify_playlist_builder_edit", {"remove_indices": [3]})],
+                    lambda reply, tools, _a: tools == ["spotify_playlist_builder_edit"]
+                    and "2." in reply
+                    and "4." in reply,
+                    setup=lambda r: save_playlist_preview(
+                        r.conversation_id or "chat-bank",
+                        {
+                            "proposed_name": "spot-ai-fy test",
+                            "tracks": [
+                                {
+                                    "n": i,
+                                    "uri": f"spotify:track:{i:022d}",
+                                    "name": f"Track {i}",
+                                    "artist": "A",
+                                }
+                                for i in range(1, 13)
+                            ],
+                        },
+                    ),
+                ),
+            ],
+        ),
+        SimFlow(
+            "pr9_playlist_exact_match",
+            [
+                SimTurn(
+                    "save playlist 90s Rock Classics",
+                    [
+                        (
+                            "spotify_search_playlists",
+                            {"query": "90s Rock Classics", "limit": 5},
+                        ),
+                        ("spotify_follow_playlist", {"playlist_id": pl_exact}),
+                    ],
+                    lambda _r, tools, args: tools[0] == "spotify_search_playlists"
+                    and args[1].get("playlist_id") == pl_exact,
+                ),
+            ],
+        ),
+        SimFlow(
+            "pr9_is_it_saved_yes_no",
+            [
+                SimTurn(
+                    "is it saved?",
+                    [("spotify_library_contains", {"uris": [f"spotify:track:{track_id}"]})],
+                    lambda reply, tools, _a: tools == ["spotify_library_contains"]
+                    and ("yes" in reply.lower() or "no" in reply.lower() or "saved" in reply.lower()),
+                ),
+            ],
+        ),
+        SimFlow(
+            "pr9_save_show_rejects_save_tracks",
+            [
+                SimTurn(
+                    "save this show",
+                    [("spotify_save_tracks", {"track_id": f"spotify:show:{show_id}"})],
+                    lambda reply, tools, _a: tools == ["spotify_save_tracks"]
+                    and ("invalid_uri_type" in reply or "only accepts track" in reply.lower()),
+                ),
+            ],
+        ),
+    ]
 
 
 def _podcast_flows(show_id: str, episode_id: str, track_id: str, album_id: str) -> list[SimFlow]:
@@ -280,7 +402,24 @@ def run_simulated_chat_bank(
     for prompt, script, check in tool_scripts:
         rows.append(_run_tool_script(prompt, runner, script, pass_check=check))
 
+    stale_album = "48YIv8aaaaaaaaaaaaaaab"
+    live_album = album_id
     for flow in _podcast_flows(show_id, episode_id, track_id, album_id):
+        for turn in flow.turns:
+            rows.append(
+                _run_tool_script(
+                    turn.prompt,
+                    runner,
+                    turn.script,
+                    pass_check=turn.check,
+                    flow=flow.name,
+                    setup=turn.setup,
+                )
+            )
+
+    for flow in _pr9_retest_flows(
+        show_id, episode_id, track_id, album_id, stale_album, live_album
+    ):
         for turn in flow.turns:
             rows.append(
                 _run_tool_script(

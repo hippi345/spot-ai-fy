@@ -689,6 +689,25 @@ def spotify_playlist_builder_preview(name: str, track_queries: list[str]) -> str
 
 
 @mcp.tool()
+def spotify_playlist_builder_edit(
+    remove_indices: list[int] | None = None,
+    add_queries: list[str] | None = None,
+    replace_index: int = 0,
+    replace_query: str = "",
+) -> str:
+    args: dict[str, Any] = {}
+    if remove_indices:
+        args["remove_indices"] = remove_indices
+    if add_queries:
+        args["add_queries"] = add_queries
+    if replace_index:
+        args["replace_index"] = replace_index
+    if replace_query.strip():
+        args["replace_query"] = replace_query.strip()
+    return _runner.run("spotify_playlist_builder_edit", args)
+
+
+@mcp.tool()
 def spotify_playlist_builder_commit(approve: bool = True, name: str = "") -> str:
     args: dict[str, Any] = {"approve": approve}
     if name.strip():

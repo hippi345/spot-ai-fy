@@ -368,6 +368,14 @@ def sanitize_raw_tool_json_in_reply(text: str) -> str:
     if data.get("error"):
         return str(data.get("error"))
     if data.get("ok"):
+        if "saved_single" in data:
+            return (
+                "Yes — that's saved in your Spotify library."
+                if data.get("saved_single")
+                else "No — that's not in your library."
+            )
+        if isinstance(data.get("user_message"), str) and data["user_message"].strip():
+            return data["user_message"].strip()
         return "Done."
     return text
 

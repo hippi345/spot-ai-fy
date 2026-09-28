@@ -196,6 +196,10 @@ def append_tool_trace_record(
             row["failure_reason"] = failure_reason
         elif not err_body:
             row["failure_reason"] = "unknown_error"
+    elif outcome == "refused":
+        row["failure_reason"] = failure_reason or "guard_refused"
+        if err_body:
+            row["spotify_error_body_redacted"] = err_body
     line = json.dumps(row, ensure_ascii=False)
     secrets = [s for s in (known_secrets or []) if s]
     if secrets:

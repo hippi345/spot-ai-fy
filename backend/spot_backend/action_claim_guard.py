@@ -131,10 +131,14 @@ _TOOL_SUMMARIZE_REPROMPT_PREFIX = (
 
 
 def is_failure_boilerplate(text: str) -> bool:
+    from spot_backend.reply_tool_fallback import reply_looks_like_stale_apology
+
     stripped = (text or "").strip()
     if not stripped:
         return False
     if stripped == _HONEST_FALLBACK.strip():
+        return True
+    if reply_looks_like_stale_apology(stripped):
         return True
     low = stripped.lower()
     return "wasn't able to run the spotify action" in low or "can't confirm anything changed" in low

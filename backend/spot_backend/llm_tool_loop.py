@@ -220,7 +220,10 @@ def finalize_assistant_text(
             kind="return",
             text=numeric_factual_claim_honest_fallback(),
         )
+    from spot_backend.reply_tool_fallback import apply_tool_grounded_reply
+
+    grounded = apply_tool_grounded_reply(joined, state.tool_results)
     return TextFinalizeAction(
         kind="return",
-        text=prepare_user_visible_reply(joined, state.tool_results),
+        text=prepare_user_visible_reply(grounded, state.tool_results),
     )

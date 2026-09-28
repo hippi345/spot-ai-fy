@@ -281,9 +281,23 @@ def test_r15_simulated_chat_bank_runs(data_dir, signed_in_tokens) -> None:
     respx.get(url__regex=r"https://api\.spotify\.com/v1/me/library/contains.*").mock(
         return_value=httpx.Response(200, json=[False])
     )
-    respx.get(url__regex=r"https://api\.spotify\.com/v1/search.*").mock(
-        return_value=httpx.Response(200, json={"shows": {"items": []}, "tracks": {"items": [track]}})
-    )
+    def search_route(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "type=playlist" in url:
+            return httpx.Response(
+                200,
+                json={
+                    "playlists": {
+                        "items": [
+                            {"id": "wrong0000000000000001", "name": "Similar"},
+                            {"id": "2HfFccisPxQfprhgIHM7XH", "name": "90s Rock Classics"},
+                        ]
+                    }
+                },
+            )
+        return httpx.Response(200, json={"shows": {"items": []}, "tracks": {"items": [track]}})
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search.*").mock(side_effect=search_route)
     respx.get(f"https://api.spotify.com/v1/shows/{show_id}/episodes").mock(
         return_value=httpx.Response(
             200,
@@ -318,7 +332,7 @@ def test_r15_simulated_chat_bank_runs(data_dir, signed_in_tokens) -> None:
             },
         )
     )
-    respx.get("https://api.spotify.com/v1/me/player").mock(
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
         return_value=httpx.Response(200, json={})
     )
     respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
@@ -354,7 +368,7 @@ def test_r15_simulated_chat_bank_runs(data_dir, signed_in_tokens) -> None:
     assert rows
     assert all(isinstance(r.prompt, str) for r in rows)
     flow_rows = [r for r in rows if r.flow]
-    assert len(flow_rows) >= 12
+    assert len(flow_rows) >= 18
     assert all(r.passed for r in flow_rows), [r for r in flow_rows if not r.passed]
 
 

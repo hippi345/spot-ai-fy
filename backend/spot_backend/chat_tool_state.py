@@ -88,8 +88,8 @@ def format_runner_session_context(runner: SpotifyToolRunner) -> str:
             clean = [str(i) for i in ids if str(i).strip()]
             if clean:
                 lines.append(
-                    f"Last library action: {seg} id(s) {clean} — 'it/this/that' remove or "
-                    f"save/check should use these ids (spotify:{seg}:… URIs)."
+                    f"Last library action (may be stale — prefer spotify_playback_state for "
+                    f"'this album/song/show/episode'): {seg} id(s) {clean}."
                 )
     if not lines:
         return ""

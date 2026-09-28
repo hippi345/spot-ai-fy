@@ -896,11 +896,19 @@ def run_chat_turn_gemini(
                         )
                         contents.append({"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]})
                         continue
+                    from spot_backend.reply_tool_fallback import apply_tool_grounded_reply
+
                     if tool_nudge_used and first_text_answer and not had_tool_results:
-                        return prepare_user_visible_reply(first_text_answer, tool_results)
+                        return prepare_user_visible_reply(
+                            apply_tool_grounded_reply(first_text_answer, tool_results),
+                            tool_results,
+                        )
                     if model_parts_out:
                         contents.append({"role": "model", "parts": model_parts_out})
-                    return prepare_user_visible_reply(joined, tool_results)
+                    return prepare_user_visible_reply(
+                        apply_tool_grounded_reply(joined, tool_results),
+                        tool_results,
+                    )
 
                 # No visible text and no tool calls. Log everything we have so we can
                 # diagnose schema rejections, thought-only responses, etc.

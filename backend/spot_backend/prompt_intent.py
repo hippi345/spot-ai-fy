@@ -350,10 +350,12 @@ def refused_mutating_tool_result(tool_name: str) -> str:
 
     return json.dumps(
         {
+            "ok": False,
             "error": (
                 f"Refused to run mutating tool {tool_name!r} for an informational/how-to question. "
                 "Answer in plain language without changing the user's Spotify library or playback."
             ),
+            "failure_reason": "guard_refused",
             "informational_refusal": True,
             "reconnect_spotify_unnecessary": True,
             "sign_out_not_recommended": True,

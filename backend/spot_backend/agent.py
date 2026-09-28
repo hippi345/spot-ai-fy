@@ -866,7 +866,12 @@ def iter_ollama_chat_events(
                             "message": "Last tool failed on id validation — nudging the model to retry…",
                         }
                         continue
-                    final_text = prepare_user_visible_reply(final_text, tool_results)
+                    from spot_backend.reply_tool_fallback import apply_tool_grounded_reply
+
+                    final_text = prepare_user_visible_reply(
+                        apply_tool_grounded_reply(final_text, tool_results),
+                        tool_results,
+                    )
                     yield {"type": "final", "text": final_text}
                     return
 
