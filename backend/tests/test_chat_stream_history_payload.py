@@ -13,9 +13,7 @@ from fastapi.testclient import TestClient
 
 from spot_backend.app import app
 from spot_backend.chat_messages import FRIENDLY_SPOTIFY_GUIDANCE
-from spot_backend.chat_request import CHAT_HISTORY_MAX_TURNS
 from spot_backend.config import Settings
-from spot_backend.spotify_tools import SpotifyToolRunner
 
 
 def _collect_sse_events(stream_resp) -> list[dict[str, Any]]:

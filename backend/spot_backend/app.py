@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import logging
 import urllib.parse
 from typing import Any, Literal
 
 import httpx
-import logging
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -477,9 +477,7 @@ def chat_stream(body: ChatBody) -> StreamingResponse:
                 ):
                     out_q.put(ev)
             except Exception as e:
-                import logging
-
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "chat_stream_producer_error conversation_id=%s err=%s",
                     body.conversation_id,
                     e,

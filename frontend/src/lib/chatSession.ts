@@ -80,7 +80,8 @@ export function coerceChatHistoryTurns(
   for (const row of turns) {
     if (!row || typeof row !== "object") continue;
     const role = row.role;
-    const raw = (row.content ?? row.text ?? "").trim();
+    const legacyText = "text" in row && typeof row.text === "string" ? row.text : "";
+    const raw = (row.content ?? legacyText).trim();
     if (role !== "user" && role !== "assistant") continue;
     if (!raw) continue;
     if (role === "assistant" && isUnpersistedAssistantFallback(raw)) continue;
