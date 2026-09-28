@@ -23,7 +23,6 @@ LAPTOP_VAGUE_PROMPTS = (
     "Play something by The Weeknd",
     "play his latest single",
     "Can you play podcasts via this interface?",
-    "Play one of my playlists",
 )
 
 
@@ -44,6 +43,13 @@ def test_vague_laptop_prompts_skip_deterministic_shortcuts(signed_in_tokens) -> 
         for phrase in LAPTOP_VAGUE_PROMPTS:
             assert try_deterministic_chat_reply(phrase, runner) is None
             assert resolve_deterministic_chat_outcome(phrase, runner, conversation_id="lap-1") is None
+        playlist = resolve_deterministic_chat_outcome(
+            "Play one of my playlists",
+            runner,
+            conversation_id="lap-pl",
+        )
+        assert playlist is not None
+        assert playlist.tool_names()
     finally:
         runner.close()
 
@@ -151,7 +157,7 @@ def test_shortcut_play_artist_writes_trace_via_sse(data_dir, signed_in_tokens) -
     path = tool_trace_log_path(data_dir)
     assert path.is_file()
     lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert any("spotify_play_artist" in ln for ln in lines)
+    assert any("spotify_play_bare" in ln for ln in lines)
     final = next(
         e for e in _collect_sse_events(resp) if e.get("type") == "final"
     )

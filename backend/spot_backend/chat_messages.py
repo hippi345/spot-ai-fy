@@ -308,6 +308,21 @@ def _scrub_inline_code_span(match: re.Match[str]) -> str:
     return inner
 
 
+_HTTP_STATUS_SCRUB = re.compile(r"\bHTTP\s+\d{3}\b", re.I)
+_SPOTIFY_ID_SCRUB = re.compile(r"\b[0-9A-Za-z]{22}\b")
+_SEARCH_QUERY_ECHO_SCRUB = re.compile(
+    r"No tracks found for\s+['\"].+?['\"]",
+    re.I,
+)
+
+
+def scrub_user_visible_spotify_errors(text: str) -> str:
+    out = _HTTP_STATUS_SCRUB.sub("", text or "")
+    out = _SEARCH_QUERY_ECHO_SCRUB.sub("I couldn't find that on Spotify", out)
+    out = re.sub(r"\s{2,}", " ", out).strip()
+    return out
+
+
 def scrub_internal_tool_references(text: str) -> str:
     """Remove internal spotify_* tool names and function-call syntax from user-visible replies."""
     out = _CODE_SPAN_RE.sub(_scrub_inline_code_span, text or "")
@@ -361,6 +376,7 @@ def prepare_user_visible_reply(text: str, tool_results: list[str] | None = None)
     from spot_backend.reply_grounding import ground_reply_artist_credits
 
     cleaned = scrub_internal_tool_references(text)
+    cleaned = scrub_user_visible_spotify_errors(cleaned)
     cleaned = strip_internal_correction_leaks(cleaned)
     cleaned = sanitize_raw_tool_json_in_reply(cleaned)
     if tool_results:

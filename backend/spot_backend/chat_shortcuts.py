@@ -7,8 +7,9 @@ import re
 
 from spot_backend.chat_shortcut_policy import prompt_blocks_deterministic_play_shortcuts
 from spot_backend.deterministic_chat_types import DeterministicChatResult
+from spot_backend.play_bare import format_play_bare_chat_reply, play_bare_tool_step
+from spot_backend.play_bare_intent import extract_bare_play_target, extract_play_music_by_artist
 from spot_backend.play_artist import format_play_artist_reply, play_artist_tool_step
-from spot_backend.play_artist_intent import extract_play_artist_name
 from spot_backend.play_track import format_play_track_chat_reply, play_track_tool_step
 from spot_backend.play_track_intent import extract_play_track_request
 from spot_backend.playback_reply import (
@@ -17,7 +18,12 @@ from spot_backend.playback_reply import (
     prompt_asks_skip,
     prompt_asks_whats_playing,
 )
-from spot_backend.prompt_intent import prompt_requests_recent_listening_history
+from spot_backend.playlist_pick import owned_playlist_candidates
+from spot_backend.prompt_intent import (
+    prompt_is_vague_playlist_play_request,
+    prompt_requests_current_track_release,
+    prompt_requests_recent_listening_history,
+)
 from spot_backend.queue_track_intent import extract_queue_track_request
 from spot_backend.spotify_tools import SpotifyToolRunner
 
@@ -120,6 +126,87 @@ def try_deterministic_recently_played_reply(
     return DeterministicChatResult(reply, steps)
 
 
+def try_deterministic_current_track_release_reply(
+    user_text: str,
+    runner: SpotifyToolRunner,
+) -> DeterministicChatResult | None:
+    if not prompt_requests_current_track_release(user_text):
+        return None
+    steps: list[tuple[str, dict, str]] = []
+    state_raw = _run_tool(runner, "spotify_playback_state", {}, steps)
+    state = _parse_tool_json(state_raw)
+    item = state.get("item") if isinstance(state.get("item"), dict) else {}
+    if not item:
+        return DeterministicChatResult(
+            "Nothing is playing right now, so I can't tell when the current song came out.",
+            steps,
+        )
+    album = item.get("album") if isinstance(item.get("album"), dict) else {}
+    release = album.get("release_date") if isinstance(album.get("release_date"), str) else ""
+    track_name = item.get("name") if isinstance(item.get("name"), str) else "This track"
+    if not release and isinstance(album.get("id"), str):
+        album_raw = _run_tool(
+            runner,
+            "spotify_get_album",
+            {"album_id": album["id"]},
+            steps,
+        )
+        album_data = _parse_tool_json(album_raw)
+        rd = album_data.get("release_date")
+        if isinstance(rd, str):
+            release = rd
+    if release:
+        return DeterministicChatResult(f"{track_name} came out on {release}.", steps)
+    return DeterministicChatResult(
+        f"I couldn't find a release date for {track_name} just now.",
+        steps,
+    )
+
+
+def try_deterministic_vague_playlist_reply(
+    user_text: str,
+    runner: SpotifyToolRunner,
+) -> DeterministicChatResult | None:
+    if not prompt_is_vague_playlist_play_request(user_text):
+        return None
+    steps: list[tuple[str, dict, str]] = []
+    me_raw = _run_tool(runner, "spotify_me", {}, steps)
+    me = _parse_tool_json(me_raw)
+    me_id = me.get("id") if isinstance(me.get("id"), str) else ""
+    pl_raw = _run_tool(runner, "spotify_user_playlists", {"limit": 50}, steps)
+    pl_data = _parse_tool_json(pl_raw)
+    items = pl_data.get("items") if isinstance(pl_data.get("items"), list) else []
+    candidates = owned_playlist_candidates(items, me_id)
+    if not candidates:
+        return DeterministicChatResult(
+            "I couldn't find a playlist in your library that I can play from here.",
+            steps,
+        )
+    attempts = min(2, len(candidates))
+    last_msg = "I couldn't start a playlist just now."
+    for row in candidates[:attempts]:
+        pid = row.get("id")
+        pname = row.get("name") if isinstance(row.get("name"), str) else "your playlist"
+        if not isinstance(pid, str):
+            continue
+        play_raw = _run_tool(
+            runner,
+            "spotify_play_playlist",
+            {"playlist_id": pid, "playback_request_label": pname},
+            steps,
+        )
+        play = _parse_tool_json(play_raw)
+        if play.get("ok"):
+            return DeterministicChatResult(
+                f"Playing {pname} — want a different one?",
+                steps,
+            )
+        last_msg = str(
+            play.get("user_message") or play.get("error") or last_msg
+        ).strip()
+    return DeterministicChatResult(last_msg, steps)
+
+
 def try_deterministic_chat_reply(
     user_text: str,
     runner: SpotifyToolRunner,
@@ -132,6 +219,10 @@ def try_deterministic_chat_reply(
         return None
 
     steps: list[tuple[str, dict, str]] = []
+
+    release = try_deterministic_current_track_release_reply(user_text, runner)
+    if release is not None:
+        return release
 
     if _UNDO_RE.match(t):
         track_ids = runner.last_saved_track_ids_for_undo(
@@ -171,6 +262,11 @@ def try_deterministic_chat_reply(
             steps,
         )
 
+    if prompt_is_vague_playlist_play_request(t):
+        vague = try_deterministic_vague_playlist_reply(t, runner)
+        if vague is not None:
+            return vague
+
     track_req = extract_play_track_request(t) if not prompt_blocks_deterministic_play_shortcuts(t) else None
     if track_req:
         track_title, track_artist = track_req
@@ -181,13 +277,20 @@ def try_deterministic_chat_reply(
             steps,
         )
 
-    artist_name = (
-        extract_play_artist_name(t) if not prompt_blocks_deterministic_play_shortcuts(t) else None
-    )
-    if artist_name:
-        name, args, raw = play_artist_tool_step(runner, artist_name)
-        steps.append((name, args, raw))
-        return DeterministicChatResult(format_play_artist_reply(artist_name, raw), steps)
+    if not prompt_blocks_deterministic_play_shortcuts(t):
+        by_artist = extract_play_music_by_artist(t)
+        if by_artist:
+            name, args, raw = play_artist_tool_step(runner, by_artist)
+            steps.append((name, args, raw))
+            return DeterministicChatResult(
+                format_play_artist_reply(by_artist, raw),
+                steps,
+            )
+        bare = extract_bare_play_target(t)
+        if bare:
+            name, args, raw = play_bare_tool_step(runner, bare)
+            steps.append((name, args, raw))
+            return DeterministicChatResult(format_play_bare_chat_reply(bare, raw), steps)
 
     queue_req = extract_queue_track_request(t) if not prompt_blocks_deterministic_play_shortcuts(t) else None
     if queue_req:

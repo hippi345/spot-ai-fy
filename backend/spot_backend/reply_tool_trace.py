@@ -53,6 +53,10 @@ def tool_trace_outcome(raw_result: str) -> str:
         return "error"
     if not isinstance(data, dict):
         return "error"
+    if data.get("optional_lookup_failure"):
+        return "ok"
+    if data.get("ok") is True:
+        return "ok"
     if data.get("informational_refusal"):
         return "refused"
     if data.get("error"):

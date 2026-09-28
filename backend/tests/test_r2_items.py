@@ -141,8 +141,9 @@ def test_r2_itemC_action_guard_reprompts_when_claim_without_tool(data_dir, signe
             request=req,
         )
 
-    with patch("httpx.Client.post", fake_post):
-        text = run_chat_turn_gemini("play music by Radiohead", settings)
+    with patch("spot_backend.gemini_llm.gemini_deterministic_shortcut_reply", return_value=None):
+        with patch("httpx.Client.post", fake_post):
+            text = run_chat_turn_gemini("play music by Radiohead", settings)
     assert "wasn't able to run" in text or "can't confirm" in text
     assert len(bodies) >= 2
 

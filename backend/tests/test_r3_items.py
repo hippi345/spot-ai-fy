@@ -198,7 +198,7 @@ def test_r3_item05_create_playlist_visibility_warning_when_explicit_private_stil
         return_value=httpx.Response(200, json={"id": pid, "public": True, "name": "x"})
     )
     runner = SpotifyToolRunner(settings=Settings())
-    raw = runner.run("spotify_create_playlist", {"name": "Secret", "public": False})
+    raw = runner.run("spotify_create_playlist", {"name": "Secret", "public": False, "tracks": ["spotify:track:aaaaaaaaaaaaaaaaaaaaaa"]})
     runner.close()
     data = json.loads(raw)
     assert data.get("visibility_warning")

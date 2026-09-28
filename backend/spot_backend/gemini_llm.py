@@ -350,7 +350,7 @@ def gemini_candidate_is_effectively_empty(cand: dict[str, Any]) -> bool:
 
 def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
     """Restrict ANY-mode tool calls for obvious single-intent control commands."""
-    from spot_backend.play_artist_intent import extract_play_artist_name
+    from spot_backend.play_bare_intent import extract_bare_play_target, extract_play_music_by_artist
     from spot_backend.play_artist_popular_intent import (
         prompt_requests_play_artist_popular_track,
     )
@@ -363,13 +363,14 @@ def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
         return None
     if extract_play_track_request(user_text):
         return ["spotify_play_track"]
+    if extract_play_music_by_artist(user_text):
+        return ["spotify_play_artist"]
+    if extract_bare_play_target(user_text):
+        return ["spotify_play_track", "spotify_play_artist"]
     if prompt_requests_play_artist_popular_track(user_text):
         return ["spotify_play_artist_popular_track", "spotify_search"]
     if re.search(r"\bhow\s+many\s+albums?\b", t) and not re.search(r"\bmy\b", t):
         return ["spotify_search", "spotify_artist_albums"]
-    artist = extract_play_artist_name(user_text)
-    if artist:
-        return ["spotify_play_artist"]
     if re.fullmatch(r"play\s*", t) or t in ("play", "resume"):
         return ["spotify_start_resume_playback"]
     if re.search(r"\bshuffle\s+(?:on|off)\b", t) or re.fullmatch(r"shuffle(?:\s+on)?", t):

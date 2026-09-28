@@ -143,6 +143,24 @@ def prompt_is_capability_question(user_text: str) -> bool:
     t = (user_text or "").strip()
     if not t or not _prompt_is_question_form(t):
         return False
+    low = t.lower()
+    if re.search(r"\bwhat\s+can\s+you\s+do\b", low):
+        return True
+    if (
+        re.search(r"\bcan\s+(?:you|this)\b", t, re.I)
+        and re.search(r"\b(?:make|create)\b", low)
+        and "playlist" in low
+    ):
+        if re.search(r"\bplaylist\s+\S", t) and not re.search(
+            r"\b(?:make|create)\s+(?:me\s+)?(?:a\s+)?playlists?\s*\??\s*$",
+            t,
+            re.I,
+        ):
+            return False
+        if re.search(r"\b(?:make|create)\s+(?:me\s+)?(?:a\s+)?playlists?\s*\??\s*$", t, re.I):
+            return True
+        if re.search(r"\bmake\s+me\s+a\s+playlists?\s*\??\s*$", t, re.I):
+            return True
     if _CAPABILITY_INTERFACE_RE.search(t):
         return True
     low = t.lower()
@@ -225,6 +243,29 @@ def prompt_requests_recent_listening_history(user_text: str) -> bool:
     if not _RECENT_LISTENING_ACTIVITY_RE.search(t):
         return False
     return bool(_RECENT_LISTENING_TIME_RE.search(t))
+
+
+_CURRENT_TRACK_REF_RE = re.compile(
+    r"\b(?:"
+    r"this\s+song|this\s+track|this\b|"
+    r"current\s+song|current\s+track|"
+    r"what(?:'s|\s+is)\s+playing|now\s+playing"
+    r")\b",
+    re.I,
+)
+_RELEASE_DATE_QUESTION_RE = re.compile(
+    r"\b(?:when\s+did|release\s+date|come\s+out|came\s+out|what\s+year)\b",
+    re.I,
+)
+
+
+def prompt_requests_current_track_release(user_text: str) -> bool:
+    t = (user_text or "").strip()
+    if not t:
+        return False
+    if not _RELEASE_DATE_QUESTION_RE.search(t):
+        return False
+    return bool(_CURRENT_TRACK_REF_RE.search(t))
 
 
 def prompt_is_informational(user_text: str) -> bool:

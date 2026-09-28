@@ -75,7 +75,9 @@ def format_play_artist_reply(artist_name: str, raw: str) -> str:
     if err.startswith("Spotify wouldn't play"):
         return err
     if err and "playback.error" not in err and "playback.detail" not in err:
-        return f"I could not start playback for {artist_name}: {err}"
+        if err.startswith("I couldn't find an artist called"):
+            return err
+        return f"I could not start playback for {artist_name} just now."
     return (
         f"I could not start playback for {artist_name} just now. "
         "Try opening Spotify on your device and pressing play, then ask again."

@@ -292,7 +292,13 @@ def run_create_playlist_private_flow(
         return_value=httpx.Response(200, json={"id": pid, "public": get_public, "name": "x"})
     )
     runner = SpotifyToolRunner(settings=Settings())
-    raw = runner.run("spotify_create_playlist", {"name": "Secret"})
+    raw = runner.run(
+        "spotify_create_playlist",
+        {
+            "name": "Secret",
+            "tracks": [{"uri": "spotify:track:aaaaaaaaaaaaaaaaaaaaaa"}],
+        },
+    )
     runner.close()
     return json.loads(raw), put_route.called
 

@@ -270,7 +270,13 @@ def test_item19_create_playlist_defaults_private(data_dir, signed_in_tokens) -> 
         return_value=httpx.Response(200, json={"id": "pppppppppppppppppppppp", "name": "x"})
     )
     runner = SpotifyToolRunner(settings=Settings())
-    runner.run("spotify_create_playlist", {"name": "Secret list"})
+    runner.run(
+        "spotify_create_playlist",
+        {
+            "name": "Secret list",
+            "tracks": [{"uri": "spotify:track:aaaaaaaaaaaaaaaaaaaaaa"}],
+        },
+    )
     runner.close()
     body = json.loads(route.calls.last.request.content or b"{}")
     assert body.get("public") is False

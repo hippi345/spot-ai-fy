@@ -10,8 +10,10 @@ from spot_backend.config import Settings
 from spot_backend.reply_tool_trace import persist_shortcut_tool_steps
 from spot_backend.chat_shortcuts import (
     try_deterministic_chat_reply,
+    try_deterministic_current_track_release_reply,
     try_deterministic_recently_played_reply,
 )
+from spot_backend.capability_replies import try_capability_question_reply
 from spot_backend.deterministic_chat_types import DeterministicChatResult
 from spot_backend.spotify_tools import SpotifyToolRunner
 
@@ -30,6 +32,12 @@ def resolve_deterministic_chat_outcome(
 ) -> DeterministicChatResult | None:
     if deterministic_chat_shortcuts_disabled():
         return None
+    cap = try_capability_question_reply(user_text)
+    if cap:
+        return DeterministicChatResult(cap, [])
+    outcome = try_deterministic_current_track_release_reply(user_text, runner)
+    if outcome is not None:
+        return outcome
     outcome = try_deterministic_recently_played_reply(user_text, runner)
     if outcome is not None:
         return outcome
