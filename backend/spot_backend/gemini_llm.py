@@ -43,7 +43,10 @@ from spot_backend.llm_tool_loop import (
     run_library_save_fallback_if_needed,
 )
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
-from spot_backend.tool_server_enforcement import enforce_tool_arguments_for_turn
+from spot_backend.tool_server_enforcement import (
+    enforce_tool_arguments_for_turn,
+    rewrite_tool_call_for_turn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -747,6 +750,9 @@ def run_chat_turn_gemini(
                         else:
                             import time as _time
 
+                            name, args = rewrite_tool_call_for_turn(
+                                name, args, user_text=user_text, runner=runner
+                            )
                             args = enforce_tool_arguments_for_turn(
                                 name, args, user_text=user_text, runner=runner
                             )

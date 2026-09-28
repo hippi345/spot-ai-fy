@@ -90,7 +90,14 @@ _PLAYLIST_ID_TOOLS = frozenset(
         "spotify_update_playlist",
         "spotify_replace_playlist_tracks",
         "spotify_reorder_playlist_tracks",
+        "spotify_get_playlist",
+        "spotify_playlist_tracks",
+        "spotify_add_tracks_to_playlist",
     }
+)
+_SHOW_SAVE_INTENT_RE = re.compile(
+    r"\bsave\b.+\b(?:this|that)\s+(?:show|podcast)\b|\bsave\s+(?:this|that)\s+(?:show|podcast)\b",
+    re.I,
 )
 _SEARCH_PLAYLIST_TOOLS = frozenset({"spotify_search_playlists"})
 _LIBRARY_ALBUM_TOOLS = frozenset(
@@ -227,7 +234,11 @@ def _apply_playback_overrides(
         if _CURRENT_SHOW_RE.search(user_text or "") or re.search(
             r"\b(?:this|that)\s+(?:show|podcast)\b", user_text or "", re.I
         ):
-            show = playback_id_for_segment(runner, "show")
+            from spot_backend.show_session_resolve import session_show_id
+
+            show = session_show_id(runner)
+            if not show:
+                show = playback_id_for_segment(runner, "show")
             if not show:
                 show = getattr(runner, "_last_show_search_id", None)
             if not show:
@@ -258,6 +269,107 @@ def _apply_playback_overrides(
     return out
 
 
+def _resolved_show_id_for_save(runner: SpotifyToolRunner) -> str | None:
+    from spot_backend.show_session_resolve import resolve_show_id_for_turn
+
+    return resolve_show_id_for_turn(runner, "", None)
+
+
+def _uris_are_show_segment(uris: list[Any]) -> bool:
+    for raw in uris:
+        if not isinstance(raw, str):
+            continue
+        parsed = _parse_spotify_context_ref(raw.strip())
+        if parsed and parsed[0] == "show":
+            return True
+    return False
+
+
+def _show_save_rewrite_to_library(
+    arguments: dict[str, Any],
+    *,
+    user_text: str,
+    runner: SpotifyToolRunner,
+) -> tuple[str, dict[str, Any]] | None:
+    from spot_backend.show_session_resolve import session_show_id
+
+    show_id = session_show_id(runner) or _resolved_show_id_for_save(runner)
+    if not show_id:
+        return None
+    out = deepcopy(arguments) if isinstance(arguments, dict) else {}
+    out["uris"] = [f"spotify:show:{show_id}"]
+    out["_turn_user_text"] = user_text
+    return "spotify_library_save", out
+
+
+def _maybe_rewrite_show_save_tool_call(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    user_text: str,
+    runner: SpotifyToolRunner,
+) -> tuple[str, dict[str, Any]] | None:
+    if tool_name == "spotify_save_tracks":
+        ids = arguments.get("track_ids") or arguments.get("ids") or arguments.get("track_id")
+        blob = ids if isinstance(ids, list) else [ids] if isinstance(ids, str) else []
+        if any(isinstance(x, str) and "show:" in x.lower() for x in blob):
+            return _show_save_rewrite_to_library(arguments, user_text=user_text, runner=runner)
+    if tool_name not in ("spotify_save_tracks", "spotify_save_albums", "spotify_library_save"):
+        return None
+    uris = arguments.get("uris")
+    if not isinstance(uris, list) or not uris:
+        return _show_save_rewrite_to_library(arguments, user_text=user_text, runner=runner)
+    from spot_backend.show_session_resolve import session_show_id
+
+    session = session_show_id(runner)
+    if not session:
+        if not _uris_are_show_segment(uris):
+            return _show_save_rewrite_to_library(arguments, user_text=user_text, runner=runner)
+        return None
+    pronoun_only = all(
+        isinstance(x, str)
+        and x.strip().lower()
+        in (
+            "it",
+            "this",
+            "that",
+            "this show",
+            "that show",
+            "this podcast",
+            "that podcast",
+        )
+        for x in uris
+    )
+    if pronoun_only or not _uris_are_show_segment(uris):
+        return _show_save_rewrite_to_library(arguments, user_text=user_text, runner=runner)
+    return None
+
+
+def rewrite_tool_call_for_turn(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    user_text: str,
+    runner: SpotifyToolRunner,
+) -> tuple[str, dict[str, Any]]:
+    """Rewrite wrong tool/args before the first Spotify call on show-save and similar turns."""
+    from spot_backend.show_session_resolve import is_show_library_intent
+
+    if is_show_library_intent(user_text, runner):
+        rewritten = _maybe_rewrite_show_save_tool_call(
+            tool_name, arguments, user_text=user_text, runner=runner
+        )
+        if rewritten:
+            return rewritten
+    elif _SHOW_SAVE_INTENT_RE.search(user_text or ""):
+        rewritten = _maybe_rewrite_show_save_tool_call(
+            tool_name, arguments, user_text=user_text, runner=runner
+        )
+        if rewritten:
+            return rewritten
+    return tool_name, arguments if isinstance(arguments, dict) else {}
+
+
 def enforce_tool_arguments_for_turn(
     tool_name: str,
     arguments: dict[str, Any],
@@ -274,8 +386,41 @@ def enforce_tool_arguments_for_turn(
         if isinstance(q, str) and q.strip():
             runner.note_playlist_search_query(q.strip())
     args = _apply_playback_overrides(tool_name, args, user_text=user_text, runner=runner)
+    if tool_name in (
+        "spotify_library_save",
+        "spotify_library_remove",
+        "spotify_library_contains",
+        "spotify_save_tracks",
+        "spotify_save_albums",
+    ):
+        from spot_backend.show_session_resolve import is_show_library_intent, rewrite_library_uris_for_show_intent
+
+        if is_show_library_intent(user_text, runner):
+            raw_uris = args.get("uris")
+            if isinstance(raw_uris, list):
+                args = deepcopy(args)
+                args["uris"] = rewrite_library_uris_for_show_intent(runner, user_text, raw_uris)
+            for key in ("track_ids", "ids", "track_id", "album_ids", "album_id"):
+                val = args.get(key)
+                if isinstance(val, list):
+                    args = deepcopy(args)
+                    args[key] = rewrite_library_uris_for_show_intent(runner, user_text, val)
+                elif isinstance(val, str) and val.strip():
+                    args = deepcopy(args)
+                    args[key] = rewrite_library_uris_for_show_intent(runner, user_text, [val])[0]
     if tool_name in _PLAYLIST_ID_TOOLS:
         args = _override_playlist_id_from_context(args, user_text=user_text, runner=runner)
+        from spot_backend.playlist_session_resolve import resolve_playlist_id_for_turn
+
+        raw_pid = args.get("playlist_id") or args.get("id")
+        resolved = resolve_playlist_id_for_turn(
+            runner,
+            user_text,
+            str(raw_pid) if raw_pid is not None else None,
+        )
+        if resolved:
+            args = deepcopy(args)
+            args["playlist_id"] = resolved
     if tool_name in _SHOW_PLAY_TOOLS:
         from spot_backend.show_session_resolve import resolve_show_id_for_turn
 

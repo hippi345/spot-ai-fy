@@ -160,31 +160,48 @@ class SpotifyToolRunnerPr9Mixin:
             return [f"spotify:{segment}:{cid}"]
         return []
 
-    def _playback_not_verified_user_message(self, episode_title: str) -> str:
+    def _playback_not_verified_user_message(
+        self,
+        episode_title: str,
+        *,
+        player: dict[str, Any] | None = None,
+    ) -> str:
+        state = player
+        if state is None and hasattr(self, "_player_state_snapshot"):
+            state = self._player_state_snapshot()
+        if hasattr(self, "_still_playing_user_message") and isinstance(state, dict):
+            still = self._still_playing_user_message(state)
+            if still:
+                return still
+        idle_msg = (
+            "Spotify didn't start it, and nothing is playing right now. "
+            "Open Spotify on a phone, speaker, or computer and try again."
+        )
+        if not isinstance(state, dict):
+            return idle_msg
+        item = state.get("item") if isinstance(state.get("item"), dict) else None
+        if not item:
+            return idle_msg
+        if state.get("is_playing") is False:
+            name = item.get("name") if isinstance(item.get("name"), str) else None
+            artists = item.get("artists") if isinstance(item.get("artists"), list) else []
+            artist = ""
+            if artists and isinstance(artists[0], dict):
+                artist = str(artists[0].get("name") or "").strip()
+            if name and artist:
+                return f"Spotify didn't start it. Your player is paused on {name} by {artist}."
+            if name:
+                return f"Spotify didn't start it. Your player is paused on {name}."
         base = (
             f"I found the latest episode, {episode_title!r}, but Spotify didn't confirm it started playing. "
             "Try tapping play on your device or ask me to transfer playback."
         )
-        state = self._player_state_snapshot() if hasattr(self, "_player_state_snapshot") else None
-        if not isinstance(state, dict):
-            return base
-        item = state.get("item")
-        if not isinstance(item, dict):
-            return base
-        if item.get("type") not in ("track", "episode"):
-            return base
-        name = item.get("name") if isinstance(item.get("name"), str) else None
-        artists = item.get("artists") if isinstance(item.get("artists"), list) else []
-        artist = ""
-        if artists and isinstance(artists[0], dict):
-            artist = str(artists[0].get("name") or "").strip()
-        if name and artist:
-            return f"{base} You're currently listening to {name} by {artist}."
-        if name:
-            return f"{base} You're currently listening to {name}."
         return base
 
     def _uris_from_show_session_context(self) -> list[str]:
+        focus = getattr(self, "_session_focus_show_id", None)
+        if isinstance(focus, str) and focus.strip():
+            return [f"spotify:show:{focus.strip()}"]
         last_show = getattr(self, "_last_show_search_id", None)
         if isinstance(last_show, str) and last_show.strip():
             return [f"spotify:show:{last_show.strip()}"]
@@ -259,7 +276,14 @@ class SpotifyToolRunnerPr9Mixin:
         return []
 
     def _normalize_library_uris(self, arguments: dict[str, Any]) -> list[str]:
+        from spot_backend.show_session_resolve import (
+            is_show_library_intent,
+            rewrite_library_uris_for_show_intent,
+        )
         from spot_backend.spotify_tools import _normalize_spotify_id
+
+        user_text = arguments.get("_turn_user_text")
+        user_text_s = user_text.strip() if isinstance(user_text, str) else ""
 
         if self._library_argument_is_pronoun(arguments):
             raw = arguments.get("uris") or arguments.get("uri")
@@ -303,6 +327,14 @@ class SpotifyToolRunnerPr9Mixin:
             if u not in seen:
                 seen.add(u)
                 uniq.append(u)
+        if user_text_s and is_show_library_intent(user_text_s, self):
+            uniq = rewrite_library_uris_for_show_intent(self, user_text_s, uniq)
+            if not uniq:
+                from spot_backend.show_session_resolve import session_show_id
+
+                session = session_show_id(self)
+                if session:
+                    uniq = [f"spotify:show:{session}"]
         return uniq[: _LIBRARY_URI_CHUNK]
 
     def _library_contains(self, arguments: dict[str, Any]) -> str:
@@ -373,6 +405,15 @@ class SpotifyToolRunnerPr9Mixin:
                 )
         return None
 
+    def _verify_show_catalog_id(self, show_id: str) -> tuple[bool, str | None]:
+        try:
+            self.client.api_get(f"/shows/{show_id}")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (400, 404):
+                return False, "show_not_found"
+            raise
+        return True, None
+
     def _library_save_uris(self, arguments: dict[str, Any]) -> str:
         uris = self._normalize_library_uris(arguments)
         if not uris:
@@ -383,15 +424,78 @@ class SpotifyToolRunnerPr9Mixin:
         )
         if blocked:
             return blocked
-        for offset in range(0, len(uris), _LIBRARY_URI_CHUNK):
-            chunk = uris[offset : offset + _LIBRARY_URI_CHUNK]
-            self.client.api_put("/me/library", params={"uris": ",".join(chunk)})
+        for uri in uris:
+            if isinstance(uri, str) and uri.lower().startswith("spotify:show:"):
+                bare = uri.split(":", 2)[-1].strip()
+                ok, reason = self._verify_show_catalog_id(bare)
+                if not ok:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "failure_reason": reason or "show_not_found",
+                            "error": "Spotify could not find that podcast show.",
+                            "user_message": "I couldn't save that show — Spotify doesn't recognize it.",
+                            "show_id": bare,
+                        },
+                        ensure_ascii=False,
+                    )
+        try:
+            for offset in range(0, len(uris), _LIBRARY_URI_CHUNK):
+                chunk = uris[offset : offset + _LIBRARY_URI_CHUNK]
+                self.client.api_put("/me/library", params={"uris": ",".join(chunk)})
+        except httpx.HTTPStatusError as e:
+            from spot_backend.spotify_tools import _http_failure_reason, _spotify_http_message
+
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": _http_failure_reason(e.response.status_code, _spotify_http_message(e)),
+                    "error": _spotify_http_message(e),
+                    "user_message": "Spotify didn't save that to your library.",
+                },
+                ensure_ascii=False,
+            )
+        saved_ok = True
+        try:
+            check = self.client.api_get(
+                "/me/library/contains",
+                params={"uris": ",".join(uris[: _LIBRARY_URI_CHUNK])},
+            )
+            if isinstance(check, list) and check:
+                saved_ok = any(bool(x) for x in check)
+            else:
+                saved_ok = False
+        except Exception:
+            saved_ok = False
+        if not saved_ok:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": "save_not_verified",
+                    "error": "Spotify did not report the item as saved after the library request.",
+                    "user_message": "I couldn't confirm that show was saved to your library.",
+                    "saved_uris": uris,
+                },
+                ensure_ascii=False,
+            )
         self._record_library_mutation_from_uris(uris)
         label = self._library_label_for_uri(uris[0]) if uris else None
-        payload: dict[str, Any] = {"ok": True, "saved_uris": uris}
+        if uris[0].lower().startswith("spotify:show:") and not label:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": "show_not_found",
+                    "error": "Spotify has no metadata for that show id.",
+                    "user_message": "I couldn't save that show — Spotify doesn't recognize it.",
+                },
+                ensure_ascii=False,
+            )
+        payload: dict[str, Any] = {"ok": True, "saved_uris": uris, "save_verified": True}
         if label:
             payload["item_name"] = label
             payload["user_message"] = f"Saved {label} to your library."
+        else:
+            payload["user_message"] = "Saved that to your library."
         return json.dumps(payload, ensure_ascii=False)
 
     def _library_remove_uris(self, arguments: dict[str, Any]) -> str:
@@ -523,6 +627,17 @@ class SpotifyToolRunnerPr9Mixin:
         sid = _normalize_spotify_id(_pick_arg(arguments, "show_id", "id"), "show")
         if not sid:
             return json.dumps({"error": "show_id is required", "failure_reason": "validation_error"})
+        show_name = sid
+        try:
+            show_meta = self.client.api_get_cached(f"/shows/{sid}")
+            if isinstance(show_meta, dict) and isinstance(show_meta.get("name"), str):
+                show_name = show_meta["name"].strip() or sid
+        except Exception:
+            show_name = sid
+        if hasattr(self, "note_session_focus_show"):
+            self.note_session_focus_show(sid, show_name)
+        elif hasattr(self, "note_session_show"):
+            self.note_session_show(sid, show_name)
         from spot_backend.spotify_tools import _normalize_market
 
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
@@ -574,8 +689,8 @@ class SpotifyToolRunnerPr9Mixin:
         if not isinstance(uri, str):
             return json.dumps({"ok": False, "error": "Episode has no uri", "failure_reason": "parse_error"})
         if isinstance(eid, str):
-            self._record_library_mutation("show", [sid])
             self._record_library_mutation("episode", [eid])
+            self._record_library_mutation("show", [sid])
             self._session_known_ids.add(sid)
             self._session_known_ids.add(eid)
         play_args: dict[str, Any] = {"uris": [uri], "playback_request_label": "that episode"}
@@ -587,18 +702,29 @@ class SpotifyToolRunnerPr9Mixin:
             payload = json.loads(raw)
         except (json.JSONDecodeError, TypeError, ValueError):
             return raw
+        player = self._poll_player_state(attempts=4, delay_s=0.4) if hasattr(self, "_poll_player_state") else None
         if isinstance(payload, dict) and payload.get("ok") is False:
             payload.setdefault("failure_reason", "playback_not_verified")
             ep_title = ep.get("name") if isinstance(ep.get("name"), str) else "the latest episode"
             payload["episode_name"] = ep_title
-            payload["user_message"] = self._playback_not_verified_user_message(ep_title)
+            if isinstance(player, dict):
+                payload["player_after"] = player
+            payload["user_message"] = self._playback_not_verified_user_message(
+                ep_title,
+                player=player if isinstance(player, dict) else None,
+            )
             return json.dumps(payload, ensure_ascii=False)
         if isinstance(payload, dict) and payload.get("playback_verified") is False:
             payload["ok"] = False
             payload.setdefault("failure_reason", "playback_not_verified")
             ep_title = ep.get("name") if isinstance(ep.get("name"), str) else "the latest episode"
             payload["episode_name"] = ep_title
-            payload["user_message"] = self._playback_not_verified_user_message(ep_title)
+            if isinstance(player, dict):
+                payload["player_after"] = player
+            payload["user_message"] = self._playback_not_verified_user_message(
+                ep_title,
+                player=player if isinstance(player, dict) else None,
+            )
             return json.dumps(payload, ensure_ascii=False)
         return raw
 
@@ -826,7 +952,27 @@ class SpotifyToolRunnerPr9Mixin:
             return None
         if _theme_requests_nineties(theme_blob) and "year:" not in q.lower():
             q = f"{q} year:1990-1999"
-        logger.info("playlist_builder_search q=%s", q)
+        import os
+
+        if os.environ.get("SPOT_DEBUG_BUILDER_Q", "").strip() in ("1", "true", "yes"):
+            logger.warning("playlist_builder_search q=%s", q)
+        else:
+            logger.info("playlist_builder_search q=%s", q)
+        if os.environ.get("SPOT_DEBUG_BUILDER_Q", "").strip() in ("1", "true", "yes"):
+            trace_dir = getattr(self.settings, "data_dir", None)
+            if trace_dir is not None:
+                from pathlib import Path
+
+                from spot_backend.reply_tool_trace import append_tool_trace_record
+
+                append_tool_trace_record(
+                    Path(trace_dir),
+                    conversation_id=self.conversation_id,
+                    tool_name="playlist_builder_search",
+                    args_summary="{}",
+                    outcome="ok",
+                    trace_fields={"q": q},
+                )
         data = self.client.api_get(
             "/search",
             params={

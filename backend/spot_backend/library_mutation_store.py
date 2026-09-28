@@ -7,6 +7,7 @@ from typing import Any
 _store: dict[str, dict[str, Any]] = {}
 _playlist_id_store: dict[str, str] = {}
 _played_playlist_ids_store: dict[str, list[str]] = {}
+_focus_show_store: dict[str, dict[str, str]] = {}
 
 
 def _key(conversation_id: str | None) -> str | None:
@@ -82,6 +83,34 @@ def load_played_playlist_ids(conversation_id: str | None) -> list[str]:
     return [str(r).strip() for r in rows if str(r).strip()]
 
 
+def record_session_focus_show(
+    conversation_id: str | None,
+    show_id: str,
+    name: str = "",
+) -> None:
+    key = _key(conversation_id)
+    sid = (show_id or "").strip()
+    label = (name or "").strip()
+    if key is None or not sid:
+        return
+    _focus_show_store[key] = {"id": sid, "name": label or sid}
+
+
+def load_session_focus_show(conversation_id: str | None) -> tuple[str, str] | None:
+    key = _key(conversation_id)
+    if key is None:
+        return None
+    row = _focus_show_store.get(key)
+    if not isinstance(row, dict):
+        return None
+    sid = row.get("id")
+    name = row.get("name")
+    if not isinstance(sid, str) or not sid.strip():
+        return None
+    label = name.strip() if isinstance(name, str) and name.strip() else sid.strip()
+    return sid.strip(), label
+
+
 def clear_session(conversation_id: str | None) -> None:
     """Test helper — drop stored mutation for a conversation key."""
     key = _key(conversation_id)
@@ -89,3 +118,4 @@ def clear_session(conversation_id: str | None) -> None:
         _store.pop(key, None)
         _playlist_id_store.pop(key, None)
         _played_playlist_ids_store.pop(key, None)
+        _focus_show_store.pop(key, None)

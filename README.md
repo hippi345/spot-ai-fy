@@ -149,6 +149,8 @@ cd ..
 pytest backend/tests
 ```
 
+Optional: set `SPOT_DEBUG_BUILDER_Q=1` when running backend tests or a local server to log each playlist-builder Spotify search query at warning level and append a `q` field (no chat text) to `DATA_DIR/chat_tool_traces.jsonl` under tool `playlist_builder_search`.
+
 Optional real-Gemini replay eval (Spotify HTTP mocked; skipped when `GEMINI_API_KEY` is unset):
 
 ```bash

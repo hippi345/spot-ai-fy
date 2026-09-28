@@ -172,6 +172,7 @@ _FAILURE_REASON_HUMAN: dict[str, str] = {
         "That's one of your own playlists. Say its exact name if you want me to remove or change it."
     ),
     "show_not_found": "I couldn't find that show's latest episode.",
+    "save_not_verified": "I couldn't confirm that was saved to your Spotify library.",
     "no_episodes_for_show": "I couldn't find that show's latest episode.",
 }
 
@@ -220,8 +221,21 @@ def reply_hallucinates_after_tool_failure(text: str, tool_results: list[str] | N
     # Numbered or bullet lists of show/track names after a failed search.
     if re.search(r"(?:^|\n)\s*(?:\d+\.|[-*])\s+\S+", stripped):
         return True
-    if re.search(r"\b(?:startalk|podcast|episode)\b", low) and "failed" not in low:
+    if re.search(r"\b(?:startalk|podcast|episode|audiobook|mistborn|narrated by)\b", low) and "failed" not in low:
         return True
+    last = _parse_tool_dict(tool_results[-1])
+    if last and last.get("failure_reason") and str(last.get("failure_reason")).startswith("http_"):
+        if re.search(r"\b(?:narrated by|audiobook)\b", low):
+            return True
+    if last and last.get("failure_reason") in (
+        "audiobooks_unavailable_in_market",
+        "invalid_market",
+        "unknown_error",
+    ):
+        if re.search(r"(?:^|\n)\s*(?:\d+\.|[-*])\s+\S+", stripped):
+            return True
+        if re.search(r"\bnarrated by\b", low):
+            return True
     return False
 
 

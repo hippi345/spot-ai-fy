@@ -126,6 +126,121 @@ def _search_show_id_by_name(runner: SpotifyToolRunner, hint: str) -> str | None:
     return None
 
 
+def session_show_id(runner: SpotifyToolRunner) -> str | None:
+    """Best session show id (focus play target, search, catalog, last mutation) without trusting invented ids."""
+    focus = getattr(runner, "_session_focus_show_id", None)
+    if isinstance(focus, str) and focus.strip():
+        return focus.strip()
+    from spot_backend.library_mutation_store import load_session_focus_show
+
+    cid = getattr(runner, "conversation_id", None)
+    loaded = load_session_focus_show(cid)
+    if loaded:
+        return loaded[0]
+    return _match_show_from_session(runner, "")
+
+
+def is_show_library_intent(user_text: str, runner: SpotifyToolRunner) -> bool:
+    t = (user_text or "").strip()
+    if not t:
+        return False
+    if re.search(r"\b(?:this|that)\s+(?:show|podcast)\b", t, re.I):
+        return True
+    if re.search(r"\bsave\s+this\s+show\b", t, re.I):
+        return True
+    if re.search(r"\bsave\s+(?:it|that)\b", t, re.I):
+        mut = getattr(runner, "_last_library_mutation", None)
+        if isinstance(mut, dict) and mut.get("segment") == "show":
+            return True
+        last = getattr(runner, "_last_show_search_id", None)
+        if isinstance(last, str) and last.strip():
+            return True
+        focus = getattr(runner, "_session_focus_show_id", None)
+        if isinstance(focus, str) and focus.strip():
+            return True
+    if re.search(r"\b(?:remove|unsave)\s+(?:it|that)\b", t, re.I):
+        mut = getattr(runner, "_last_library_mutation", None)
+        if isinstance(mut, dict) and mut.get("segment") == "show":
+            return True
+    return False
+
+
+def _show_id_from_uri_token(token: str) -> str | None:
+    s = (token or "").strip()
+    if not s:
+        return None
+    if s.lower().startswith("spotify:show:"):
+        return _normalize_spotify_id(s.split(":", 2)[-1], "show")
+    return _normalize_spotify_id(s, "show")
+
+
+def _show_name_in_session_catalog(runner: SpotifyToolRunner, show_id: str) -> str | None:
+    sid = (show_id or "").strip()
+    if not sid:
+        return None
+    for cid, name in _session_show_catalog(runner):
+        if cid == sid:
+            return name
+    return None
+
+
+def rewrite_library_uris_for_show_intent(
+    runner: SpotifyToolRunner,
+    user_text: str,
+    uris: list[str],
+) -> list[str]:
+    """On show-intent turns, map pronouns and unknown show ids to the session show."""
+    if not is_show_library_intent(user_text, runner):
+        return uris
+    session = session_show_id(runner)
+    if not session:
+        return uris
+    session_uri = f"spotify:show:{session}"
+    session_name = _show_name_in_session_catalog(runner, session)
+    out: list[str] = []
+    for raw in uris:
+        if not isinstance(raw, str):
+            continue
+        s = raw.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if low in _LIBRARY_PRONOUN_PHRASES or low in ("it", "this", "that"):
+            out.append(session_uri)
+            continue
+        sid = _show_id_from_uri_token(s)
+        if sid and sid == session:
+            out.append(session_uri)
+            continue
+        if sid and _show_id_known_to_session(runner, sid):
+            wrong_name = _show_name_in_session_catalog(runner, sid)
+            if (
+                session_name
+                and wrong_name
+                and not _name_matches_hint(wrong_name, session_name)
+                and not _name_matches_hint(session_name, wrong_name)
+            ):
+                out.append(session_uri)
+                continue
+            out.append(f"spotify:show:{sid}")
+            continue
+        if sid or low.startswith("spotify:show:"):
+            out.append(session_uri)
+            continue
+        out.append(s)
+    return out or [session_uri]
+
+
+_LIBRARY_PRONOUN_PHRASES = frozenset(
+    {
+        "this show",
+        "that show",
+        "this podcast",
+        "that podcast",
+    }
+)
+
+
 def resolve_show_id_for_turn(
     runner: SpotifyToolRunner,
     user_text: str,
@@ -136,6 +251,10 @@ def resolve_show_id_for_turn(
     norm = _normalize_spotify_id(raw, "show") if raw else None
     if norm and _show_id_known_to_session(runner, norm):
         return norm
+    if norm and not _show_id_known_to_session(runner, norm):
+        session = session_show_id(runner)
+        if session:
+            return session
     hint = extract_show_name_hint(user_text) or ""
     if not hint:
         tokens = _SHOW_NAME_TOKEN_RE.findall(user_text or "")
@@ -153,4 +272,5 @@ def resolve_show_id_for_turn(
         return searched
     if norm and _show_id_known_to_session(runner, norm):
         return norm
-    return None
+    session = session_show_id(runner)
+    return session
