@@ -5,6 +5,10 @@ from __future__ import annotations
 import json
 import re
 
+from spot_backend.playback_reply import prompt_asks_whats_playing
+
+_PLAYBACK_STATE_TOOLS = frozenset({"spotify_playback_state"})
+_PLAYLIST_LIST_TOOLS = frozenset({"spotify_user_playlists"})
 _PLAYBACK_TOOLS = frozenset(
     {
         "spotify_start_resume_playback",
@@ -91,6 +95,74 @@ _HONEST_FALLBACK = (
     "Please try again or rephrase the request."
 )
 
+_TOOL_SUMMARIZE_REPROMPT_PREFIX = (
+    "The Spotify tool call(s) for this turn already succeeded. Reply with one or two short sentences "
+    "that summarize the tool result JSON for the user. Do not say you failed, could not run tools, "
+    "or ask them to rephrase. Base your answer only on the tool output below.\n\n"
+)
+
+
+def is_failure_boilerplate(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if stripped == _HONEST_FALLBACK.strip():
+        return True
+    low = stripped.lower()
+    return "wasn't able to run the spotify action" in low or "can't confirm anything changed" in low
+
+
+def tool_summarize_reprompt(tool_results: list[str], *, max_chars: int = 6000) -> str:
+    chunks: list[str] = []
+    used = 0
+    for raw in tool_results:
+        piece = raw if isinstance(raw, str) else str(raw)
+        if used + len(piece) > max_chars:
+            piece = piece[: max(0, max_chars - used)] + "…"
+        chunks.append(piece)
+        used += len(piece)
+        if used >= max_chars:
+            break
+    body = "\n\n---\n\n".join(chunks) if chunks else "(empty tool results)"
+    return _TOOL_SUMMARIZE_REPROMPT_PREFIX + body
+
+
+def turn_tool_calls_all_succeeded(calls: list[tuple[str, str]]) -> bool:
+    if not calls:
+        return False
+    return all(tool_result_succeeded(name, raw) for name, raw in calls)
+
+
+def _prompt_requests_user_playlists(user_text: str) -> bool:
+    low = (user_text or "").strip().lower()
+    if not low:
+        return False
+    return "playlist" in low and any(w in low for w in ("my", "what are", "list", "show"))
+
+
+def _playback_state_backs_reply(user_text: str, successful_tools: set[str], reply: str) -> bool:
+    if not successful_tools.intersection(_PLAYBACK_STATE_TOOLS):
+        return False
+    if prompt_asks_whats_playing(user_text):
+        return True
+    low = reply.lower()
+    return any(
+        phrase in low
+        for phrase in (
+            "listening to",
+            "nothing is playing",
+            "not playing",
+            "no track",
+            "currently playing",
+            "right now",
+        )
+    )
+
+
+def _playlist_list_backs_reply(user_text: str, successful_tools: set[str]) -> bool:
+    if not successful_tools.intersection(_PLAYLIST_LIST_TOOLS):
+        return False
+    return _prompt_requests_user_playlists(user_text)
 
 def tool_result_succeeded(tool_name: str, raw_result: str) -> bool:
     try:
@@ -108,15 +180,33 @@ def tool_result_succeeded(tool_name: str, raw_result: str) -> bool:
     return True
 
 
-def reply_claims_unbacked_action(text: str, successful_tools: set[str]) -> bool:
+def reply_claims_unbacked_action(
+    text: str,
+    successful_tools: set[str],
+    *,
+    user_text: str = "",
+) -> bool:
     stripped = (text or "").strip()
     if not stripped:
+        return False
+    if prompt_asks_whats_playing(user_text) and successful_tools.intersection(_PLAYBACK_STATE_TOOLS):
+        return False
+    if _prompt_requests_user_playlists(user_text) and successful_tools.intersection(_PLAYLIST_LIST_TOOLS):
         return False
     for pattern, required_any in _CLAIM_RULES:
         if not pattern.search(stripped):
             continue
-        if not successful_tools.intersection(required_any):
-            return True
+        if successful_tools.intersection(required_any):
+            continue
+        if required_any is _PLAYBACK_TOOLS and _playback_state_backs_reply(
+            user_text, successful_tools, stripped
+        ):
+            continue
+        if required_any is _LIBRARY_SAVE_TOOLS and _playlist_list_backs_reply(
+            user_text, successful_tools
+        ):
+            continue
+        return True
     return False
 
 

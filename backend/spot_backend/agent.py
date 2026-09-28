@@ -12,8 +12,11 @@ import httpx
 from spot_backend.action_claim_guard import (
     action_claim_honest_fallback,
     action_claim_reprompt,
+    is_failure_boilerplate,
     record_successful_tool,
     reply_claims_unbacked_action,
+    tool_summarize_reprompt,
+    turn_tool_calls_all_succeeded,
 )
 from spot_backend.chat_messages import (
     PROMISE_AFTER_ID_ERROR_NUDGE,
@@ -501,9 +504,12 @@ def iter_ollama_chat_events(
         runner.close()
         return
     successful_tools: set[str] = set()
+    turn_tool_calls: list[tuple[str, str]] = []
+    deduped_tool_results: dict[tuple[str, str], str] = {}
     tool_results: list[str] = []
     promise_nudge_used = False
     action_claim_reprompted = False
+    tool_summarize_reprompted = False
     try:
         ollama_model = read_effective_ollama_model(settings.data_dir, settings.ollama_model)
         small_model = use_small_model_mode(settings, ollama_model)
@@ -760,11 +766,39 @@ def iter_ollama_chat_events(
                         final_text = hint
                     if is_unpersisted_assistant_fallback(final_text):
                         final_text = friendly_reply_for_empty_model_output(user_text)
-                    if reply_claims_unbacked_action(final_text, successful_tools):
+                    if is_failure_boilerplate(final_text) and turn_tool_calls_all_succeeded(turn_tool_calls):
+                        if not tool_summarize_reprompted:
+                            tool_summarize_reprompted = True
+                            messages.append(_assistant_message_for_history(msg))
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": tool_summarize_reprompt(tool_results),
+                                }
+                            )
+                            reprompt_action_claim = True
+                            break
+                    if reply_claims_unbacked_action(
+                        final_text, successful_tools, user_text=user_text
+                    ):
                         if not action_claim_reprompted:
                             action_claim_reprompted = True
                             messages.append(_assistant_message_for_history(msg))
                             messages.append({"role": "user", "content": action_claim_reprompt()})
+                            reprompt_action_claim = True
+                            break
+                        if (
+                            not tool_summarize_reprompted
+                            and turn_tool_calls_all_succeeded(turn_tool_calls)
+                        ):
+                            tool_summarize_reprompted = True
+                            messages.append(_assistant_message_for_history(msg))
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": tool_summarize_reprompt(tool_results),
+                                }
+                            )
                             reprompt_action_claim = True
                             break
                         final_text = action_claim_honest_fallback()
@@ -814,8 +848,27 @@ def iter_ollama_chat_events(
                                 },
                             )
                         continue
+                    dedupe_key = (name, json.dumps(args, sort_keys=True, default=str))
+                    if dedupe_key in deduped_tool_results:
+                        result = deduped_tool_results[dedupe_key]
+                        yield {"type": "tool_start", "name": name}
+                        preview = result[:240] + ("…" if len(result) > 240 else "")
+                        yield {"type": "tool_done", "name": name, "preview": preview}
+                        result_chat = _cap_tool_result_for_chat(result, max_len=tool_result_cap)
+                        if native_tools:
+                            messages.append({"role": "tool", "name": name, "content": result_chat})
+                        else:
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": f"Tool `{name}` result:\n{result_chat}",
+                                },
+                            )
+                        continue
                     yield {"type": "tool_start", "name": name}
                     result = runner.run(name, args)
+                    deduped_tool_results[dedupe_key] = result
+                    turn_tool_calls.append((name, result))
                     record_successful_tool(successful_tools, name, result)
                     tool_results.append(result)
                     preview = result[:240] + ("…" if len(result) > 240 else "")
