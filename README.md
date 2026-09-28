@@ -149,6 +149,12 @@ cd ..
 pytest backend/tests
 ```
 
+Optional real-Gemini replay eval (Spotify HTTP mocked; skipped when `GEMINI_API_KEY` is unset):
+
+```bash
+GEMINI_API_KEY=... pytest backend/tests -m gemini_eval -v
+```
+
 ### Ollama integration smoke (optional)
 
 Prompts 1–7 from [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md) through **real** Ollama tool calling (Spotify still mocked). Skipped unless `RUN_OLLAMA_SMOKE=1`. See **[docs/OLLAMA_SMOKE.md](docs/OLLAMA_SMOKE.md)** for install, CPU model sizes, and expected latency.

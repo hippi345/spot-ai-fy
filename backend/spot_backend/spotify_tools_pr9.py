@@ -556,7 +556,7 @@ class SpotifyToolRunnerPr9Mixin:
         lines = [f'Proposed playlist "{name}" ({len(numbered)} tracks):']
         for row in numbered:
             lines.append(f"{row['n']}. {row.get('name')} — {row.get('artist')}")
-        lines.append("Reply yes / make it to create this private playlist, or ask to edit the list.")
+        lines.append("Reply yes / make it to create this playlist, or ask to edit the list.")
         preview_text = "\n".join(lines)
         return {
             "ok": True,
@@ -672,28 +672,32 @@ class SpotifyToolRunnerPr9Mixin:
                 continue
             if len(resolved) >= _MAX_BUILDER_TRACKS:
                 break
-            track = self._resolve_track_query(q, market, pick_index=len(resolved))
-            if not track:
-                continue
-            if not self._track_fits_builder_theme(track, theme_blob):
-                continue
-            uri = track.get("uri")
-            if not isinstance(uri, str) or uri in seen_uris:
-                continue
-            seen_uris.add(uri)
-            artists = track.get("artists") if isinstance(track.get("artists"), list) else []
-            artist_name = ""
-            if artists and isinstance(artists[0], dict):
-                artist_name = str(artists[0].get("name") or "")
-            resolved.append(
-                {
-                    "n": len(resolved) + 1,
-                    "uri": uri,
-                    "name": track.get("name"),
-                    "artist": artist_name,
-                    "query": q,
-                }
-            )
+            for pick_index in range(12):
+                if len(resolved) >= _MAX_BUILDER_TRACKS:
+                    break
+                track = self._resolve_track_query(q, market, pick_index=pick_index)
+                if not track:
+                    break
+                if not self._track_fits_builder_theme(track, theme_blob):
+                    continue
+                uri = track.get("uri")
+                if not isinstance(uri, str) or uri in seen_uris:
+                    continue
+                seen_uris.add(uri)
+                artists = track.get("artists") if isinstance(track.get("artists"), list) else []
+                artist_name = ""
+                if artists and isinstance(artists[0], dict):
+                    artist_name = str(artists[0].get("name") or "")
+                resolved.append(
+                    {
+                        "n": len(resolved) + 1,
+                        "uri": uri,
+                        "name": track.get("name"),
+                        "artist": artist_name,
+                        "query": q,
+                    }
+                )
+                break
         if len(resolved) < _MIN_BUILDER_TRACKS:
             return json.dumps(
                 {

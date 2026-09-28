@@ -1117,6 +1117,7 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         self._last_session_playlist_id: str | None = None
         self._last_primary_artist_id: str | None = None
         self._last_show_search_id: str | None = None
+        self._last_playlist_search_query: str | None = None
         from spot_backend.library_mutation_store import load_last_library_mutation
 
         prior = load_last_library_mutation(self.conversation_id)
@@ -3248,6 +3249,17 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         return json.dumps({"ok": True, "removed_track_ids": ids})
 
     def _save_albums(self, arguments: dict[str, Any]) -> str:
+        raw_check = _pick_arg(arguments, "album_id", "album_ids", "ids")
+        if isinstance(raw_check, str) and "show:" in raw_check.lower():
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": "invalid_uri_type",
+                    "error": "save_albums only accepts album ids/URIs, not podcast shows.",
+                    "hint": "Use spotify_library_save with spotify:show:<id> for shows.",
+                },
+                ensure_ascii=False,
+            )
         ids = self._resolve_library_segment_ids(arguments, "album", "album_ids", "ids", "album_id")
         if not ids:
             return json.dumps(
@@ -3258,10 +3270,28 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             )
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 album ids per call"})
+        for bare in ids:
+            if bare not in self._session_known_ids:
+                ok, verify_err = self._verify_catalog_id_on_spotify("album", bare)
+                if not ok:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "failure_reason": "unknown_id",
+                            "error": verify_err or f"Spotify has no album with id {bare!r}",
+                            "reconnect_spotify_unnecessary": True,
+                        },
+                        ensure_ascii=False,
+                    )
         verify_err = self._verify_library_segment_ids("album", ids)
         if verify_err:
             return json.dumps(
-                {"ok": False, "error": verify_err, "reconnect_spotify_unnecessary": True},
+                {
+                    "ok": False,
+                    "failure_reason": "unknown_id",
+                    "error": verify_err,
+                    "reconnect_spotify_unnecessary": True,
+                },
                 ensure_ascii=False,
             )
         self._library_put_uris([f"spotify:album:{i}" for i in ids])
@@ -3833,6 +3863,27 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         blocked = self._block_editorial_playlist_id(pid)
         if blocked:
             return blocked
+        requested_name = arguments.get("_follow_requested_name")
+        if isinstance(requested_name, str) and requested_name.strip():
+            try:
+                meta = self.client.api_get(f"/playlists/{pid}", params={"fields": "id,name"})
+                actual = meta.get("name") if isinstance(meta, dict) else None
+            except httpx.HTTPStatusError:
+                actual = None
+            if isinstance(actual, str) and actual.strip().lower() != requested_name.strip().lower():
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "failure_reason": "needs_confirmation",
+                        "error": (
+                            f'No exact name match for {requested_name!r}. '
+                            f'Closest result is {actual!r} (id {pid}).'
+                        ),
+                        "candidates": [{"id": pid, "name": actual}],
+                        "hint": "Ask the user which playlist they meant before following.",
+                    },
+                    ensure_ascii=False,
+                )
         self._library_put_uris([f"spotify:playlist:{pid}"])
         self._record_library_mutation("playlist", [pid])
         return json.dumps(

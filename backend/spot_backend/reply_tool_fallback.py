@@ -53,17 +53,58 @@ def summary_text_from_tool_dict(data: dict[str, Any]) -> str | None:
     return None
 
 
-def best_tool_summary_fallback(tool_results: list[str] | None) -> str | None:
+_BUILDER_TOOLS = frozenset(
+    {
+        "spotify_playlist_builder_preview",
+        "spotify_playlist_builder_edit",
+        "spotify_playlist_builder_commit",
+    }
+)
+_LIST_REPLY_TOOLS = frozenset(
+    {
+        "spotify_saved_albums",
+        "spotify_user_saved_shows",
+        "spotify_user_playlists",
+        "spotify_search",
+        "spotify_search_playlists",
+    }
+)
+
+
+def _tool_priority(name: str, user_text: str) -> int:
+    low = (user_text or "").lower()
+    if name in _BUILDER_TOOLS and any(w in low for w in ("playlist", "build", "preview", "track 3", "make it")):
+        return 0
+    if name in _LIST_REPLY_TOOLS:
+        return 1
+    if name in _BUILDER_TOOLS:
+        return 2
+    return 3
+
+
+def best_tool_summary_fallback(
+    tool_results: list[str] | None,
+    *,
+    user_text: str = "",
+    tool_names: list[str] | None = None,
+) -> str | None:
     if not tool_results:
         return None
-    for raw in reversed(tool_results):
+    indexed: list[tuple[int, int, str, dict[str, Any]]] = []
+    names = tool_names or []
+    for i, raw in enumerate(tool_results):
         data = _parse_tool_dict(raw)
         if not data or data.get("error") or data.get("ok") is False:
             continue
         text = summary_text_from_tool_dict(data)
-        if text:
-            return text
-    return None
+        if not text:
+            continue
+        tname = names[i] if i < len(names) else ""
+        indexed.append((_tool_priority(tname, user_text), i, text, data))
+    if not indexed:
+        return None
+    indexed.sort(key=lambda row: (row[0], -row[1]))
+    return indexed[0][2]
 
 
 def reply_looks_like_stale_apology(text: str) -> bool:
@@ -93,6 +134,34 @@ def reply_ignores_tool_summary(text: str, tool_results: list[str] | None) -> boo
     return False
 
 
+_FAILURE_REASON_HUMAN: dict[str, str] = {
+    "playback_not_verified": (
+        "I called Spotify to start playback, but I couldn't confirm the player actually switched. "
+        "Try tapping play on your device or ask me to transfer playback."
+    ),
+    "guard_refused": (
+        "That was a question-only turn, so I didn't run a playback change. "
+        "Ask me to play something if you want me to start it."
+    ),
+    "invalid_uri_type": "That Spotify URI type doesn't work for this action.",
+    "unknown_id": "Spotify doesn't recognize that id — search or look it up in this chat first.",
+    "no_episodes_for_show": "That podcast show has no episodes I could load.",
+    "playlist_not_found": "I couldn't find a playlist with that exact name.",
+    "no_exact_playlist_match": "I didn't find an exact playlist name match — pick one from the list.",
+    "editorial_playlist_blocked": "Spotify editorial playlists can't be saved or modified from here.",
+}
+
+
+def humanize_failure_reason(reason: str | None, err: str | None = None) -> str:
+    if isinstance(reason, str) and reason.strip():
+        human = _FAILURE_REASON_HUMAN.get(reason.strip())
+        if human:
+            return human
+    if err and err.strip():
+        return err.strip()
+    return "Something went wrong talking to Spotify just now. Please try again."
+
+
 def last_tool_error_user_message(tool_results: list[str] | None) -> str | None:
     if not tool_results:
         return None
@@ -102,12 +171,12 @@ def last_tool_error_user_message(tool_results: list[str] | None) -> str | None:
             continue
         if data.get("ok") is True and not data.get("error"):
             continue
-        if data.get("error"):
-            err = str(data["error"]).strip()
+        if data.get("error") or data.get("ok") is False:
+            err = str(data.get("error") or "").strip()
             reason = data.get("failure_reason")
-            if isinstance(reason, str) and reason.strip():
-                return f"Spotify lookup failed ({reason}): {err}"
-            return err
+            if isinstance(reason, str):
+                return humanize_failure_reason(reason, err)
+            return humanize_failure_reason(None, err)
     return None
 
 
@@ -132,14 +201,25 @@ def reply_hallucinates_after_tool_failure(text: str, tool_results: list[str] | N
     return False
 
 
-def apply_tool_grounded_reply(text: str, tool_results: list[str] | None) -> str:
+def apply_tool_grounded_reply(
+    text: str,
+    tool_results: list[str] | None,
+    *,
+    user_text: str = "",
+) -> str:
     """Prefer tool summaries over apologies, bare Done., or post-error hallucinations."""
+    from spot_backend.action_claim_guard import is_failure_boilerplate
+
+    if is_failure_boilerplate(text):
+        fallback = best_tool_summary_fallback(tool_results, user_text=user_text)
+        if fallback:
+            return fallback
     if reply_hallucinates_after_tool_failure(text, tool_results):
         err = last_tool_error_user_message(tool_results)
         if err:
             return err
     if reply_ignores_tool_summary(text, tool_results):
-        fallback = best_tool_summary_fallback(tool_results)
+        fallback = best_tool_summary_fallback(tool_results, user_text=user_text)
         if fallback:
             return fallback
     return text

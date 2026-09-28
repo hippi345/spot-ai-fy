@@ -33,6 +33,7 @@ from spot_backend.reply_tool_trace import (
     tool_trace_outcome,
 )
 from spot_backend.spotify_tools import SpotifyToolRunner, _sanitize_model_device_id
+from spot_backend.tool_server_enforcement import enforce_tool_arguments_for_turn
 
 EmitFn = Callable[[dict[str, Any]], None]
 
@@ -127,6 +128,9 @@ def run_tool_calls(
         else:
             import time as _time
 
+            args = enforce_tool_arguments_for_turn(
+                name, args, user_text=user_text, runner=runner
+            )
             t0 = _time.perf_counter()
             result = runner.run(name, args)
             duration_ms = int((_time.perf_counter() - t0) * 1000)
@@ -187,6 +191,18 @@ def finalize_assistant_text(
     ):
         state.promise_nudge_used = True
         return TextFinalizeAction(kind="reprompt", reprompt_user_content=PROMISE_AFTER_ID_ERROR_NUDGE)
+    if is_failure_boilerplate(joined):
+        from spot_backend.reply_tool_fallback import best_tool_summary_fallback
+
+        tool_names = [n for n, _ in state.turn_tool_calls]
+        fallback = best_tool_summary_fallback(
+            state.tool_results, user_text=user_text, tool_names=tool_names
+        )
+        if fallback:
+            return TextFinalizeAction(
+                kind="return",
+                text=prepare_user_visible_reply(fallback, state.tool_results),
+            )
     if is_failure_boilerplate(joined) and turn_tool_calls_all_succeeded(state.turn_tool_calls):
         if not state.tool_summarize_reprompted:
             state.tool_summarize_reprompted = True
@@ -212,6 +228,17 @@ def finalize_assistant_text(
                 kind="reprompt",
                 reprompt_user_content=tool_summarize_reprompt(state.tool_results),
             )
+        from spot_backend.reply_tool_fallback import best_tool_summary_fallback
+
+        tool_names = [n for n, _ in state.turn_tool_calls]
+        fallback = best_tool_summary_fallback(
+            state.tool_results, user_text=user_text, tool_names=tool_names
+        )
+        if fallback:
+            return TextFinalizeAction(
+                kind="return",
+                text=prepare_user_visible_reply(fallback, state.tool_results),
+            )
         return TextFinalizeAction(kind="return", text=action_claim_honest_fallback())
     if reply_contains_unbacked_numeric_factual_claim(
         joined, state.turn_tool_calls
@@ -222,7 +249,9 @@ def finalize_assistant_text(
         )
     from spot_backend.reply_tool_fallback import apply_tool_grounded_reply
 
-    grounded = apply_tool_grounded_reply(joined, state.tool_results)
+    grounded = apply_tool_grounded_reply(
+        joined, state.tool_results, user_text=user_text
+    )
     return TextFinalizeAction(
         kind="return",
         text=prepare_user_visible_reply(grounded, state.tool_results),

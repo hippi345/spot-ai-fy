@@ -1,0 +1,31 @@
+name: eval-gemini
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  gemini-eval:
+    if: ${{ secrets.GEMINI_API_KEY != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+      - name: Run Gemini eval (mocked Spotify)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          cd backend && pytest -m gemini_eval -q --maxfail=1
+      - name: Upload eval artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-eval-json
+          path: backend/tests/artifacts/gemini_eval_latest.json
+          if-no-files-found: ignore

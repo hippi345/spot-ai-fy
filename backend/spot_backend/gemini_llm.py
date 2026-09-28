@@ -52,7 +52,9 @@ from spot_backend.gemini_history import (
 )
 from spot_backend.llm_secret_safety import redact_known_api_keys
 from spot_backend.llm_catalog import DEFAULT_MODEL_BY_PROVIDER
+from spot_backend.llm_tool_loop import ToolLoopState, finalize_assistant_text
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
+from spot_backend.tool_server_enforcement import enforce_tool_arguments_for_turn
 
 logger = logging.getLogger(__name__)
 
@@ -566,14 +568,15 @@ def run_chat_turn_gemini(
     url = f"{_GEMINI_REST}/models/{model}:generateContent"
     params = {"key": key}
 
+    loop_state = ToolLoopState()
     had_tool_results = False
-    successful_tools: set[str] = set()
-    tool_results: list[str] = []
+    successful_tools: set[str] = loop_state.successful_tools
+    tool_results: list[str] = loop_state.tool_results
     last_tool_signature: str | None = None
     last_tool_result: str | None = None
     action_claim_reprompted = False
     tool_summarize_reprompted = False
-    turn_tool_calls: list[tuple[str, str]] = []
+    turn_tool_calls: list[tuple[str, str]] = loop_state.turn_tool_calls
     promise_nudge_used = False
     tool_nudge_used = False
     vague_playlist_nudge_used = False
@@ -755,6 +758,9 @@ def run_chat_turn_gemini(
                         else:
                             import time as _time
 
+                            args = enforce_tool_arguments_for_turn(
+                                name, args, user_text=user_text, runner=runner
+                            )
                             t0 = _time.perf_counter()
                             result = runner.run(name, args)
                             duration_ms = int((_time.perf_counter() - t0) * 1000)
@@ -821,94 +827,54 @@ def run_chat_turn_gemini(
 
                 joined = "\n".join(t for t in visible_text_chunks if isinstance(t, str) and t.strip()).strip()
                 if joined:
-                    if (
-                        assistant_reply_is_promise_only(joined)
-                        and tool_results
-                        and tool_result_is_rejected_or_invalid_id(tool_results[-1])
-                        and not promise_nudge_used
-                    ):
-                        promise_nudge_used = True
-                        contents.append({"role": "model", "parts": model_parts_out or [{"text": joined}]})
-                        contents.append(
-                            {"role": "user", "parts": [{"text": PROMISE_AFTER_ID_ERROR_NUDGE}]}
-                        )
-                        continue
-                    if is_failure_boilerplate(joined) and turn_tool_calls_all_succeeded(turn_tool_calls):
-                        if not tool_summarize_reprompted:
-                            tool_summarize_reprompted = True
-                            contents.append(
-                                {"role": "model", "parts": model_parts_out or [{"text": joined}]}
-                            )
-                            contents.append(
-                                {
-                                    "role": "user",
-                                    "parts": [{"text": tool_summarize_reprompt(tool_results)}],
-                                }
-                            )
-                            continue
-                    if reply_claims_unbacked_action(
-                        joined,
-                        successful_tools,
-                        user_text=user_text,
-                        turn_tool_calls=turn_tool_calls,
-                    ):
-                        if not action_claim_reprompted:
-                            action_claim_reprompted = True
-                            contents.append(
-                                {"role": "model", "parts": model_parts_out or [{"text": joined}]}
-                            )
-                            contents.append(
-                                {"role": "user", "parts": [{"text": action_claim_reprompt()}]}
-                            )
-                            continue
-                        if (
-                            not tool_summarize_reprompted
-                            and turn_tool_calls_all_succeeded(turn_tool_calls)
-                        ):
-                            tool_summarize_reprompted = True
-                            contents.append(
-                                {"role": "model", "parts": model_parts_out or [{"text": joined}]}
-                            )
-                            contents.append(
-                                {
-                                    "role": "user",
-                                    "parts": [{"text": tool_summarize_reprompt(tool_results)}],
-                                }
-                            )
-                            continue
-                        return action_claim_honest_fallback()
-                    if reply_contains_unbacked_numeric_factual_claim(
-                        joined, turn_tool_calls
-                    ):
-                        return numeric_factual_claim_honest_fallback()
-                    if should_send_gemini_tool_nudge(
-                        user_text=user_text,
-                        had_tool_results=had_tool_results,
-                        action_claim_reprompted=action_claim_reprompted,
-                        tool_nudge_used=tool_nudge_used,
-                        wants_spotify_data=_user_message_wants_spotify_data(spotify_intent_blob),
-                    ):
-                        if first_text_answer is None:
-                            first_text_answer = joined
-                        tool_nudge_used = True
+                    loop_state.promise_nudge_used = promise_nudge_used
+                    loop_state.action_claim_reprompted = action_claim_reprompted
+                    loop_state.tool_summarize_reprompted = tool_summarize_reprompted
+                    action = finalize_assistant_text(joined, loop_state, user_text=user_text)
+                    promise_nudge_used = loop_state.promise_nudge_used
+                    action_claim_reprompted = loop_state.action_claim_reprompted
+                    tool_summarize_reprompted = loop_state.tool_summarize_reprompted
+                    if action.kind == "reprompt":
                         contents.append(
                             {"role": "model", "parts": model_parts_out or [{"text": joined}]}
                         )
-                        contents.append({"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]})
-                        continue
-                    from spot_backend.reply_tool_fallback import apply_tool_grounded_reply
-
-                    if tool_nudge_used and first_text_answer and not had_tool_results:
-                        return prepare_user_visible_reply(
-                            apply_tool_grounded_reply(first_text_answer, tool_results),
-                            tool_results,
+                        contents.append(
+                            {"role": "user", "parts": [{"text": action.reprompt_user_content}]}
                         )
-                    if model_parts_out:
-                        contents.append({"role": "model", "parts": model_parts_out})
-                    return prepare_user_visible_reply(
-                        apply_tool_grounded_reply(joined, tool_results),
-                        tool_results,
-                    )
+                        continue
+                    if action.kind == "return":
+                        if (
+                            not had_tool_results
+                            and not tool_nudge_used
+                            and should_send_gemini_tool_nudge(
+                                user_text=user_text,
+                                had_tool_results=had_tool_results,
+                                action_claim_reprompted=action_claim_reprompted,
+                                tool_nudge_used=tool_nudge_used,
+                                wants_spotify_data=_user_message_wants_spotify_data(
+                                    spotify_intent_blob
+                                ),
+                            )
+                        ):
+                            first_text_answer = joined
+                            tool_nudge_used = True
+                            contents.append(
+                                {"role": "model", "parts": model_parts_out or [{"text": joined}]}
+                            )
+                            contents.append(
+                                {"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]}
+                            )
+                            continue
+                        if tool_nudge_used and first_text_answer and not had_tool_results:
+                            from spot_backend.reply_tool_fallback import apply_tool_grounded_reply
+
+                            return prepare_user_visible_reply(
+                                apply_tool_grounded_reply(
+                                    first_text_answer, tool_results, user_text=user_text
+                                ),
+                                tool_results,
+                            )
+                        return action.text
 
                 # No visible text and no tool calls. Log everything we have so we can
                 # diagnose schema rejections, thought-only responses, etc.

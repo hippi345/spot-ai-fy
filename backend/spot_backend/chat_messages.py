@@ -110,6 +110,11 @@ def collect_visibility_warnings(tool_results: list[str]) -> list[str]:
             continue
         if not isinstance(data, dict):
             continue
+        if data.get("verified_private") is False:
+            pw = data.get("privacy_warning")
+            if isinstance(pw, str) and pw.strip() and pw not in seen:
+                seen.add(pw)
+                warnings.append(pw.strip())
         if not data.get("visibility_change_requested"):
             continue
         note = data.get("visibility_warning")
