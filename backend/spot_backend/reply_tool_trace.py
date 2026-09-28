@@ -123,6 +123,28 @@ def tool_trace_failure_reason(raw_result: str) -> str | None:
         return "playback_not_verified"
     if data.get("playlist_not_owned_by_user"):
         return "not_owned"
+    err = data.get("error")
+    if isinstance(err, str):
+        low = err.lower()
+        if "uris is required" in low or "required" in low and "uri" in low:
+            return "empty_args"
+        if "unknown tool" in low:
+            return "validation_error"
+    status = data.get("spotify_http_status")
+    if isinstance(status, int):
+        from spot_backend.spotify_tools import _http_failure_reason
+
+        msg = data.get("spotify_api_message") if isinstance(data.get("spotify_api_message"), str) else None
+        return _http_failure_reason(status, msg)
+    if data.get("error") and data.get("ok") is not False and data.get("ok") is not True:
+        reason = data.get("failure_reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()
+        return "validation_error"
+    if data.get("ok") is False:
+        reason = data.get("failure_reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()
     return None
 
 
@@ -183,6 +205,10 @@ def append_tool_trace_record(
             row["failure_reason"] = failure_reason
         elif not err_body:
             row["failure_reason"] = "unknown_error"
+    elif outcome == "refused":
+        row["failure_reason"] = failure_reason or "guard_refused"
+        if err_body:
+            row["spotify_error_body_redacted"] = err_body
     line = json.dumps(row, ensure_ascii=False)
     secrets = [s for s in (known_secrets or []) if s]
     if secrets:

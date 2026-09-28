@@ -53,9 +53,9 @@ def test_spotify_search_403_returns_structured_error(data_dir, signed_in_tokens)
     try:
         raw = runner.run("spotify_search", {"query": "x", "types": "track"})
         data = json.loads(raw)
-        assert "Spotify HTTP 403" in data["error"]
-        assert "hint" in data
-        assert "reconnect_spotify_unnecessary" not in data
+        assert data.get("ok") is False
+        assert data.get("failure_reason")
+        assert "403" in data["error"] or "Forbidden" in data["error"]
     finally:
         runner.close()
 

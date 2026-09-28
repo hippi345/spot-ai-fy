@@ -99,7 +99,8 @@ def test_spotify_search_double_429_via_tool_runner(data_dir, signed_in_tokens) -
     try:
         raw = runner.run("spotify_search", {"query": "x", "types": "track"})
         data = json.loads(raw)
-        assert data == {"error": "Spotify rate limited, try again in 12 s"}
+        assert data["error"] == "Spotify rate limited, try again in 12 s"
+        assert data.get("failure_reason") == "rate_limited"
     finally:
         runner.close()
 

@@ -26,7 +26,8 @@ from spot_backend.library_mutation_store import (
     load_played_playlist_ids,
     record_played_playlist_id,
 )
-from spot_backend.playlist_pick import fetch_owned_playlist_candidates_paginated
+from spot_backend.playlist_pick import fetch_owned_playlist_candidates_paginated, playlist_id_is_spotify_curated
+from spot_backend.prompt_intent import prompt_is_surprise_me_request
 from spot_backend.spotify_dev_limits import SPOTIFY_DEV_MAX_PAGE
 from spot_backend.prompt_intent import (
     prompt_is_alternate_owned_playlist_play_request,
@@ -256,6 +257,88 @@ def _try_owned_playlist_play_reply(
     return DeterministicChatResult(failure_message, steps)
 
 
+def try_deterministic_surprise_me_reply(
+    user_text: str,
+    runner: SpotifyToolRunner,
+    *,
+    conversation_id: str | None = None,
+) -> DeterministicChatResult | None:
+    if not prompt_is_surprise_me_request(user_text):
+        return None
+    steps: list[tuple[str, dict, str]] = []
+    owned = _try_owned_playlist_play_reply(
+        runner,
+        steps,
+        conversation_id=conversation_id,
+        exclude_current_context=False,
+        offer_alternate=False,
+        empty_message="",
+        failure_message="",
+    )
+    if owned.reply:
+        return owned
+    top_raw = _run_tool(
+        runner,
+        "spotify_top_tracks",
+        {"limit": SPOTIFY_DEV_MAX_PAGE, "time_range": "short_term"},
+        steps,
+    )
+    top = _parse_tool_json(top_raw)
+    items = top.get("items") if isinstance(top.get("items"), list) else []
+    if items and isinstance(items[0], dict):
+        tr = items[0]
+        uri = tr.get("uri")
+        if isinstance(uri, str):
+            play_raw = _run_tool(
+                runner,
+                "spotify_start_resume_playback",
+                {"uris": [uri]},
+                steps,
+            )
+            play = _parse_tool_json(play_raw)
+            if play.get("ok"):
+                name = str(tr.get("name") or "a top track")
+                return DeterministicChatResult(f"Playing {name} from your recent favorites.", steps)
+    saved_raw = _run_tool(runner, "spotify_user_saved_tracks", {"limit": 1}, steps)
+    saved = _parse_tool_json(saved_raw)
+    saved_items = saved.get("items") if isinstance(saved.get("items"), list) else []
+    if saved_items and isinstance(saved_items[0], dict):
+        row = saved_items[0]
+        track = row.get("track") if isinstance(row.get("track"), dict) else row
+        uri = track.get("uri") if isinstance(track, dict) else None
+        if isinstance(uri, str):
+            play_raw = _run_tool(
+                runner,
+                "spotify_start_resume_playback",
+                {"uris": [uri]},
+                steps,
+            )
+            play = _parse_tool_json(play_raw)
+            if play.get("ok"):
+                title = str(track.get("name") or "a liked song")
+                return DeterministicChatResult(f"Playing {title} from your liked songs.", steps)
+    recent_raw = _run_tool(runner, "spotify_recently_played", {"limit": 1}, steps)
+    recent = _parse_tool_json(recent_raw)
+    recent_items = recent.get("items") if isinstance(recent.get("items"), list) else []
+    if recent_items and isinstance(recent_items[0], dict):
+        track = recent_items[0].get("track")
+        if isinstance(track, dict) and isinstance(track.get("uri"), str):
+            play_raw = _run_tool(
+                runner,
+                "spotify_start_resume_playback",
+                {"uris": [track["uri"]]},
+                steps,
+            )
+            play = _parse_tool_json(play_raw)
+            if play.get("ok"):
+                title = str(track.get("name") or "something recent")
+                return DeterministicChatResult(f"Playing {title} from your recent listens.", steps)
+    return DeterministicChatResult(
+        "I couldn't find anything in your library to surprise you with just now.",
+        steps,
+    )
+
+
 def try_deterministic_vague_playlist_reply(
     user_text: str,
     runner: SpotifyToolRunner,
@@ -379,13 +462,31 @@ def try_deterministic_mood_play_reply(
                 steps,
             )
         return DeterministicChatResult(reply, steps)
-    first_pl = items[0]
+    first_pl = None
+    for candidate in items:
+        if not isinstance(candidate, dict):
+            continue
+        pid_c = candidate.get("id")
+        if isinstance(pid_c, str) and playlist_id_is_spotify_curated(pid_c):
+            continue
+        owner = candidate.get("owner") if isinstance(candidate.get("owner"), dict) else {}
+        if str(owner.get("id") or "").strip().lower() == "spotify":
+            continue
+        first_pl = candidate
+        break
+    if first_pl is None:
+        first_pl = items[0] if items else None
     if not isinstance(first_pl, dict):
         return DeterministicChatResult(
             f"I couldn't find a {mood} playlist to play just now.",
             steps,
         )
     pid = first_pl.get("id")
+    if isinstance(pid, str) and playlist_id_is_spotify_curated(pid):
+        return DeterministicChatResult(
+            f"I couldn't find a {mood} playlist to play just now.",
+            steps,
+        )
     pname = str(first_pl.get("name") or mood).strip()
     if not isinstance(pid, str):
         return DeterministicChatResult(
@@ -448,6 +549,12 @@ def try_deterministic_chat_reply(
         listed = try_deterministic_list_playlists_reply(user_text, runner)
         if listed is not None:
             return listed
+
+    surprise = try_deterministic_surprise_me_reply(
+        user_text, runner, conversation_id=conversation_id
+    )
+    if surprise is not None:
+        return surprise
 
     mood = try_deterministic_mood_play_reply(user_text, runner)
     if mood is not None:

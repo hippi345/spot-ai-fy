@@ -110,6 +110,11 @@ def collect_visibility_warnings(tool_results: list[str]) -> list[str]:
             continue
         if not isinstance(data, dict):
             continue
+        if data.get("verified_private") is False:
+            pw = data.get("privacy_warning")
+            if isinstance(pw, str) and pw.strip() and pw not in seen:
+                seen.add(pw)
+                warnings.append(pw.strip())
         if not data.get("visibility_change_requested"):
             continue
         note = data.get("visibility_warning")
@@ -123,6 +128,9 @@ _VISIBILITY_NOTE_MARKERS = (
     "still shows it as public",
     "still reports this playlist as public",
     "still showing it as public",
+    "might appear public",
+    "shows this playlist as public",
+    "make it private",
 )
 
 _MODEL_VISIBILITY_DISCUSSION_MARKERS = _VISIBILITY_NOTE_MARKERS + (
@@ -275,19 +283,45 @@ def fix_playlist_visibility_contradictions(text: str, tool_results: list[str]) -
     return out.strip()
 
 
+def _visibility_note_fingerprint(note: str) -> str:
+    low = re.sub(r"\s+", " ", (note or "").lower()).strip()
+    for marker in _VISIBILITY_NOTE_MARKERS:
+        if marker in low:
+            return marker
+    if "public" in low and "private" in low:
+        return "visibility_public_private"
+    if "public" in low and any(tok in low for tok in ("still", "spotify", "app", "show")):
+        return "visibility_public"
+    return low[:120]
+
+
 def append_visibility_notes_to_reply(text: str, tool_results: list[str]) -> str:
     """Append deterministic playlist-visibility notes from tool JSON (all LLM providers)."""
     base = text or ""
-    if collect_visibility_warnings(tool_results):
+    warnings = collect_visibility_warnings(tool_results)
+    if warnings:
         base = strip_model_visibility_discussion(base)
     base = _strip_duplicate_visibility_sentences(base.rstrip())
-    for note in collect_visibility_warnings(tool_results):
+    seen_fps: set[str] = set()
+    for note in warnings:
+        fp = _visibility_note_fingerprint(note)
+        if fp in seen_fps:
+            continue
         if note in base:
+            seen_fps.add(fp)
             continue
         if _text_contains_visibility_note(note) and _text_contains_visibility_note(base):
+            seen_fps.add(fp)
             continue
-        suffix = f"\n\nNote: {note}"
-        base = base + suffix
+        if note.strip() and note.strip() in base:
+            seen_fps.add(fp)
+            continue
+        if any(_visibility_note_fingerprint(existing) == fp for existing in seen_fps):
+            continue
+        suffix = f"\n\n{note.strip()}" if not base.endswith(note.strip()) else ""
+        if suffix:
+            base = base + suffix
+            seen_fps.add(fp)
     return base
 
 
@@ -316,11 +350,27 @@ _SEARCH_QUERY_ECHO_SCRUB = re.compile(
 )
 
 
+def _collapse_inline_whitespace_preserve_newlines(text: str) -> str:
+    lines = (text or "").split("\n")
+    cleaned = [re.sub(r"[ \t]{2,}", " ", line).strip() for line in lines]
+    return "\n".join(cleaned).strip()
+
+
+_INTERNAL_PAGINATION_HINT_RE = re.compile(
+    r"\(?\s*(?:more .+ — pass offset=\d+|pass offset=\d+)[^)\n]*\)?",
+    re.I,
+)
+
+
+def strip_internal_pagination_hints(text: str) -> str:
+    out = _INTERNAL_PAGINATION_HINT_RE.sub("", text or "")
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
 def scrub_user_visible_spotify_errors(text: str) -> str:
     out = _HTTP_STATUS_SCRUB.sub("", text or "")
     out = _SEARCH_QUERY_ECHO_SCRUB.sub("I couldn't find that on Spotify", out)
-    out = re.sub(r"\s{2,}", " ", out).strip()
-    return out
+    return _collapse_inline_whitespace_preserve_newlines(out)
 
 
 def scrub_internal_tool_references(text: str) -> str:
@@ -331,8 +381,7 @@ def scrub_internal_tool_references(text: str) -> str:
     out = _TOOL_PARAMETER_SCRUB.sub("Spotify", out)
     out = _PARAMETER_DOC_SCRUB.sub("", out)
     out = re.sub(r"\bSpotify\s+Spotify\b", "Spotify", out)
-    out = re.sub(r"\s{2,}", " ", out)
-    return out.strip()
+    return _collapse_inline_whitespace_preserve_newlines(out)
 
 
 _CORRECTION_LEAK_RE = re.compile(
@@ -368,8 +417,30 @@ def sanitize_raw_tool_json_in_reply(text: str) -> str:
     if data.get("error"):
         return str(data.get("error"))
     if data.get("ok"):
+        if "saved_single" in data:
+            return (
+                "Yes — that's saved in your Spotify library."
+                if data.get("saved_single")
+                else "No — that's not in your library."
+            )
+        if isinstance(data.get("user_message"), str) and data["user_message"].strip():
+            return data["user_message"].strip()
         return "Done."
     return text
+
+
+_NUMBERED_LIST_GLUE_RE = re.compile(r"(\S)\s+(\d{1,2}\.\s)")
+
+
+def fix_numbered_list_line_breaks(text: str) -> str:
+    """Ensure glued builder preview lines like '…artist 9. Track' break before each number."""
+    if not text or "\n" not in text and not re.search(r"\d+\.\s", text):
+        return text
+    lines = (text or "").split("\n")
+    fixed: list[str] = []
+    for line in lines:
+        fixed.append(_NUMBERED_LIST_GLUE_RE.sub(r"\1\n\2", line))
+    return "\n".join(fixed)
 
 
 def collapse_duplicate_reply_text(text: str) -> str:
@@ -402,8 +473,10 @@ def prepare_user_visible_reply(text: str, tool_results: list[str] | None = None)
     from spot_backend.reply_grounding import ground_reply_artist_credits
 
     cleaned = collapse_duplicate_reply_text(text)
+    cleaned = fix_numbered_list_line_breaks(cleaned)
     cleaned = scrub_internal_tool_references(cleaned)
     cleaned = scrub_user_visible_spotify_errors(cleaned)
+    cleaned = strip_internal_pagination_hints(cleaned)
     cleaned = strip_internal_correction_leaks(cleaned)
     cleaned = sanitize_raw_tool_json_in_reply(cleaned)
     if tool_results:

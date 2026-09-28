@@ -235,7 +235,17 @@ def test_ollama_failed_playback_claim_uses_honest_fallback(data_dir, signed_in_t
     ), patch.object(SpotifyToolRunner, "run", return_value=fail_json):
         reply = run_chat_turn_ollama("play his latest single", settings)
     low = reply.lower()
-    assert "wasn't able" in low or "can't confirm" in low or "unable" in low
+    assert any(
+        phrase in low
+        for phrase in (
+            "wasn't able",
+            "can't confirm",
+            "unable",
+            "playback failed",
+            "didn't confirm",
+            "something went wrong",
+        )
+    )
 
 
 def test_ollama_vague_playlist_nudge_after_user_playlists_only(

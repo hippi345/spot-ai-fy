@@ -27,8 +27,19 @@ from spot_backend.playlist_pick import (
     playlist_id_is_spotify_curated,
     playlist_row_playable_owned,
 )
-from spot_backend.spotify_dev_limits import SPOTIFY_DEV_MAX_PAGE, clamp_spotify_page_limit
-from spot_backend.spotify_client import SpotifyAuthError, SpotifyClient, SpotifyRateLimitError
+from spot_backend.spotify_dev_limits import (
+    SPOTIFY_DEV_MAX_PAGE,
+    SPOTIFY_SEARCH_DEFAULT_LIMIT,
+    clamp_spotify_page_limit,
+)
+from spot_backend.spotify_client import (
+    SpotifyAuthError,
+    SpotifyClient,
+    SpotifyQuotaExceededError,
+    SpotifyRateLimitError,
+)
+from spot_backend.spotify_removed_routes import SpotifyRemovedRouteError
+from spot_backend.spotify_tools_pr9 import SpotifyToolRunnerPr9Mixin
 from spot_backend.token_store import load_device
 
 logger = logging.getLogger(__name__)
@@ -446,9 +457,14 @@ _THIS_PLAYBACK_MARKERS = frozenset(
         "this track",
         "this song",
         "this album",
+        "this show",
+        "this episode",
+        "this podcast",
         "current",
         "current track",
         "current album",
+        "current show",
+        "current episode",
         "playing",
         "now playing",
     }
@@ -460,8 +476,13 @@ _UNDO_LIBRARY_MARKERS = frozenset(
         "that track",
         "that song",
         "that album",
+        "that show",
+        "that episode",
+        "that playlist",
         "undo that",
         "the last one",
+        "it",
+        "this",
     }
 )
 
@@ -521,6 +542,41 @@ def _spotify_http_message(exc: httpx.HTTPStatusError) -> str:
     except (json.JSONDecodeError, ValueError):
         pass
     return (exc.response.text or "")[:400]
+
+
+def _http_failure_reason(status: int, spot_msg: str | None = None) -> str:
+    msg = (spot_msg or "").lower()
+    if status == 400:
+        if "scope" in msg or "missing scope" in msg:
+            return "missing_scope"
+        return "http_400_bad_request"
+    if status == 401:
+        return "http_401_unauthorized"
+    if status == 403:
+        return "http_403_forbidden"
+    if status == 404:
+        return "http_404_not_found"
+    if status == 429:
+        return "rate_limited"
+    if status in (408, 504):
+        return "timeout"
+    if status >= 500:
+        return "http_5xx_server_error"
+    return f"http_{status}"
+
+
+def _attach_failure_reason(payload: dict[str, Any], *, default: str | None = None) -> None:
+    if payload.get("failure_reason"):
+        return
+    status = payload.get("spotify_http_status")
+    if isinstance(status, int):
+        payload["failure_reason"] = _http_failure_reason(
+            status,
+            payload.get("spotify_api_message") if isinstance(payload.get("spotify_api_message"), str) else None,
+        )
+        return
+    if default:
+        payload["failure_reason"] = default
 
 
 def _spotify_error_is_restriction_violated(exc: httpx.HTTPStatusError) -> bool:
@@ -688,6 +744,65 @@ def _shrink_saved_tracks_page(data: dict[str, Any]) -> dict[str, Any]:
         "has_next_page": bool(data.get("next")),
         "items": out_items,
     }
+
+
+def _shrink_saved_albums_page(data: dict[str, Any]) -> dict[str, Any]:
+    out_items: list[dict[str, Any]] = []
+    raw = data.get("items")
+    if isinstance(raw, list):
+        for row in raw[:50]:
+            if not isinstance(row, dict):
+                continue
+            alb = row.get("album")
+            if not isinstance(alb, dict):
+                continue
+            artists = alb.get("artists")
+            anames: list[str] = []
+            if isinstance(artists, list):
+                for a in artists:
+                    if isinstance(a, dict) and a.get("name"):
+                        anames.append(str(a["name"]))
+            out_items.append(
+                {
+                    "added_at": row.get("added_at"),
+                    "name": alb.get("name"),
+                    "id": alb.get("id"),
+                    "uri": alb.get("uri"),
+                    "artists": anames,
+                    "release_date": alb.get("release_date"),
+                }
+            )
+    return {
+        "total": data.get("total"),
+        "limit": data.get("limit"),
+        "offset": data.get("offset"),
+        "has_next_page": bool(data.get("next")),
+        "items": out_items,
+    }
+
+
+def _format_ranked_track_lines(items: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        rank = row.get("rank")
+        name = str(row.get("name") or "Unknown track")
+        artists_raw = row.get("artists")
+        anames: list[str] = []
+        if isinstance(artists_raw, list):
+            for a in artists_raw:
+                if isinstance(a, dict) and a.get("name"):
+                    anames.append(str(a["name"]))
+                elif isinstance(a, str) and a.strip():
+                    anames.append(a.strip())
+        artist_str = ", ".join(anames) if anames else "Unknown artist"
+        suffix = ""
+        if row.get("is_playable") is False:
+            suffix = " (not playable here)"
+        prefix = f"{rank}. " if rank is not None else ""
+        lines.append(f"{prefix}{name} — {artist_str}{suffix}")
+    return lines
 
 
 def _coerce_track_uri_list(uris: Any) -> list[str] | None:
@@ -891,6 +1006,15 @@ _TOOL_REQUIRED_SCOPES: dict[str, tuple[str, ...]] = {
     "spotify_unfollow_artist": _USER_FOLLOW_MODIFY_SCOPES,
     "spotify_get_queue": _USER_PLAYBACK_READ_SCOPES,
     "spotify_playlists_containing_track": _READ_PLAYLIST_SCOPES,
+    "spotify_library_contains": _USER_LIBRARY_READ_SCOPES,
+    "spotify_library_save": _USER_LIBRARY_MODIFY_SCOPES,
+    "spotify_library_remove": _USER_LIBRARY_MODIFY_SCOPES,
+    "spotify_user_saved_shows": _USER_LIBRARY_READ_SCOPES,
+    "spotify_user_saved_episodes": _USER_LIBRARY_READ_SCOPES,
+    "spotify_user_saved_audiobooks": _USER_LIBRARY_READ_SCOPES,
+    "spotify_playlist_builder_preview": _MODIFY_PLAYLIST_SCOPES,
+    "spotify_playlist_builder_edit": _MODIFY_PLAYLIST_SCOPES,
+    "spotify_playlist_builder_commit": _MODIFY_PLAYLIST_SCOPES,
 }
 
 
@@ -977,7 +1101,7 @@ def _combined_track_inputs(arguments: dict[str, Any]) -> list[Any]:
     return combined
 
 
-class SpotifyToolRunner:
+class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
     def __init__(
         self,
         client: SpotifyClient | None = None,
@@ -992,6 +1116,8 @@ class SpotifyToolRunner:
         self._last_library_mutation: dict[str, Any] | None = None
         self._last_session_playlist_id: str | None = None
         self._last_primary_artist_id: str | None = None
+        self._last_show_search_id: str | None = None
+        self._last_playlist_search_query: str | None = None
         from spot_backend.library_mutation_store import load_last_library_mutation
 
         prior = load_last_library_mutation(self.conversation_id)
@@ -1060,6 +1186,8 @@ class SpotifyToolRunner:
                 out["me_id"] = me_data["id"]
         except httpx.HTTPStatusError as e:
             out["me_status"] = e.response.status_code
+        except Exception:
+            out["me_status"] = None
         try:
             pl_data = self.client.api_get(
                 f"/playlists/{playlist_id}",
@@ -1076,6 +1204,8 @@ class SpotifyToolRunner:
                         out["owner_name"] = owner["display_name"]
         except httpx.HTTPStatusError as e:
             out["playlist_status"] = e.response.status_code
+        except Exception:
+            out["playlist_status"] = None
         if isinstance(out["me_id"], str) and isinstance(out["owner_id"], str):
             out["is_owned"] = out["me_id"] == out["owner_id"]
         return out
@@ -1107,18 +1237,52 @@ class SpotifyToolRunner:
         )
 
     def run(self, name: str, arguments: dict[str, Any]) -> str:
+        self.client.clear_metadata_cache()
         pre = self._precheck_scopes(name)
         if pre:
             return pre
         play_guard = self._precheck_play_catalog_id(name, arguments)
         if play_guard:
             return play_guard
+        if name == "spotify_create_playlist":
+            from spot_backend.playlist_builder_store import load_playlist_preview
+
+            if load_playlist_preview(self.conversation_id):
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "failure_reason": "playlist_builder_active",
+                        "error": (
+                            "A playlist-builder preview is waiting for approval in this chat. "
+                            "Do not call spotify_create_playlist — use spotify_playlist_builder_commit "
+                            "after the user confirms, or spotify_playlist_builder_preview to revise."
+                        ),
+                        "reconnect_spotify_unnecessary": True,
+                    },
+                    ensure_ascii=False,
+                )
         try:
             result = self._dispatch(name, arguments)
         except SpotifyAuthError as e:
             return json.dumps({"error": str(e)})
+        except SpotifyQuotaExceededError as e:
+            return json.dumps(
+                {"error": str(e), "failure_reason": getattr(e, "failure_reason", "quota_exceeded")},
+                ensure_ascii=False,
+            )
         except SpotifyRateLimitError as e:
-            return json.dumps({"error": str(e)})
+            return json.dumps(
+                {"error": str(e), "failure_reason": "rate_limited"},
+                ensure_ascii=False,
+            )
+        except SpotifyRemovedRouteError as e:
+            return json.dumps(
+                {
+                    "error": str(e),
+                    "failure_reason": getattr(e, "failure_reason", "removed_route"),
+                },
+                ensure_ascii=False,
+            )
         except httpx.HTTPStatusError as e:
             detail: Any
             try:
@@ -1152,7 +1316,12 @@ class SpotifyToolRunner:
                 err["spotify_api_message"] = spot_msg
             return self._format_http_error(name, arguments, e, err)
         except Exception as e:
-            return json.dumps({"error": f"{type(e).__name__}: {e}"})
+            return json.dumps(
+                {
+                    "error": f"{type(e).__name__}: {e}",
+                    "failure_reason": "parse_error",
+                }
+            )
         self._remember_tool_catalog_ids(name, result)
         return result
 
@@ -1163,6 +1332,8 @@ class SpotifyToolRunner:
             "album": f"/albums/{bare_id}",
             "artist": f"/artists/{bare_id}",
             "playlist": f"/playlists/{bare_id}",
+            "show": f"/shows/{bare_id}",
+            "episode": f"/episodes/{bare_id}",
         }
         path = path_map.get(kind)
         if not path:
@@ -1209,6 +1380,10 @@ class SpotifyToolRunner:
         raw = ""
         if name == "spotify_play_playlist":
             raw = _pick_arg(arguments, "playlist_id", "playlistId", "id")
+            bare = _normalize_spotify_id(raw, "playlist") if raw else ""
+            blocked = self._block_editorial_playlist_id(bare) if bare else None
+            if blocked:
+                return blocked
         else:
             raw = _pick_arg(arguments, "context_uri", "playlist_id", "album_id", "artist_id", "id")
             if not raw and isinstance(arguments.get("uris"), list) and arguments["uris"]:
@@ -1264,10 +1439,11 @@ class SpotifyToolRunner:
         except (json.JSONDecodeError, TypeError, ValueError):
             return
         self._session_known_ids.update(collect_catalog_ids_from_tool_json(data))
-        if name in ("spotify_create_playlist", "spotify_duplicate_playlist"):
-            pid = data.get("id") or data.get("new_playlist_id") or data.get("playlist_id_for_add_tracks")
+        if name in ("spotify_create_playlist", "spotify_duplicate_playlist", "spotify_playlist_builder_commit"):
+            pid = data.get("id") or data.get("new_playlist_id") or data.get("playlist_id") or data.get("playlist_id_for_add_tracks")
             if isinstance(pid, str) and _looks_like_spotify_catalog_id(pid):
                 self._last_session_playlist_id = pid
+                self.note_session_playlist_id(pid)
         if name == "spotify_search" and isinstance(data, dict):
             artists = data.get("artists")
             if isinstance(artists, dict):
@@ -1515,6 +1691,7 @@ class SpotifyToolRunner:
             playlist_id_len,
             n_track_inputs,
         )
+        _attach_failure_reason(err, default="http_error")
         return json.dumps(err)
 
     def _dispatch(self, name: str, arguments: dict[str, Any]) -> str:
@@ -1634,6 +1811,38 @@ class SpotifyToolRunner:
                 return self._seek(arguments)
             case "spotify_set_volume":
                 return self._set_volume(arguments)
+            case "spotify_library_contains":
+                return self._library_contains(arguments)
+            case "spotify_library_save":
+                return self._library_save_uris(arguments)
+            case "spotify_library_remove":
+                return self._library_remove_uris(arguments)
+            case "spotify_get_show":
+                return self._get_show(arguments)
+            case "spotify_get_show_episodes":
+                return self._get_show_episodes(arguments)
+            case "spotify_get_episode":
+                return self._get_episode(arguments)
+            case "spotify_get_audiobook":
+                return self._get_audiobook(arguments)
+            case "spotify_get_audiobook_chapters":
+                return self._get_audiobook_chapters(arguments)
+            case "spotify_get_chapter":
+                return self._get_chapter(arguments)
+            case "spotify_user_saved_shows":
+                return self._me_shows(arguments)
+            case "spotify_user_saved_episodes":
+                return self._me_episodes(arguments)
+            case "spotify_user_saved_audiobooks":
+                return self._me_audiobooks(arguments)
+            case "spotify_playlist_builder_preview":
+                return self._playlist_builder_preview(arguments)
+            case "spotify_playlist_builder_edit":
+                return self._playlist_builder_edit(arguments)
+            case "spotify_playlist_builder_commit":
+                return self._playlist_builder_commit(arguments)
+            case "spotify_play_show_latest_episode":
+                return self._play_show_latest_episode(arguments)
             case _:
                 return json.dumps({"error": f"Unknown tool: {name}"})
 
@@ -1693,35 +1902,59 @@ class SpotifyToolRunner:
         return _compact(data)
 
     def _search(self, arguments: dict[str, Any]) -> str:
+        from spot_backend.spotify_search_params import (
+            build_spotify_search_params,
+            default_search_limit,
+            pick_search_types_argument,
+        )
+        from spot_backend.spotify_search_slim import attach_show_search_summary, strip_null_search_items
+
         q = _pick_arg(arguments, "query", "q", "search_query")
-        types = _coerce_str(arguments.get("types"), "track,artist,album").replace(" ", "")
+        types_raw = pick_search_types_argument(arguments)
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
-        # Feb-2026 migration: /search `limit` max dropped from 50 to 10 for dev-mode apps; default 5.
-        limit = _safe_int(arguments.get("limit"), 5, lo=1, hi=10)
+        limit = _safe_int(default_search_limit(arguments), SPOTIFY_SEARCH_DEFAULT_LIMIT, lo=1, hi=10)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=950)
         if not q:
-            return json.dumps({"error": "query is required"})
-        data = self.client.api_get(
-            "/search",
-            params={"q": q, "type": types, "market": market, "limit": limit, "offset": offset},
+            return json.dumps(
+                {"error": "query is required", "failure_reason": "validation_error", "ok": False},
+                ensure_ascii=False,
+            )
+        params = build_spotify_search_params(
+            query=q,
+            types_raw=types_raw,
+            market=market,
+            limit=limit,
+            offset=offset,
         )
-        # Spotify dev-mode search responses interleave literal `null` entries into every
-        # `items` array (sparsification — see backend/scripts/diag_search_and_owned.py).
-        # Small/local models read the nulls as "no results" and hallucinate an empty
-        # answer. Strip them before the LLM ever sees the payload and keep a note of the
-        # real `total` so the agent can say "found some" even when the page is sparse.
+        try:
+            data = self.client.api_get("/search", params=params)
+        except httpx.HTTPStatusError as e:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": _spotify_http_message(e),
+                    "failure_reason": _http_failure_reason(e.response.status_code, _spotify_http_message(e)),
+                    "search_params_sent": {
+                        k: params[k]
+                        for k in ("q", "type", "market", "limit", "include_external")
+                        if k in params
+                    },
+                    **_spotify_http_error_fields(e),
+                },
+                ensure_ascii=False,
+            )
         if isinstance(data, dict):
-            for bucket_key in ("tracks", "artists", "albums", "playlists", "shows", "episodes", "audiobooks"):
-                bucket = data.get(bucket_key)
-                if not isinstance(bucket, dict):
-                    continue
-                raw_items = bucket.get("items") if isinstance(bucket.get("items"), list) else []
-                clean = [it for it in raw_items if isinstance(it, dict)]
-                bucket["items"] = clean
-                bucket["returned_count"] = len(clean)
-                if "total" in bucket:
-                    bucket["total_in_catalog"] = bucket.get("total")
-        return _compact(data)
+            strip_null_search_items(data)
+            shows = data.get("shows")
+            if isinstance(shows, dict):
+                clean = shows.get("items") if isinstance(shows.get("items"), list) else []
+                if clean:
+                    first = clean[0]
+                    if isinstance(first, dict) and isinstance(first.get("id"), str):
+                        self._last_show_search_id = first["id"]
+                        self._session_known_ids.add(first["id"])
+                attach_show_search_summary(data)
+        return _compact(data if isinstance(data, dict) else data)
 
     def _user_playlists(self, arguments: dict[str, Any]) -> str:
         limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
@@ -2568,6 +2801,14 @@ class SpotifyToolRunner:
         if reject:
             return reject
         pid = validated or pid
+        if "name" in arguments and arguments.get("name") is not None:
+            owned_block = self._owned_playlist_destructive_guard(
+                pid,
+                arguments,
+                action="Renaming it",
+            )
+            if owned_block:
+                return owned_block
         body: dict[str, Any] = {}
         if "name" in arguments and arguments.get("name") is not None:
             n = str(arguments.get("name", "")).strip()
@@ -2621,6 +2862,13 @@ class SpotifyToolRunner:
         )
         if not pid:
             return json.dumps({"error": "playlist_id is required"})
+        owned_block = self._owned_playlist_destructive_guard(
+            pid,
+            arguments,
+            action="Removing tracks from it",
+        )
+        if owned_block:
+            return owned_block
         uri_list = _coerce_track_uri_list(_combined_track_inputs(arguments))
         if not uri_list:
             return json.dumps({"error": "track_uris / track_ids / tracks (non-empty list) is required"})
@@ -2653,7 +2901,7 @@ class SpotifyToolRunner:
         snap = _coerce_str(arguments.get("snapshot_id"), "")
         if snap:
             params["snapshot_id"] = snap
-        data = self.client.api_put(f"/playlists/{pid}/items", json_body=None, params=params)
+        data = self.client.api_put(f"/playlists/{pid}/items", json_body=params)
         return _compact(data if data is not None else {"ok": True})
 
     def _replace_playlist_tracks(self, arguments: dict[str, Any]) -> str:
@@ -2705,6 +2953,13 @@ class SpotifyToolRunner:
         from spot_backend.chat_tool_state import is_playlist_pronoun_reference
 
         if is_playlist_pronoun_reference(text):
+            mut = self._last_library_mutation
+            if isinstance(mut, dict) and mut.get("segment") == "playlist":
+                ids = mut.get("ids")
+                if isinstance(ids, list) and ids:
+                    last = str(ids[-1]).strip()
+                    if _looks_like_spotify_catalog_id(last):
+                        return last, None
             if self._last_session_playlist_id:
                 return self._last_session_playlist_id, None
             return None, json.dumps(
@@ -2760,20 +3015,138 @@ class SpotifyToolRunner:
         raw = _pick_arg(arguments, "playlist_id", "playlistId", "id")
         return self._resolve_playlist_id_from_arg(raw)
 
+    def _turn_user_text_from_arguments(self, arguments: dict[str, Any]) -> str:
+        raw = arguments.get("_turn_user_text")
+        return raw.strip() if isinstance(raw, str) else ""
+
+    def _user_exactly_named_playlist_in_message(self, user_text: str, playlist_name: str) -> bool:
+        if not user_text or not playlist_name:
+            return False
+        want = playlist_name.strip()
+        if not want:
+            return False
+        t = user_text.strip()
+        for m in re.finditer(r'["\']([^"\']+)["\']', t):
+            if m.group(1).strip().lower() == want.lower():
+                return True
+        escaped = re.escape(want)
+        if re.search(rf"\b(?:remove|unfollow|delete|rename)\s+{escaped}\b", t, re.I):
+            return True
+        if re.search(rf"\bplaylist\s+{escaped}\b", t, re.I):
+            return True
+        return False
+
+    def _playlist_id_recently_referenced_in_library(self, playlist_id: str) -> bool:
+        mut = self._last_library_mutation
+        if not isinstance(mut, dict) or mut.get("segment") != "playlist":
+            return False
+        ids = mut.get("ids")
+        if not isinstance(ids, list):
+            return False
+        return playlist_id in [str(i).strip() for i in ids if str(i).strip()]
+
+    def _owned_playlist_destructive_guard(
+        self,
+        playlist_id: str,
+        arguments: dict[str, Any],
+        *,
+        action: str,
+    ) -> str | None:
+        """Block destructive ops on playlists the user owns unless they named that playlist."""
+        snap = self._playlist_owner_snapshot(playlist_id)
+        if snap.get("is_owned") is not True:
+            return None
+        name = snap.get("playlist_name")
+        playlist_name = name.strip() if isinstance(name, str) else "your playlist"
+        user_text = self._turn_user_text_from_arguments(arguments)
+        if self._playlist_id_recently_referenced_in_library(playlist_id):
+            return None
+        if self._user_exactly_named_playlist_in_message(user_text, playlist_name):
+            return None
+        return json.dumps(
+            {
+                "ok": False,
+                "failure_reason": "owned_playlist_protected",
+                "needs_confirmation": True,
+                "playlist_id": playlist_id,
+                "playlist_name": playlist_name,
+                "error": (
+                    f'That\'s your own playlist "{playlist_name}". {action} would take it out of your '
+                    f'library. Say "remove {playlist_name}" to confirm.'
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    def _playlist_display_name(self, playlist_id: str) -> str | None:
+        try:
+            meta = self.client.api_get(f"/playlists/{playlist_id}", params={"fields": "id,name"})
+            if isinstance(meta, dict) and isinstance(meta.get("name"), str):
+                return meta["name"].strip()
+        except httpx.HTTPStatusError:
+            return None
+        return None
+
     def _unfollow_playlist(self, arguments: dict[str, Any]) -> str:
         pid, err = self._playlist_id_from_arguments(arguments)
         if err:
             return err
         if not pid:
-            return json.dumps({"error": "playlist_id is required"})
+            return json.dumps({"error": "playlist_id is required", "failure_reason": "validation_error"})
+        blocked = self._block_editorial_playlist_id(pid)
+        if blocked:
+            return blocked
+        owned_block = self._owned_playlist_destructive_guard(
+            pid,
+            arguments,
+            action="Removing it",
+        )
+        if owned_block:
+            return owned_block
         ok, verify_err = self._verify_catalog_id_on_spotify("playlist", pid)
         if not ok:
             return json.dumps(
-                {"ok": False, "error": verify_err or f"Unknown playlist id {pid!r}"},
+                {
+                    "ok": False,
+                    "failure_reason": "invalid_playlist_id",
+                    "error": verify_err or f"Unknown playlist id {pid!r}",
+                },
                 ensure_ascii=False,
             )
-        self.client.api_delete(f"/playlists/{pid}/followers")
-        return json.dumps({"ok": True, "playlist_id": pid})
+        display_name = self._playlist_display_name(pid)
+        self._library_delete_uris([f"spotify:playlist:{pid}"])
+        try:
+            check = self.client.api_get(
+                "/me/library/contains",
+                params={"uris": f"spotify:playlist:{pid}"},
+            )
+            still_saved = isinstance(check, list) and bool(check) and check[0]
+        except httpx.HTTPStatusError:
+            still_saved = None
+        if still_saved is True:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": "remove_verify_failed",
+                    "error": "Spotify still reports that playlist as saved after removal.",
+                    "playlist_id": pid,
+                },
+                ensure_ascii=False,
+            )
+        self._record_library_mutation("playlist", [pid])
+        label = display_name or self._playlist_display_name(pid) or f"playlist {pid}"
+        return json.dumps(
+            {
+                "ok": True,
+                "playlist_id": pid,
+                "item_name": label,
+                "removed_uris": [f"spotify:playlist:{pid}"],
+                "removed_from_library": True,
+                "verified_removed": still_saved is False,
+                "user_message": f"Removed {label} from your library.",
+            },
+            ensure_ascii=False,
+        )
 
     def _user_saved_tracks(self, arguments: dict[str, Any]) -> str:
         limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
@@ -2845,12 +3218,31 @@ class SpotifyToolRunner:
             chunk = uris[offset : offset + _LIBRARY_URI_CHUNK]
             self.client.api_delete("/me/library", params={"uris": ",".join(chunk)})
 
-    def _playback_catalog_id(self, segment: str) -> str | None:
+    def _player_state_snapshot(self) -> dict[str, Any] | None:
         try:
-            state = self.client.api_get("/me/player")
+            state = self.client.api_get("/me/player", params={"additional_types": "episode"})
         except httpx.HTTPStatusError:
-            return None
-        if not isinstance(state, dict):
+            try:
+                state = self.client.api_get("/me/player")
+            except httpx.HTTPStatusError:
+                return None
+        return state if isinstance(state, dict) else None
+
+    def playback_catalog_id(self, segment: str) -> str | None:
+        """Public wrapper for current-player catalog id (album/track/show/episode)."""
+        return self._playback_catalog_id(segment)
+
+    def note_playlist_search_query(self, query: str) -> None:
+        q = (query or "").strip()
+        if q:
+            self._last_playlist_search_query = q
+
+    def last_playlist_search_query(self) -> str | None:
+        return self._last_playlist_search_query
+
+    def _playback_catalog_id(self, segment: str) -> str | None:
+        state = self._player_state_snapshot()
+        if not state:
             return None
         item = state.get("item")
         if not isinstance(item, dict):
@@ -2874,6 +3266,16 @@ class SpotifyToolRunner:
                         aid = artist.get("id")
                         if isinstance(aid, str) and _looks_like_spotify_catalog_id(aid):
                             return aid
+        if segment == "episode":
+            eid = item.get("id")
+            if item.get("type") == "episode" and isinstance(eid, str) and _looks_like_spotify_catalog_id(eid):
+                return eid
+        if segment == "show":
+            show = item.get("show")
+            if isinstance(show, dict):
+                sid = show.get("id")
+                if isinstance(sid, str) and _looks_like_spotify_catalog_id(sid):
+                    return sid
         return None
 
     def _verify_library_segment_ids(self, segment: str, ids: list[str]) -> str | None:
@@ -2922,11 +3324,25 @@ class SpotifyToolRunner:
         return self._collect_catalog_ids(arguments, segment, *keys)
 
     def _save_tracks(self, arguments: dict[str, Any]) -> str:
+        raw_single = _pick_arg(arguments, "track_id", "track_ids", "ids")
+        if isinstance(raw_single, str) and raw_single.strip():
+            low = raw_single.strip().lower()
+            if low.startswith("spotify:show:") or low.startswith("spotify:episode:"):
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "failure_reason": "invalid_uri_type",
+                        "error": "save_tracks only accepts track ids/URIs, not podcast shows.",
+                        "hint": "Use spotify_library_save with spotify:show:<id> to save a show.",
+                    },
+                    ensure_ascii=False,
+                )
         ids = self._resolve_library_segment_ids(arguments, "track", "track_ids", "ids", "track_id")
         if not ids:
             return json.dumps(
                 {
                     "error": "track_id or track_ids is required",
+                    "failure_reason": "empty_args",
                     "hint": "Pass the current song with track_id='' or 'this', or call spotify_playback_state first.",
                 }
             )
@@ -2958,6 +3374,17 @@ class SpotifyToolRunner:
         return json.dumps({"ok": True, "removed_track_ids": ids})
 
     def _save_albums(self, arguments: dict[str, Any]) -> str:
+        raw_check = _pick_arg(arguments, "album_id", "album_ids", "ids")
+        if isinstance(raw_check, str) and "show:" in raw_check.lower():
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": "invalid_uri_type",
+                    "error": "save_albums only accepts album ids/URIs, not podcast shows.",
+                    "hint": "Use spotify_library_save with spotify:show:<id> for shows.",
+                },
+                ensure_ascii=False,
+            )
         ids = self._resolve_library_segment_ids(arguments, "album", "album_ids", "ids", "album_id")
         if not ids:
             return json.dumps(
@@ -2968,10 +3395,28 @@ class SpotifyToolRunner:
             )
         if len(ids) > 50:
             return json.dumps({"error": "At most 50 album ids per call"})
+        for bare in ids:
+            if bare not in self._session_known_ids:
+                ok, verify_err = self._verify_catalog_id_on_spotify("album", bare)
+                if not ok:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "failure_reason": "unknown_id",
+                            "error": verify_err or f"Spotify has no album with id {bare!r}",
+                            "reconnect_spotify_unnecessary": True,
+                        },
+                        ensure_ascii=False,
+                    )
         verify_err = self._verify_library_segment_ids("album", ids)
         if verify_err:
             return json.dumps(
-                {"ok": False, "error": verify_err, "reconnect_spotify_unnecessary": True},
+                {
+                    "ok": False,
+                    "failure_reason": "unknown_id",
+                    "error": verify_err,
+                    "reconnect_spotify_unnecessary": True,
+                },
                 ensure_ascii=False,
             )
         self._library_put_uris([f"spotify:album:{i}" for i in ids])
@@ -3001,7 +3446,37 @@ class SpotifyToolRunner:
             "/me/albums",
             params={"limit": limit, "offset": offset, "market": market},
         )
-        return _compact(data, limit=8000)
+        if not isinstance(data, dict):
+            return _compact(data, limit=8000)
+        slim = _shrink_saved_albums_page(data)
+        items = slim.get("items") if isinstance(slim.get("items"), list) else []
+        lines: list[str] = []
+        for i, row in enumerate(items):
+            if not isinstance(row, dict):
+                continue
+            anames = row.get("artists") if isinstance(row.get("artists"), list) else []
+            artist_str = ", ".join(str(a) for a in anames if str(a).strip())
+            lines.append(
+                f"{offset + i + 1}. {row.get('name') or 'Unknown'} — {artist_str or 'Unknown artist'}"
+            )
+        summary = "\n".join(lines) if lines else "No saved albums on this page."
+        total = slim.get("total")
+        if isinstance(total, int) and total > len(items):
+            more = total - len(items)
+            summary += f"\n({total} saved albums total — and {more} more not listed here.)"
+        elif slim.get("has_next_page"):
+            summary += "\n(and more saved albums not listed here.)"
+        payload = {
+            "ok": True,
+            "total": slim.get("total"),
+            "limit": slim.get("limit"),
+            "offset": offset,
+            "returned_count": len(items),
+            "items": items,
+            "summary_lines": lines,
+            "user_message": summary,
+        }
+        return _compact(payload, limit=8000)
 
     def _follow_artist(self, arguments: dict[str, Any]) -> str:
         ids = self._resolve_library_segment_ids(arguments, "artist", "artist_ids", "ids", "artist_id")
@@ -3252,6 +3727,7 @@ class SpotifyToolRunner:
                     "popularity": t.get("popularity"),
                     "duration_ms": t.get("duration_ms"),
                     "explicit": t.get("explicit"),
+                    "is_playable": t.get("is_playable"),
                     "artists": artists,
                     "album": {
                         "id": album.get("id"),
@@ -3261,12 +3737,16 @@ class SpotifyToolRunner:
                     "external_url": ext.get("spotify") if isinstance(ext, dict) else None,
                 }
             )
+        summary_lines = _format_ranked_track_lines(items)
+        user_message = "\n".join(summary_lines) if summary_lines else "No top tracks returned."
         shrunk = {
             "time_range": time_range,
             "limit": limit,
             "offset": offset,
             "total": data.get("total"),
             "items": items,
+            "summary_lines": summary_lines,
+            "user_message": user_message,
             "hint": (
                 "rank is 1-based within the current time_range (short_term ~last 4 weeks, "
                 "medium_term ~last 6 months, long_term = calculated from ~the user's all-time "
@@ -3326,105 +3806,26 @@ class SpotifyToolRunner:
         )
 
     def _user_public_playlists(self, arguments: dict[str, Any]) -> str:
-        """List a Spotify user's PUBLIC playlists by their user_id (no scope required, public data)."""
+        """Removed Spotify route — never calls GET /users/{id}/playlists in dev mode."""
         user_id = _coerce_str(_pick_arg(arguments, "user_id", "userId", "username", "id"), "")
-        if not user_id:
-            return json.dumps(
-                {
-                    "error": "user_id is required",
-                    "hint": (
-                        "Pass the target user's Spotify user_id (the part after spotify:user: "
-                        "or open.spotify.com/user/<id>). The Web API has NO endpoint to look up "
-                        "a user by display name — the user must provide their id, or we use "
-                        "spotify_me.id for the signed-in user."
-                    ),
-                }
-            )
-        limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
-        offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
-        try:
-            data = self.client.api_get(
-                f"/users/{user_id}/playlists", params={"limit": limit, "offset": offset}
-            )
-        except httpx.HTTPStatusError as e:
-            code = e.response.status_code
-            # Spotify's Feb-2026 API migration gated GET /users/{user_id}/playlists behind
-            # Extended Quota Mode. Empirically (see backend/scripts/diag_user_playlists.py),
-            # dev-mode apps now get HTTP 403 "Forbidden" for EVERY user_id — the signed-in
-            # user, well-known editorial accounts (`spotify`, `bbc`), and fake ids alike.
-            # This is NOT a scope issue (no scope is required for this endpoint) and NOT a
-            # bad-user-id issue. The only remediation is for the developer to apply for
-            # Extended Quota Mode in their Spotify dashboard. Until then, suggest
-            # spotify_search_playlists as a working alternative.
-            if code in (403, 404):
-                return json.dumps(
-                    {
-                        "error": f"Spotify HTTP {code} for spotify_user_public_playlists",
-                        "user_id_tried": user_id,
-                        "not_a_scope_issue": True,
-                        "endpoint_gated_in_dev_mode": True,
-                        "extended_quota_mode_required": True,
-                        "hint": (
-                            "GET /users/{user_id}/playlists is gated behind Spotify's "
-                            "Extended Quota Mode as of their Feb-2026 API migration. "
-                            "Dev-mode apps get 403 for every user_id (including the signed-in "
-                            "user and well-known accounts like 'spotify'). This is NOT a scope "
-                            "problem and signing out will not help — do NOT suggest "
-                            "Sign out → Connect. Tell the user: 'Listing another user's public "
-                            "playlists requires Extended Quota Mode which this app does not "
-                            "have; I can instead search for playlists by topic (spotify_search_playlists) "
-                            "or operate on your own playlists (spotify_user_playlists).'"
-                        ),
-                        "try_instead": [
-                            "spotify_search_playlists  (find playlists by description/topic)",
-                            "spotify_user_playlists    (list YOUR playlists — works in dev mode)",
-                        ],
-                    }
-                )
-            raise
-        if not isinstance(data, dict):
-            return _compact(data, limit=6000)
-        raw_items = data.get("items") if isinstance(data.get("items"), list) else []
-        items: list[dict[str, Any]] = []
-        for p in raw_items:
-            if not isinstance(p, dict):
-                continue
-            owner = p.get("owner") if isinstance(p.get("owner"), dict) else {}
-            tracks = p.get("tracks") if isinstance(p.get("tracks"), dict) else {}
-            images = p.get("images") if isinstance(p.get("images"), list) else []
-            first_img = images[0] if images and isinstance(images[0], dict) else None
-            ext = p.get("external_urls") if isinstance(p.get("external_urls"), dict) else {}
-            items.append(
-                {
-                    "id": p.get("id"),
-                    "name": p.get("name"),
-                    "uri": p.get("uri"),
-                    "owner": {
-                        "id": owner.get("id") if isinstance(owner, dict) else None,
-                        "display_name": owner.get("display_name") if isinstance(owner, dict) else None,
-                    },
-                    "total_tracks": tracks.get("total") if isinstance(tracks, dict) else None,
-                    "public": p.get("public"),
-                    "collaborative": p.get("collaborative"),
-                    "image": first_img.get("url") if isinstance(first_img, dict) else None,
-                    "external_url": ext.get("spotify") if isinstance(ext, dict) else None,
-                }
-            )
-        return _compact(
+        return json.dumps(
             {
-                "user_id": user_id,
-                "items": items,
-                "limit": data.get("limit"),
-                "offset": data.get("offset"),
-                "total": data.get("total"),
-                "next": data.get("next"),
-                "note": (
-                    "Only PUBLIC playlists are visible to other users. There is no Web API endpoint "
-                    "for reading another user's private or unlisted playlists — say so plainly if "
-                    "the user expected to see one."
+                "ok": False,
+                "failure_reason": "removed_route",
+                "endpoint_removed": True,
+                "user_id": user_id or None,
+                "error": (
+                    "Listing another user's public playlists is not available in Spotify's "
+                    "current Web API for this app. I can list your own playlists "
+                    "(spotify_user_playlists) or search public playlists by topic "
+                    "(spotify_search_playlists)."
                 ),
+                "try_instead": [
+                    "spotify_user_playlists",
+                    "spotify_search_playlists",
+                ],
             },
-            limit=8000,
+            ensure_ascii=False,
         )
 
     def _search_playlists(self, arguments: dict[str, Any]) -> str:
@@ -3435,10 +3836,21 @@ class SpotifyToolRunner:
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
         limit = _safe_int(arguments.get("limit"), 5, lo=1, hi=10)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=950)
-        data = self.client.api_get(
-            "/search",
-            params={"q": q, "type": "playlist", "market": market, "limit": limit, "offset": offset},
-        )
+        try:
+            data = self.client.api_get(
+                "/search",
+                params={"q": q, "type": "playlist", "market": market, "limit": limit, "offset": offset},
+            )
+        except httpx.HTTPStatusError as e:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": _spotify_http_message(e),
+                    "failure_reason": _http_failure_reason(e.response.status_code, _spotify_http_message(e)),
+                    **_spotify_http_error_fields(e),
+                },
+                ensure_ascii=False,
+            )
         if not isinstance(data, dict):
             return _compact(data, limit=6000)
         block = data.get("playlists") if isinstance(data.get("playlists"), dict) else {}
@@ -3469,23 +3881,99 @@ class SpotifyToolRunner:
                     "external_url": ext.get("spotify") if isinstance(ext, dict) else None,
                 }
             )
+        want = q.strip().lower()
+        exact = [p for p in items if isinstance(p.get("name"), str) and p["name"].strip().lower() == want]
+        best_match = exact[0] if len(exact) == 1 else None
+        ordered = exact + [p for p in items if p not in exact] if exact else items
+        hint = (
+            "Use one of these item.id values with spotify_follow_playlist (to follow), "
+            "spotify_play_playlist (to play), or spotify_duplicate_playlist (to copy into a "
+            "new playlist owned by the user). Adding/removing tracks on someone else's "
+            "playlist is NOT possible — duplicate it first."
+        )
+        if not exact and ordered:
+            hint += " No exact case-insensitive name match — confirm the intended playlist with the user."
         return _compact(
             {
                 "query": q,
-                "items": items,
+                "items": ordered,
+                "best_match": best_match,
+                "exact_name_matches": len(exact),
                 "limit": block.get("limit"),
                 "offset": block.get("offset"),
                 "total": block.get("total"),
                 "next": block.get("next"),
-                "hint": (
-                    "Use one of these item.id values with spotify_follow_playlist (to follow), "
-                    "spotify_play_playlist (to play), or spotify_duplicate_playlist (to copy into a "
-                    "new playlist owned by the user). Adding/removing tracks on someone else's "
-                    "playlist is NOT possible — duplicate it first."
-                ),
+                "hint": hint,
             },
             limit=8000,
         )
+
+    def _resolve_playlist_id_from_catalog_search(self, name: str) -> tuple[str | None, str | None]:
+        q = (name or "").strip()
+        if not q:
+            return None, json.dumps({"error": "playlist_id is required", "failure_reason": "validation_error"})
+        market = "from_token"
+        try:
+            data = self.client.api_get(
+                "/search",
+                params={"q": q, "type": "playlist", "market": market, "limit": 5, "offset": 0},
+            )
+        except httpx.HTTPStatusError as e:
+            return None, json.dumps(
+                {
+                    "ok": False,
+                    "error": _spotify_http_message(e),
+                    "failure_reason": _http_failure_reason(e.response.status_code, _spotify_http_message(e)),
+                },
+                ensure_ascii=False,
+            )
+        block = data.get("playlists") if isinstance(data, dict) and isinstance(data.get("playlists"), dict) else {}
+        raw_items = block.get("items") if isinstance(block.get("items"), list) else []
+        items = [p for p in raw_items if isinstance(p, dict)]
+        want = q.lower()
+        exact = [p for p in items if isinstance(p.get("name"), str) and p["name"].strip().lower() == want]
+        pick = exact[0] if len(exact) == 1 else (items[0] if len(items) == 1 else None)
+        if not pick:
+            if len(exact) > 1:
+                return None, json.dumps(
+                    {
+                        "ok": False,
+                        "failure_reason": "ambiguous_playlist_name",
+                        "error": f"Multiple playlists named {q!r} in search results — pass an explicit id.",
+                    },
+                    ensure_ascii=False,
+                )
+            return None, json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": "playlist_not_found",
+                    "error": f"No playlist named {q!r} found in catalog search.",
+                    "hint": "Use spotify_search_playlists with limit>=5 and pick an exact name match.",
+                },
+                ensure_ascii=False,
+            )
+        pid = pick.get("id")
+        if not isinstance(pid, str) or not _looks_like_spotify_catalog_id(pid):
+            return None, json.dumps({"ok": False, "error": "Search returned a playlist without id"})
+        if playlist_id_is_spotify_curated(pid):
+            return None, self._block_editorial_playlist_id(pid) or json.dumps(
+                {"ok": False, "failure_reason": "editorial_playlist_blocked"}
+            )
+        if not exact:
+            return None, json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": "no_exact_playlist_match",
+                    "error": (
+                        f"No exact name match for {q!r}; closest result was {pick.get('name')!r}. "
+                        "Confirm with the user before following."
+                    ),
+                    "closest_match_id": pid,
+                    "closest_match_name": pick.get("name"),
+                },
+                ensure_ascii=False,
+            )
+        return pid, None
 
     def _follow_playlist(self, arguments: dict[str, Any]) -> str:
         """Follow a playlist owned by another user (or re-follow your own).
@@ -3493,23 +3981,48 @@ class SpotifyToolRunner:
         Spotify maps "follow" to "save to your library" for playlists. PUT requires
         playlist-modify-public (default) or playlist-modify-private (if public=false).
         """
-        pid = _normalize_spotify_id(
-            _pick_arg(arguments, "playlist_id", "playlistId", "id"), "playlist"
-        )
+        raw = _pick_arg(arguments, "playlist_id", "playlistId", "id")
+        pid = _normalize_spotify_id(raw, "playlist")
+        if not pid and isinstance(raw, str) and raw.strip():
+            pid, err = self._resolve_playlist_id_from_catalog_search(raw)
+            if err:
+                return err
         if not pid:
-            return json.dumps({"error": "playlist_id is required"})
-        public_raw = arguments.get("public", True)
-        public = bool(public_raw) if not isinstance(public_raw, str) else public_raw.strip().lower() not in ("0", "false", "no", "off", "")
-        self.client.api_put(f"/playlists/{pid}/followers", json_body={"public": public})
+            return json.dumps({"error": "playlist_id is required", "failure_reason": "validation_error"})
+        blocked = self._block_editorial_playlist_id(pid)
+        if blocked:
+            return blocked
+        requested_name = arguments.get("_follow_requested_name")
+        if isinstance(requested_name, str) and requested_name.strip():
+            try:
+                meta = self.client.api_get(f"/playlists/{pid}", params={"fields": "id,name"})
+                actual = meta.get("name") if isinstance(meta, dict) else None
+            except httpx.HTTPStatusError:
+                actual = None
+            if isinstance(actual, str) and actual.strip().lower() != requested_name.strip().lower():
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "failure_reason": "needs_confirmation",
+                        "error": (
+                            f'No exact name match for {requested_name!r}. '
+                            f'Closest result is {actual!r} (id {pid}).'
+                        ),
+                        "candidates": [{"id": pid, "name": actual}],
+                        "hint": "Ask the user which playlist they meant before following.",
+                    },
+                    ensure_ascii=False,
+                )
+        self._library_put_uris([f"spotify:playlist:{pid}"])
+        self._record_library_mutation("playlist", [pid])
         return json.dumps(
             {
                 "ok": True,
                 "playlist_id": pid,
-                "public": public,
                 "note": (
-                    "Followed (added to library). The playlist now appears in spotify_user_playlists, "
-                    "but you still do NOT own it — to add or remove tracks you must duplicate it first "
-                    "with spotify_duplicate_playlist."
+                    "Saved playlist to your library via PUT /me/library. The playlist now appears "
+                    "in spotify_user_playlists, but you still do NOT own it — to add or remove tracks "
+                    "duplicate it first with spotify_duplicate_playlist."
                 ),
             }
         )
@@ -5853,17 +6366,9 @@ class SpotifyToolRunner:
                 }
             )
         else:
-            if playlist_id_is_spotify_curated(pid):
-                return json.dumps(
-                    {
-                        "ok": False,
-                        "failure_reason": "curated_playlist",
-                        "user_message": _PLAYLIST_PLAY_UNAVAILABLE_USER_MESSAGE,
-                        "error": _PLAYLIST_PLAY_UNAVAILABLE_USER_MESSAGE,
-                        "reconnect_spotify_unnecessary": True,
-                    },
-                    ensure_ascii=False,
-                )
+            blocked = self._block_editorial_playlist_id(pid)
+            if blocked:
+                return blocked
             try:
                 snap = self._playlist_owner_snapshot(pid)
             except (httpx.HTTPStatusError, AssertionError, RuntimeError, OSError, ValueError):
@@ -6282,7 +6787,10 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "spotify_search",
-            "description": "Search the Spotify catalog for tracks, artists, or albums (use for vague names before play or add). Use bare ids from results for follow-ups; URIs are normalized by other tools.",
+            "description": (
+                "Search Spotify (tracks, artists, albums, playlists, shows/podcasts, episodes). "
+                "For podcasts use types=show (not spotify_search_playlists). For episodes use types=episode."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -6558,7 +7066,10 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "spotify_saved_albums",
-            "description": "List albums saved in the user's library (paginated). Requires user-library-read.",
+            "description": (
+                "List albums saved in the user's library (compact summary in user_message — "
+                "do not paste raw JSON to the user). For 'is this album saved?' use spotify_library_contains."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -6621,7 +7132,8 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "spotify_playlists_containing_track",
             "description": (
-                "Composite: scan the user's owned and followed playlists for a track id. "
+                "Composite: scan the user's playlists for a track id (slow). "
+                "Do NOT use for 'is this song in my likes?' — use spotify_library_contains instead. "
                 "Stops after max_playlists (default 50, max 200) with truncated=true when capped."
             ),
             "parameters": {
@@ -7310,6 +7822,227 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
                     "device_id": {"type": "string"},
                 },
                 "required": ["volume_percent"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_library_contains",
+            "description": (
+                "Check whether Spotify URIs are saved/liked/in the user's library (tracks, albums, episodes, "
+                "shows, playlists, artists). Prefer this for 'is X saved / in my likes / in my library?'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "uris": {"type": "array", "items": {"type": "string"}},
+                    "uri": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_library_save",
+            "description": "Save any supported Spotify URIs to the user's library (PUT /me/library).",
+            "parameters": {
+                "type": "object",
+                "properties": {"uris": {"type": "array", "items": {"type": "string"}}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_library_remove",
+            "description": "Remove Spotify URIs from the user's library (DELETE /me/library).",
+            "parameters": {
+                "type": "object",
+                "properties": {"uris": {"type": "array", "items": {"type": "string"}}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_get_show",
+            "description": "Get podcast show metadata by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"show_id": {"type": "string"}},
+                "required": ["show_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_get_show_episodes",
+            "description": "List episodes for a podcast show.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "show_id": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "offset": {"type": "integer"},
+                },
+                "required": ["show_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_get_episode",
+            "description": "Get podcast episode metadata by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"episode_id": {"type": "string"}},
+                "required": ["episode_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_get_audiobook",
+            "description": "Get audiobook metadata by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"audiobook_id": {"type": "string"}},
+                "required": ["audiobook_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_get_audiobook_chapters",
+            "description": "List chapters for an audiobook.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "audiobook_id": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "offset": {"type": "integer"},
+                },
+                "required": ["audiobook_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_get_chapter",
+            "description": "Get audiobook chapter metadata by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"chapter_id": {"type": "string"}},
+                "required": ["chapter_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_user_saved_shows",
+            "description": "List podcast shows saved in the user's library.",
+            "parameters": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer"}, "offset": {"type": "integer"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_user_saved_episodes",
+            "description": "List saved podcast episodes in the user's library.",
+            "parameters": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer"}, "offset": {"type": "integer"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_user_saved_audiobooks",
+            "description": "List audiobooks saved in the user's library.",
+            "parameters": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer"}, "offset": {"type": "integer"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_play_show_latest_episode",
+            "description": (
+                "Play the most recent episode of a podcast show (search shows first, then pass show_id). "
+                "Use for 'play the latest episode of <show>'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "show_id": {"type": "string"},
+                    "device_id": {"type": "string"},
+                },
+                "required": ["show_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_playlist_builder_preview",
+            "description": (
+                "Propose a new private playlist: resolve track_queries via search, show numbered preview, "
+                "and wait for user approval before spotify_playlist_builder_commit."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "track_queries": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["track_queries"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_playlist_builder_edit",
+            "description": (
+                "Edit the pending playlist builder preview in place (remove by 1-based indices, "
+                "add tracks by search query, or replace one slot). Returns a renumbered preview."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "remove_indices": {"type": "array", "items": {"type": "integer"}},
+                    "add_queries": {"type": "array", "items": {"type": "string"}},
+                    "replace_index": {"type": "integer"},
+                    "replace_query": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_playlist_builder_commit",
+            "description": "Create the pending preview playlist after the user approves (private, never empty).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "approve": {"type": "boolean"},
+                    "name": {"type": "string"},
+                },
             },
         },
     },

@@ -33,6 +33,7 @@ from spot_backend.reply_tool_trace import (
     tool_trace_outcome,
 )
 from spot_backend.spotify_tools import SpotifyToolRunner, _sanitize_model_device_id
+from spot_backend.tool_server_enforcement import enforce_tool_arguments_for_turn
 
 EmitFn = Callable[[dict[str, Any]], None]
 
@@ -127,6 +128,9 @@ def run_tool_calls(
         else:
             import time as _time
 
+            args = enforce_tool_arguments_for_turn(
+                name, args, user_text=user_text, runner=runner
+            )
             t0 = _time.perf_counter()
             result = runner.run(name, args)
             duration_ms = int((_time.perf_counter() - t0) * 1000)
@@ -160,6 +164,46 @@ def run_tool_calls(
                 "content": content,
             }
         )
+    from spot_backend.turn_reply_intent import (
+        intent_needs_library_contains_fallback,
+        library_contains_fallback_args,
+    )
+
+    if intent_needs_library_contains_fallback(user_text, [n for n, _ in state.turn_tool_calls]):
+        fb_args = enforce_tool_arguments_for_turn(
+            "spotify_library_contains",
+            library_contains_fallback_args(user_text),
+            user_text=user_text,
+            runner=runner,
+        )
+        fb_raw = runner.run("spotify_library_contains", fb_args)
+        state.turn_tool_calls.append(("spotify_library_contains", fb_raw))
+        state.tool_results.append(fb_raw)
+        record_successful_tool(state.successful_tools, "spotify_library_contains", fb_raw)
+        if emit:
+            emit({"type": "tool_start", "name": "spotify_library_contains"})
+            preview = fb_raw[:240] + ("…" if len(fb_raw) > 240 else "")
+            emit({"type": "tool_done", "name": "spotify_library_contains", "preview": preview})
+        if trace_data_dir is not None:
+            from pathlib import Path
+
+            append_tool_trace_record(
+                Path(trace_data_dir),
+                conversation_id=trace_conversation_id,
+                tool_name="spotify_library_contains",
+                args_summary=summarize_tool_args(fb_args),
+                outcome=tool_trace_outcome(fb_raw),
+                known_secrets=trace_secrets,
+                raw_result=fb_raw,
+            )
+        tool_messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": "spotify_library_contains_fallback",
+                "name": "spotify_library_contains",
+                "content": fb_raw[:tool_result_cap] if tool_result_cap > 0 else fb_raw,
+            }
+        )
     return tool_messages
 
 
@@ -187,6 +231,20 @@ def finalize_assistant_text(
     ):
         state.promise_nudge_used = True
         return TextFinalizeAction(kind="reprompt", reprompt_user_content=PROMISE_AFTER_ID_ERROR_NUDGE)
+    if is_failure_boilerplate(joined):
+        from spot_backend.reply_tool_fallback import best_tool_summary_fallback
+
+        tool_names = [n for n, _ in state.turn_tool_calls]
+        fallback = best_tool_summary_fallback(
+            state.tool_results,
+            user_text=user_text,
+            tool_names=tool_names,
+        )
+        if fallback:
+            return TextFinalizeAction(
+                kind="return",
+                text=prepare_user_visible_reply(fallback, state.tool_results),
+            )
     if is_failure_boilerplate(joined) and turn_tool_calls_all_succeeded(state.turn_tool_calls):
         if not state.tool_summarize_reprompted:
             state.tool_summarize_reprompted = True
@@ -212,6 +270,19 @@ def finalize_assistant_text(
                 kind="reprompt",
                 reprompt_user_content=tool_summarize_reprompt(state.tool_results),
             )
+        from spot_backend.reply_tool_fallback import best_tool_summary_fallback
+
+        tool_names = [n for n, _ in state.turn_tool_calls]
+        fallback = best_tool_summary_fallback(
+            state.tool_results,
+            user_text=user_text,
+            tool_names=tool_names,
+        )
+        if fallback:
+            return TextFinalizeAction(
+                kind="return",
+                text=prepare_user_visible_reply(fallback, state.tool_results),
+            )
         return TextFinalizeAction(kind="return", text=action_claim_honest_fallback())
     if reply_contains_unbacked_numeric_factual_claim(
         joined, state.turn_tool_calls
@@ -220,7 +291,16 @@ def finalize_assistant_text(
             kind="return",
             text=numeric_factual_claim_honest_fallback(),
         )
+    from spot_backend.reply_tool_fallback import apply_tool_grounded_reply
+
+    tool_names = [n for n, _ in state.turn_tool_calls]
+    grounded = apply_tool_grounded_reply(
+        joined,
+        state.tool_results,
+        user_text=user_text,
+        tool_names=tool_names,
+    )
     return TextFinalizeAction(
         kind="return",
-        text=prepare_user_visible_reply(joined, state.tool_results),
+        text=prepare_user_visible_reply(grounded, state.tool_results),
     )

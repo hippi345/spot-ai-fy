@@ -285,8 +285,11 @@ def test_r3_item11_unfollow_playlist_resolves_name(data_dir, signed_in_tokens) -
     respx.get(f"https://api.spotify.com/v1/playlists/{pid}").mock(
         return_value=httpx.Response(200, json={"id": pid, "name": "Workout"})
     )
-    route = respx.delete(f"https://api.spotify.com/v1/playlists/{pid}/followers").mock(
+    route = respx.delete(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
         return_value=httpx.Response(200)
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/library/contains.*").mock(
+        return_value=httpx.Response(200, json=[False])
     )
     runner = SpotifyToolRunner(settings=Settings())
     raw = runner.run("spotify_unfollow_playlist", {"playlist_id": "Workout"})

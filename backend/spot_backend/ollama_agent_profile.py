@@ -32,6 +32,10 @@ SMALL_MODEL_TOOL_NAMES: frozenset[str] = frozenset(
         "spotify_set_shuffle",
         "spotify_set_repeat",
         "spotify_unfollow_playlist",
+        # Read-only PR #9 helpers (safe for small models; builder preview/commit omitted — multi-step).
+        "spotify_library_contains",
+        "spotify_user_saved_shows",
+        "spotify_play_show_latest_episode",
     }
 )
 
