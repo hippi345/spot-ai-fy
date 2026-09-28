@@ -136,6 +136,15 @@ def tool_trace_failure_reason(raw_result: str) -> str | None:
 
         msg = data.get("spotify_api_message") if isinstance(data.get("spotify_api_message"), str) else None
         return _http_failure_reason(status, msg)
+    if data.get("error") and data.get("ok") is not False and data.get("ok") is not True:
+        reason = data.get("failure_reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()
+        return "validation_error"
+    if data.get("ok") is False:
+        reason = data.get("failure_reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()
     return None
 
 

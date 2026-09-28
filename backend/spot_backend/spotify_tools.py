@@ -1911,7 +1911,10 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         limit = _safe_int(default_search_limit(arguments), SPOTIFY_SEARCH_DEFAULT_LIMIT, lo=1, hi=10)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=950)
         if not q:
-            return json.dumps({"error": "query is required", "failure_reason": "validation_error"})
+            return json.dumps(
+                {"error": "query is required", "failure_reason": "validation_error", "ok": False},
+                ensure_ascii=False,
+            )
         params = build_spotify_search_params(
             query=q,
             types_raw=types_raw,
@@ -3352,8 +3355,12 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                 f"{offset + i + 1}. {row.get('name') or 'Unknown'} — {artist_str or 'Unknown artist'}"
             )
         summary = "\n".join(lines) if lines else "No saved albums on this page."
-        if slim.get("has_next_page"):
-            summary += f"\n(More saved albums available — pass offset={offset + len(items)}.)"
+        total = slim.get("total")
+        if isinstance(total, int) and total > len(items):
+            more = total - len(items)
+            summary += f"\n({total} saved albums total — and {more} more not listed here.)"
+        elif slim.get("has_next_page"):
+            summary += "\n(and more saved albums not listed here.)"
         payload = {
             "ok": True,
             "total": slim.get("total"),

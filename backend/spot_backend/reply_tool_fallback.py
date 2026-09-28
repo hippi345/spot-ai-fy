@@ -90,11 +90,30 @@ def best_tool_summary_fallback(
 ) -> str | None:
     if not tool_results:
         return None
-    indexed: list[tuple[int, int, str, dict[str, Any]]] = []
     names = tool_names or []
+    from spot_backend.turn_reply_intent import (
+        classify_turn_primary_intent,
+        pick_primary_tool_index,
+        primary_tool_user_reply,
+    )
+
+    intent = classify_turn_primary_intent(user_text)
+    idx = pick_primary_tool_index(names, list(tool_results), intent)
+    if idx is not None:
+        primary = primary_tool_user_reply(
+            names[idx],
+            tool_results[idx],
+            user_text=user_text,
+            intent=intent,
+        )
+        if primary:
+            return primary
+    indexed: list[tuple[int, int, str, dict[str, Any]]] = []
     for i, raw in enumerate(tool_results):
         data = _parse_tool_dict(raw)
-        if not data or data.get("error") or data.get("ok") is False:
+        if not data or data.get("failure_reason") == "guard_refused":
+            continue
+        if data.get("error") or data.get("ok") is False:
             continue
         text = summary_text_from_tool_dict(data)
         if not text:
@@ -206,20 +225,28 @@ def apply_tool_grounded_reply(
     tool_results: list[str] | None,
     *,
     user_text: str = "",
+    tool_names: list[str] | None = None,
 ) -> str:
     """Prefer tool summaries over apologies, bare Done., or post-error hallucinations."""
     from spot_backend.action_claim_guard import is_failure_boilerplate
+    from spot_backend.turn_reply_intent import intent_based_user_reply
+
+    names = tool_names or []
+    results = tool_results or []
+    intent_reply = intent_based_user_reply(text, names, results, user_text=user_text)
+    if intent_reply != text:
+        return intent_reply
 
     if is_failure_boilerplate(text):
-        fallback = best_tool_summary_fallback(tool_results, user_text=user_text)
+        fallback = best_tool_summary_fallback(results, user_text=user_text, tool_names=names)
         if fallback:
             return fallback
-    if reply_hallucinates_after_tool_failure(text, tool_results):
-        err = last_tool_error_user_message(tool_results)
+    if reply_hallucinates_after_tool_failure(text, results):
+        err = last_tool_error_user_message(results)
         if err:
             return err
-    if reply_ignores_tool_summary(text, tool_results):
-        fallback = best_tool_summary_fallback(tool_results, user_text=user_text)
+    if reply_ignores_tool_summary(text, results):
+        fallback = best_tool_summary_fallback(results, user_text=user_text, tool_names=names)
         if fallback:
             return fallback
     return text

@@ -291,8 +291,11 @@ def append_visibility_notes_to_reply(text: str, tool_results: list[str]) -> str:
             continue
         if _text_contains_visibility_note(note) and _text_contains_visibility_note(base):
             continue
-        suffix = f"\n\nNote: {note}"
-        base = base + suffix
+        if note.strip() and note.strip() in base:
+            continue
+        suffix = f"\n\n{note.strip()}" if not base.endswith(note.strip()) else ""
+        if suffix:
+            base = base + suffix
     return base
 
 
@@ -321,11 +324,27 @@ _SEARCH_QUERY_ECHO_SCRUB = re.compile(
 )
 
 
+def _collapse_inline_whitespace_preserve_newlines(text: str) -> str:
+    lines = (text or "").split("\n")
+    cleaned = [re.sub(r"[ \t]{2,}", " ", line).strip() for line in lines]
+    return "\n".join(cleaned).strip()
+
+
+_INTERNAL_PAGINATION_HINT_RE = re.compile(
+    r"\(?\s*(?:more .+ — pass offset=\d+|pass offset=\d+)[^)\n]*\)?",
+    re.I,
+)
+
+
+def strip_internal_pagination_hints(text: str) -> str:
+    out = _INTERNAL_PAGINATION_HINT_RE.sub("", text or "")
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
 def scrub_user_visible_spotify_errors(text: str) -> str:
     out = _HTTP_STATUS_SCRUB.sub("", text or "")
     out = _SEARCH_QUERY_ECHO_SCRUB.sub("I couldn't find that on Spotify", out)
-    out = re.sub(r"\s{2,}", " ", out).strip()
-    return out
+    return _collapse_inline_whitespace_preserve_newlines(out)
 
 
 def scrub_internal_tool_references(text: str) -> str:
@@ -336,8 +355,7 @@ def scrub_internal_tool_references(text: str) -> str:
     out = _TOOL_PARAMETER_SCRUB.sub("Spotify", out)
     out = _PARAMETER_DOC_SCRUB.sub("", out)
     out = re.sub(r"\bSpotify\s+Spotify\b", "Spotify", out)
-    out = re.sub(r"\s{2,}", " ", out)
-    return out.strip()
+    return _collapse_inline_whitespace_preserve_newlines(out)
 
 
 _CORRECTION_LEAK_RE = re.compile(
@@ -417,6 +435,7 @@ def prepare_user_visible_reply(text: str, tool_results: list[str] | None = None)
     cleaned = collapse_duplicate_reply_text(text)
     cleaned = scrub_internal_tool_references(cleaned)
     cleaned = scrub_user_visible_spotify_errors(cleaned)
+    cleaned = strip_internal_pagination_hints(cleaned)
     cleaned = strip_internal_correction_leaks(cleaned)
     cleaned = sanitize_raw_tool_json_in_reply(cleaned)
     if tool_results:

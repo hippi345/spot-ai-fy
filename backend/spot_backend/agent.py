@@ -869,7 +869,12 @@ def iter_ollama_chat_events(
                     from spot_backend.reply_tool_fallback import apply_tool_grounded_reply
 
                     final_text = prepare_user_visible_reply(
-                        apply_tool_grounded_reply(final_text, tool_results),
+                        apply_tool_grounded_reply(
+                            final_text,
+                            tool_results,
+                            user_text=user_text,
+                            tool_names=[n for n, _ in turn_tool_calls],
+                        ),
                         tool_results,
                     )
                     yield {"type": "final", "text": final_text}

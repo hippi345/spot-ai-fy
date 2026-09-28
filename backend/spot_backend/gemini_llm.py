@@ -855,7 +855,10 @@ def run_chat_turn_gemini(
 
                             return prepare_user_visible_reply(
                                 apply_tool_grounded_reply(
-                                    first_text_answer, tool_results, user_text=user_text
+                                    first_text_answer,
+                                    tool_results,
+                                    user_text=user_text,
+                                    tool_names=[n for n, _ in turn_tool_calls],
                                 ),
                                 tool_results,
                             )

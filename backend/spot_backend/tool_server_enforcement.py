@@ -20,9 +20,49 @@ _CURRENT_TRACK_RE = re.compile(
 )
 _CURRENT_SHOW_RE = re.compile(r"\b(?:this|current)\s+(?:show|podcast)\b", re.I)
 _CURRENT_EPISODE_RE = re.compile(r"\b(?:this|current)\s+episode\b", re.I)
+_IT_SAVED_QUESTION_RE = re.compile(
+    r"\b(?:is\s+)?(?:this|it|that)\s+(?:saved|in my library|liked|followed)\b|\bis it saved\b",
+    re.I,
+)
 _IT_REFERS_PLAYBACK_RE = re.compile(
     r"\b(?:is\s+)?(?:this|it)\s+(?:saved|in my library|liked)\b", re.I
 )
+
+
+def _user_asks_it_or_last_mutation_saved(user_text: str) -> bool:
+    t = user_text or ""
+    if not _IT_SAVED_QUESTION_RE.search(t):
+        return False
+    if _CURRENT_ALBUM_RE.search(t) or "album" in t.lower():
+        return False
+    return bool(re.search(r"\bit\b", t, re.I) or "that" in t.lower())
+
+
+def _apply_last_mutation_library_override(
+    tool_name: str,
+    args: dict[str, Any],
+    runner: SpotifyToolRunner,
+) -> dict[str, Any]:
+    mut = getattr(runner, "_last_library_mutation", None)
+    if not isinstance(mut, dict):
+        return args
+    segment = mut.get("segment")
+    ids = mut.get("ids")
+    if not isinstance(segment, str) or not isinstance(ids, list) or not ids:
+        return args
+    bare = str(ids[0]).strip()
+    if not bare:
+        return args
+    out = deepcopy(args)
+    uri = f"spotify:{segment}:{bare}"
+    out["uris"] = [uri]
+    if segment == "album":
+        out = override_album_args(out, bare)
+    elif segment == "track":
+        out = override_track_args(out, bare)
+    elif segment == "playlist":
+        out["uris"] = [uri]
+    return out
 
 _PLAYLIST_SAVE_RE = re.compile(
     r"(?:save|follow|add)\s+(?:the\s+)?playlist\s+['\"]?(.+?)['\"]?\s*(?:\?|$)",
@@ -57,6 +97,8 @@ def _user_wants_current_album(user_text: str) -> bool:
 
 def _user_wants_current_track(user_text: str) -> bool:
     t = user_text or ""
+    if _CURRENT_ALBUM_RE.search(t):
+        return False
     if _CURRENT_TRACK_RE.search(t):
         return True
     return bool(_IT_REFERS_PLAYBACK_RE.search(t) and "album" not in t.lower())
@@ -97,7 +139,9 @@ def _apply_playback_overrides(
         if live:
             out = override_album_args(out, live)
     if tool_name in ("spotify_save_tracks", "spotify_unsave_tracks", "spotify_library_contains"):
-        if _user_wants_current_track(user_text):
+        if _user_asks_it_or_last_mutation_saved(user_text):
+            out = _apply_last_mutation_library_override(tool_name, out, runner)
+        elif _user_wants_current_track(user_text):
             live = playback_id_for_segment(runner, "track")
             if live:
                 out = override_track_args(out, live)

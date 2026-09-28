@@ -164,6 +164,46 @@ def run_tool_calls(
                 "content": content,
             }
         )
+    from spot_backend.turn_reply_intent import (
+        intent_needs_library_contains_fallback,
+        library_contains_fallback_args,
+    )
+
+    if intent_needs_library_contains_fallback(user_text, [n for n, _ in state.turn_tool_calls]):
+        fb_args = enforce_tool_arguments_for_turn(
+            "spotify_library_contains",
+            library_contains_fallback_args(user_text),
+            user_text=user_text,
+            runner=runner,
+        )
+        fb_raw = runner.run("spotify_library_contains", fb_args)
+        state.turn_tool_calls.append(("spotify_library_contains", fb_raw))
+        state.tool_results.append(fb_raw)
+        record_successful_tool(state.successful_tools, "spotify_library_contains", fb_raw)
+        if emit:
+            emit({"type": "tool_start", "name": "spotify_library_contains"})
+            preview = fb_raw[:240] + ("…" if len(fb_raw) > 240 else "")
+            emit({"type": "tool_done", "name": "spotify_library_contains", "preview": preview})
+        if trace_data_dir is not None:
+            from pathlib import Path
+
+            append_tool_trace_record(
+                Path(trace_data_dir),
+                conversation_id=trace_conversation_id,
+                tool_name="spotify_library_contains",
+                args_summary=summarize_tool_args(fb_args),
+                outcome=tool_trace_outcome(fb_raw),
+                known_secrets=trace_secrets,
+                raw_result=fb_raw,
+            )
+        tool_messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": "spotify_library_contains_fallback",
+                "name": "spotify_library_contains",
+                "content": fb_raw[:tool_result_cap] if tool_result_cap > 0 else fb_raw,
+            }
+        )
     return tool_messages
 
 
@@ -196,7 +236,9 @@ def finalize_assistant_text(
 
         tool_names = [n for n, _ in state.turn_tool_calls]
         fallback = best_tool_summary_fallback(
-            state.tool_results, user_text=user_text, tool_names=tool_names
+            state.tool_results,
+            user_text=user_text,
+            tool_names=tool_names,
         )
         if fallback:
             return TextFinalizeAction(
@@ -232,7 +274,9 @@ def finalize_assistant_text(
 
         tool_names = [n for n, _ in state.turn_tool_calls]
         fallback = best_tool_summary_fallback(
-            state.tool_results, user_text=user_text, tool_names=tool_names
+            state.tool_results,
+            user_text=user_text,
+            tool_names=tool_names,
         )
         if fallback:
             return TextFinalizeAction(
@@ -249,8 +293,12 @@ def finalize_assistant_text(
         )
     from spot_backend.reply_tool_fallback import apply_tool_grounded_reply
 
+    tool_names = [n for n, _ in state.turn_tool_calls]
     grounded = apply_tool_grounded_reply(
-        joined, state.tool_results, user_text=user_text
+        joined,
+        state.tool_results,
+        user_text=user_text,
+        tool_names=tool_names,
     )
     return TextFinalizeAction(
         kind="return",

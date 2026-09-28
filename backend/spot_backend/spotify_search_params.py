@@ -88,6 +88,10 @@ def pick_search_types_argument(arguments: dict[str, Any]) -> str:
     """Read model tool args (`types` or `type`) with a safe default."""
     for key in ("types", "type"):
         val = arguments.get(key)
+        if isinstance(val, list):
+            parts = [str(x).strip() for x in val if str(x).strip()]
+            if parts:
+                return ",".join(parts)
         if isinstance(val, str) and val.strip():
             return val.strip()
     return "track,artist,album"

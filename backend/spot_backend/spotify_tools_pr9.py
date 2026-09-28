@@ -23,6 +23,10 @@ from spot_backend.spotify_dev_limits import (
 
 _LIBRARY_URI_CHUNK = 40
 _TEST_PLAYLIST_NAME = "spot-ai-fy test"
+_PLAYLIST_PRIVACY_USER_NOTE = (
+    "Spotify still shows this playlist as public. To make it private, open it in the Spotify app, "
+    "tap ⋯, and choose Make private."
+)
 _MIN_BUILDER_TRACKS = 10
 _MAX_BUILDER_TRACKS = 25
 
@@ -90,6 +94,16 @@ def _empty_library_args_error(action: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+_GENERIC_QUERY_ECHO_WORDS = frozenset(
+    {"chill", "vibes", "vibe", "relax", "relaxing", "slow", "jam", "jams", "mellow", "baby", "rnb", "r&b"}
+)
+
+
+def _theme_requests_nineties(theme_blob: str) -> bool:
+    b = (theme_blob or "").lower()
+    return bool(re.search(r"\b(?:90s|1990s|nineties)\b", b) or "1990" in b)
 
 
 class SpotifyToolRunnerPr9Mixin:
@@ -227,13 +241,42 @@ class SpotifyToolRunnerPr9Mixin:
             payload: dict[str, Any] = {"ok": True, "uris": uris, "saved": data}
             if len(uris) == 1:
                 payload["saved_single"] = bool(data[0]) if data else False
-                payload["user_message"] = (
-                    "Yes — that's saved in your Spotify library."
-                    if payload["saved_single"]
-                    else "No — that's not in your library."
-                )
+                label = self._library_label_for_uri(uris[0])
+                if label:
+                    payload["item_name"] = label
+                if payload["saved_single"]:
+                    name = label or "that item"
+                    payload["user_message"] = f"Yes — {name} is saved in your Spotify library."
+                else:
+                    name = label or "That item"
+                    payload["user_message"] = f"No — {name} is not in your library."
             return _compact_pr9(payload)
         return _compact_pr9(data)
+
+    def _library_label_for_uri(self, uri: str) -> str | None:
+        if not isinstance(uri, str) or not uri.lower().startswith("spotify:"):
+            return None
+        parts = uri.split(":")
+        if len(parts) < 3:
+            return None
+        seg, bare = parts[1], parts[2]
+        path_map = {
+            "album": f"/albums/{bare}",
+            "track": f"/tracks/{bare}",
+            "show": f"/shows/{bare}",
+            "playlist": f"/playlists/{bare}",
+            "episode": f"/episodes/{bare}",
+        }
+        path = path_map.get(seg)
+        if not path:
+            return None
+        try:
+            meta = self.client.api_get_cached(path)
+        except Exception:
+            return None
+        if isinstance(meta, dict) and isinstance(meta.get("name"), str):
+            return meta["name"].strip()
+        return None
 
     def _reject_invalid_library_uri_segments(self, uris: list[str], *, allowed: frozenset[str]) -> str | None:
         for uri in uris:
@@ -267,7 +310,12 @@ class SpotifyToolRunnerPr9Mixin:
             chunk = uris[offset : offset + _LIBRARY_URI_CHUNK]
             self.client.api_put("/me/library", params={"uris": ",".join(chunk)})
         self._record_library_mutation_from_uris(uris)
-        return json.dumps({"ok": True, "saved_uris": uris})
+        label = self._library_label_for_uri(uris[0]) if uris else None
+        payload: dict[str, Any] = {"ok": True, "saved_uris": uris}
+        if label:
+            payload["item_name"] = label
+            payload["user_message"] = f"Saved {label} to your library."
+        return json.dumps(payload, ensure_ascii=False)
 
     def _library_remove_uris(self, arguments: dict[str, Any]) -> str:
         uris = self._normalize_library_uris(arguments)
@@ -294,13 +342,16 @@ class SpotifyToolRunnerPr9Mixin:
                 },
                 ensure_ascii=False,
             )
-        return json.dumps(
-            {
-                "ok": True,
-                "removed_uris": uris,
-                "verified_removed": still is False,
-            }
-        )
+        label = self._library_label_for_uri(uris[0]) if uris else None
+        payload_out: dict[str, Any] = {
+            "ok": True,
+            "removed_uris": uris,
+            "verified_removed": still is False,
+        }
+        if label:
+            payload_out["item_name"] = label
+            payload_out["user_message"] = f"Removed {label} from your library."
+        return json.dumps(payload_out, ensure_ascii=False)
 
     def _record_library_mutation_from_uris(self, uris: list[str]) -> None:
         from spot_backend.spotify_tools import _looks_like_spotify_catalog_id
@@ -417,14 +468,21 @@ class SpotifyToolRunnerPr9Mixin:
             return raw
         if isinstance(payload, dict) and payload.get("ok") is False:
             payload.setdefault("failure_reason", "playback_not_verified")
+            ep_title = ep.get("name") if isinstance(ep.get("name"), str) else "the latest episode"
+            payload["episode_name"] = ep_title
+            payload["user_message"] = (
+                f"I found the latest episode, {ep_title!r}, but Spotify didn't confirm it started playing. "
+                "Try tapping play on your device or ask me to transfer playback."
+            )
             return json.dumps(payload, ensure_ascii=False)
         if isinstance(payload, dict) and payload.get("playback_verified") is False:
             payload["ok"] = False
             payload.setdefault("failure_reason", "playback_not_verified")
-            payload.setdefault(
-                "hint",
-                "Episode play must use uris=[spotify:episode:…] (not context_uri). "
-                "Confirm currently_playing_type=episode in playback state.",
+            ep_title = ep.get("name") if isinstance(ep.get("name"), str) else "the latest episode"
+            payload["episode_name"] = ep_title
+            payload["user_message"] = (
+                f"I found the latest episode, {ep_title!r}, but Spotify didn't confirm it started playing. "
+                "Try tapping play on your device or ask me to transfer playback."
             )
             return json.dumps(payload, ensure_ascii=False)
         return raw
@@ -497,7 +555,7 @@ class SpotifyToolRunnerPr9Mixin:
             more = total - len(items_out)
             summary += f"\n({total} saved shows total — and {more} more not listed here.)"
         elif data.get("next"):
-            summary += f"\n(More saved shows — pass offset={offset + len(items_out)}.)"
+            summary += "\n(and more saved shows not listed here.)"
         payload = {
             "ok": True,
             "total": data.get("total"),
@@ -543,7 +601,7 @@ class SpotifyToolRunnerPr9Mixin:
         if any(marker in combined for marker in _SOUNDTRACK_MARKERS):
             if "soundtrack" not in theme_blob and "game" not in theme_blob and "theme" not in theme_blob:
                 return False
-        if "90" in theme_blob or "1990" in theme_blob:
+        if "90" in theme_blob or "1990" in theme_blob or "nineties" in theme_blob:
             release = str(album.get("release_date") or "")
             year_match = re.match(r"(\d{4})", release)
             if year_match:
@@ -551,6 +609,21 @@ class SpotifyToolRunnerPr9Mixin:
                 if year < 1990 or year > 1999:
                     return False
         return True
+
+    def _title_mostly_echoes_query(self, track: dict[str, Any], query: str) -> bool:
+        name = str(track.get("name") or "").lower()
+        if not name:
+            return False
+        q_words = [w for w in re.findall(r"[a-z0-9']+", query.lower()) if len(w) > 2]
+        if not q_words:
+            return False
+        hits = sum(1 for w in q_words if w in name)
+        generic_hits = sum(1 for w in _GENERIC_QUERY_ECHO_WORDS if w in name)
+        if hits >= max(2, len(q_words) // 2) and generic_hits >= 2:
+            return True
+        if len(name.split()) <= 4 and hits == len(q_words) and generic_hits >= 1:
+            return True
+        return False
 
     def _renumber_preview_tracks(self, tracks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -577,12 +650,21 @@ class SpotifyToolRunnerPr9Mixin:
             "message": preview_text,
         }
 
-    def _resolve_track_query(self, query: str, market: str, *, pick_index: int = 0) -> dict[str, Any] | None:
+    def _resolve_track_query(
+        self,
+        query: str,
+        market: str,
+        *,
+        pick_index: int = 0,
+        theme_blob: str = "",
+    ) -> dict[str, Any] | None:
         from spot_backend.spotify_tools import _normalize_market
 
         q = query.strip()
         if not q:
             return None
+        if _theme_requests_nineties(theme_blob) and "year:" not in q.lower():
+            q = f"{q} year:1990-1999"
         data = self.client.api_get(
             "/search",
             params={
@@ -623,7 +705,9 @@ class SpotifyToolRunnerPr9Mixin:
             "",
         ).strip()
         blob = theme.lower()
-        if "90" in blob or "1990" in blob:
+        if _theme_requests_nineties(blob):
+            seeds.append("year:1990-1999 genre:r&b")
+            seeds.append("year:1990-1999 genre:rock")
             decades = ["1990s", "1991", "1994", "1995", "1997", "1998"]
             moods = ["chill", "relax", "slow", "soft", "easy listening"]
             for d in decades:
@@ -686,10 +770,12 @@ class SpotifyToolRunnerPr9Mixin:
             for pick_index in range(12):
                 if len(resolved) >= _MAX_BUILDER_TRACKS:
                     break
-                track = self._resolve_track_query(q, market, pick_index=pick_index)
+                track = self._resolve_track_query(q, market, pick_index=pick_index, theme_blob=theme_blob)
                 if not track:
                     break
                 if not self._track_fits_builder_theme(track, theme_blob):
+                    continue
+                if self._title_mostly_echoes_query(track, q):
                     continue
                 uri = track.get("uri")
                 if not isinstance(uri, str) or uri in seen_uris:
@@ -771,8 +857,10 @@ class SpotifyToolRunnerPr9Mixin:
             for raw_q in add_queries:
                 if not isinstance(raw_q, str) or not raw_q.strip():
                     continue
-                track = self._resolve_track_query(raw_q.strip(), market, pick_index=len(working))
+                track = self._resolve_track_query(raw_q.strip(), market, pick_index=len(working), theme_blob=theme_blob)
                 if not track or not self._track_fits_builder_theme(track, theme_blob):
+                    continue
+                if self._title_mostly_echoes_query(track, raw_q.strip()):
                     continue
                 uri = track.get("uri")
                 if not isinstance(uri, str) or uri in seen_uris:
@@ -793,7 +881,10 @@ class SpotifyToolRunnerPr9Mixin:
         replace_query = _coerce_str(arguments.get("replace_query"), "").strip()
         if replace_index > 0 and replace_query:
             if 1 <= replace_index <= len(working):
-                track = self._resolve_track_query(replace_query, market, pick_index=replace_index - 1)
+                track = self._resolve_track_query(replace_query, market, pick_index=replace_index - 1, theme_blob=theme_blob)
+                if track and self._track_fits_builder_theme(track, theme_blob):
+                    if self._title_mostly_echoes_query(track, replace_query):
+                        track = None
                 if track and self._track_fits_builder_theme(track, theme_blob):
                     uri = track.get("uri")
                     if isinstance(uri, str):
@@ -856,10 +947,7 @@ class SpotifyToolRunnerPr9Mixin:
                     public_flag = meta2.get("public")
             except httpx.HTTPStatusError:
                 break
-        note = (
-            "Spotify still reports this playlist as public after create + PUT public=false. "
-            "In the Spotify app: open the playlist → ⋯ → Make private."
-        )
+        note = _PLAYLIST_PRIVACY_USER_NOTE
         return False, public_flag, note
 
     def _playlist_builder_commit(self, arguments: dict[str, Any]) -> str:
@@ -933,10 +1021,8 @@ class SpotifyToolRunnerPr9Mixin:
             "track_count": len(uris),
         }
         if not verified_private:
-            payload["privacy_warning"] = privacy_note or (
-                "Spotify reports the playlist as public — confirm privacy in the Spotify app."
-            )
-            payload["user_message"] = payload["privacy_warning"]
+            payload["privacy_warning"] = _PLAYLIST_PRIVACY_USER_NOTE
+            payload["user_message"] = _PLAYLIST_PRIVACY_USER_NOTE
         else:
             payload["user_message"] = f'Created private playlist "{name}" with {len(uris)} tracks.'
         return json.dumps(payload, ensure_ascii=False)
