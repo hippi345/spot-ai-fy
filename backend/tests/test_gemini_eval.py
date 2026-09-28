@@ -121,6 +121,16 @@ def test_gemini_eval_replay_prompts(gemini_eval_settings, data_dir) -> None:
     prompts = [
         "do I already have this album saved?",
         "what albums do I have saved?",
+        "build a chill 90s playlist called spot-ai-fy test",
+        "drop track 3",
+        "yes make it",
+        "find podcasts about astronomy",
+        "play the latest episode",
+        "save this show",
+        "is this show saved?",
+        "remove it",
+        "save the playlist 90s Rock Classics",
+        "is it saved?",
     ]
     rows: list[dict] = []
     for prompt in prompts:
