@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 SMALL_MODEL_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "spotify_search",
+        "spotify_play_artist",
         "spotify_play_playlist",
         "spotify_start_resume_playback",
         "spotify_create_playlist",
@@ -43,7 +44,8 @@ def small_model_route_hint(user_text: str) -> str | None:
     return None
 
 SMALL_MODEL_SYSTEM_PROMPT = """You are a Spotify assistant with a small set of tools.
-Use tools instead of guessing IDs. For play requests use spotify_play_playlist or spotify_start_resume_playback.
+Use tools instead of guessing IDs. For "Play {artist name}" requests call spotify_play_artist.
+For playlist playback use spotify_play_playlist or spotify_start_resume_playback with a URI.
 For search + add use spotify_add_tracks_by_query. Queue only when the user says next/queue.
 Summarize tool results briefly for the user."""
 

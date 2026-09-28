@@ -149,6 +149,15 @@ cd ..
 pytest backend/tests
 ```
 
+### Ollama integration smoke (optional)
+
+Prompts 1–7 from [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md) through **real** Ollama tool calling (Spotify still mocked). Skipped unless `RUN_OLLAMA_SMOKE=1`. See **[docs/OLLAMA_SMOKE.md](docs/OLLAMA_SMOKE.md)** for install, CPU model sizes, and expected latency.
+
+```bash
+export RUN_OLLAMA_SMOKE=1 OLLAMA_MODEL=qwen2.5:3b
+pytest backend/tests/test_ollama_smoke.py -m ollama_smoke -v -s
+```
+
 Pylint (same command as CI):
 
 ```bash

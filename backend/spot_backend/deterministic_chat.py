@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable, Iterator
 
 from spot_backend.chat_messages import prepare_user_visible_reply
@@ -13,12 +14,20 @@ from spot_backend.deterministic_chat_types import DeterministicChatResult
 from spot_backend.spotify_tools import SpotifyToolRunner
 
 
+def deterministic_chat_shortcuts_disabled() -> bool:
+    """When true, all chat turns go through the LLM tool loop (used by Ollama smoke tests)."""
+    raw = os.environ.get("SPOT_AI_FY_DISABLE_DETERMINISTIC_CHAT", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def resolve_deterministic_chat_outcome(
     user_text: str,
     runner: SpotifyToolRunner,
     *,
     conversation_id: str | None,
 ) -> DeterministicChatResult | None:
+    if deterministic_chat_shortcuts_disabled():
+        return None
     outcome = try_deterministic_recently_played_reply(user_text, runner)
     if outcome is not None:
         return outcome

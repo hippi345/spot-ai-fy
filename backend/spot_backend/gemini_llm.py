@@ -13,8 +13,11 @@ import httpx
 from spot_backend.action_claim_guard import (
     action_claim_honest_fallback,
     action_claim_reprompt,
+    is_failure_boilerplate,
     record_successful_tool,
     reply_claims_unbacked_action,
+    tool_summarize_reprompt,
+    turn_tool_calls_all_succeeded,
 )
 from spot_backend.config import Settings
 from spot_backend.chat_messages import (
@@ -499,6 +502,8 @@ def run_chat_turn_gemini(
     last_tool_signature: str | None = None
     last_tool_result: str | None = None
     action_claim_reprompted = False
+    tool_summarize_reprompted = False
+    turn_tool_calls: list[tuple[str, str]] = []
     promise_nudge_used = False
     tool_nudge_used = False
     first_text_answer: str | None = None
@@ -656,6 +661,7 @@ def run_chat_turn_gemini(
                             result = refused_mutating_tool_result(name)
                         else:
                             result = runner.run(name, args)
+                        turn_tool_calls.append((name, result))
                         last_tool_signature = sig
                         last_tool_result = result
                         tool_results.append(result)
@@ -695,12 +701,36 @@ def run_chat_turn_gemini(
                             {"role": "user", "parts": [{"text": PROMISE_AFTER_ID_ERROR_NUDGE}]}
                         )
                         continue
-                    if reply_claims_unbacked_action(joined, successful_tools):
+                    if is_failure_boilerplate(joined) and turn_tool_calls_all_succeeded(turn_tool_calls):
+                        if not tool_summarize_reprompted:
+                            tool_summarize_reprompted = True
+                            contents.append({"role": "model", "parts": [{"text": joined}]})
+                            contents.append(
+                                {
+                                    "role": "user",
+                                    "parts": [{"text": tool_summarize_reprompt(tool_results)}],
+                                }
+                            )
+                            continue
+                    if reply_claims_unbacked_action(joined, successful_tools, user_text=user_text):
                         if not action_claim_reprompted:
                             action_claim_reprompted = True
                             contents.append({"role": "model", "parts": [{"text": joined}]})
                             contents.append(
                                 {"role": "user", "parts": [{"text": action_claim_reprompt()}]}
+                            )
+                            continue
+                        if (
+                            not tool_summarize_reprompted
+                            and turn_tool_calls_all_succeeded(turn_tool_calls)
+                        ):
+                            tool_summarize_reprompted = True
+                            contents.append({"role": "model", "parts": [{"text": joined}]})
+                            contents.append(
+                                {
+                                    "role": "user",
+                                    "parts": [{"text": tool_summarize_reprompt(tool_results)}],
+                                }
                             )
                             continue
                         return action_claim_honest_fallback()
