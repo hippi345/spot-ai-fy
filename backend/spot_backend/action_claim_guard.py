@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 from spot_backend.playback_reply import prompt_asks_whats_playing
 
@@ -14,6 +15,7 @@ _PLAYBACK_TOOLS = frozenset(
         "spotify_start_resume_playback",
         "spotify_play_playlist",
         "spotify_play_artist",
+        "spotify_play_artist_popular_track",
         "spotify_play_artist_latest_release",
         "spotify_play_track",
         "spotify_play_next",
@@ -100,6 +102,27 @@ _HONEST_FALLBACK = (
     "Please try again or rephrase the request."
 )
 
+_NUMERIC_FACTUAL_CLAIM_RE = re.compile(
+    r"(?:"
+    r"\b\d{1,4}\s+(?:studio\s+)?albums?\b"
+    r"|"
+    r"\bhas\s+\d{1,4}\s+albums?\b"
+    r"|"
+    r"\b\d{1,4}\s+studio\s+albums?\b"
+    r")",
+    re.I,
+)
+
+_CATALOG_COUNT_TOOLS = frozenset(
+    {
+        "spotify_artist_albums",
+    }
+)
+
+_NUMERIC_FACTUAL_FALLBACK = (
+    "I couldn't get that count from Spotify right now, so I don't have a reliable number."
+)
+
 _TOOL_SUMMARIZE_REPROMPT_PREFIX = (
     "The Spotify tool call(s) for this turn already succeeded. Reply with one or two short sentences "
     "that summarize the tool result JSON for the user. Do not say you failed, could not run tools, "
@@ -180,6 +203,47 @@ def _reply_claims_playback_started(text: str) -> bool:
         if pattern.search(stripped):
             return True
     return False
+
+
+def _catalog_count_backed_in_tool_result(tool_name: str, data: dict[str, Any]) -> bool:
+    if tool_name != "spotify_artist_albums":
+        return False
+    if isinstance(data.get("studio_album_count_deduped"), int):
+        return True
+    counts = data.get("discography_counts")
+    if isinstance(counts, dict) and isinstance(counts.get("albums"), int):
+        return True
+    return False
+
+
+def reply_contains_unbacked_numeric_factual_claim(
+    text: str,
+    turn_tool_calls: list[tuple[str, str]] | None,
+) -> bool:
+    stripped = (text or "").strip()
+    if not stripped or not turn_tool_calls:
+        return False
+    if not _NUMERIC_FACTUAL_CLAIM_RE.search(stripped):
+        return False
+    for name, raw in turn_tool_calls:
+        if name not in _CATALOG_COUNT_TOOLS:
+            continue
+        if not tool_result_succeeded(name, raw):
+            continue
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if isinstance(data, dict) and _catalog_count_backed_in_tool_result(name, data):
+            return False
+    attempted_catalog = [name for name, _ in turn_tool_calls if name in _CATALOG_COUNT_TOOLS]
+    if not attempted_catalog:
+        return False
+    return True
+
+
+def numeric_factual_claim_honest_fallback() -> str:
+    return _NUMERIC_FACTUAL_FALLBACK
 
 
 def tool_result_succeeded(tool_name: str, raw_result: str) -> bool:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from unittest.mock import patch
 
@@ -10,7 +11,11 @@ import httpx
 import pytest
 import respx
 
-from spot_backend.action_claim_guard import reply_claims_unbacked_action
+from spot_backend.action_claim_guard import (
+    numeric_factual_claim_honest_fallback,
+    reply_claims_unbacked_action,
+    reply_contains_unbacked_numeric_factual_claim,
+)
 from spot_backend.agent import run_chat_turn_ollama
 from spot_backend.prompt_intent import OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE
 from spot_backend.spotify_tools import SpotifyToolRunner
@@ -380,15 +385,27 @@ def test_artist_latest_album_prefers_single(data_dir, signed_in_tokens) -> None:
 
 
 @respx.mock
-def test_artist_albums_discography_counts(data_dir, signed_in_tokens) -> None:
+def test_artist_albums_studio_count_paged_deduped(data_dir, signed_in_tokens) -> None:
     artist_id = "0aHjOrDlHWSXDSF1DXJuUY"
+    page1 = [
+        {"id": "a1", "name": "Take Care", "album_type": "album"},
+        {"id": "a2", "name": "Take Care (Deluxe)", "album_type": "album"},
+    ]
+    page2 = [
+        {"id": "a3", "name": "Views", "album_type": "album"},
+        {"id": "a4", "name": "Views (Explicit)", "album_type": "album"},
+    ]
 
     def albums_handler(request: httpx.Request) -> httpx.Response:
-        groups = httpx.URL(str(request.url)).params.get("include_groups", "")
-        totals = {"album": 5, "single": 79, "compilation": 2}
-        key = groups.split(",")[0] if groups else "album"
-        total = totals.get(key, 0)
-        return httpx.Response(200, json={"items": [], "total": total})
+        url = httpx.URL(str(request.url))
+        offset = int(url.params.get("offset") or 0)
+        if offset == 0:
+            items = page1
+            total = 4
+        else:
+            items = page2
+            total = 4
+        return httpx.Response(200, json={"items": items, "total": total, "limit": 10, "offset": offset})
 
     respx.get(url__regex=rf"https://api\.spotify\.com/v1/artists/{artist_id}/albums.*").mock(
         side_effect=albums_handler
@@ -397,11 +414,84 @@ def test_artist_albums_discography_counts(data_dir, signed_in_tokens) -> None:
     try:
         raw = runner.run("spotify_artist_albums", {"artist_id": artist_id})
         data = json.loads(raw)
-        counts = data.get("discography_counts") or {}
-        assert counts.get("albums") == 5
-        assert counts.get("singles") == 79
+        assert data.get("studio_album_count_deduped") == 2
+        assert (data.get("discography_counts") or {}).get("albums") == 2
     finally:
         runner.close()
+
+
+@respx.mock
+def test_play_artist_popular_track_picks_highest_popularity(data_dir, signed_in_tokens) -> None:
+    artist_id = "aaaaaaaaaaaaaaaaaaaaaa"
+    album_id = "bbbbbbbbbbbbbbbbbbbbbb"
+    respx.get(f"https://api.spotify.com/v1/artists/{artist_id}").mock(
+        return_value=httpx.Response(200, json={"id": artist_id, "name": "Band of Horses"})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "tracks": {
+                    "items": [
+                        {
+                            "id": "t1",
+                            "uri": "spotify:track:t111111111111111111111",
+                            "name": "Lesser",
+                            "popularity": 40,
+                            "album": {"id": album_id, "uri": f"spotify:album:{album_id}"},
+                            "artists": [{"id": artist_id, "name": "Band of Horses"}],
+                        },
+                        {
+                            "id": "t2",
+                            "uri": "spotify:track:t222222222222222222222",
+                            "name": "The Funeral",
+                            "popularity": 72,
+                            "album": {"id": album_id, "uri": f"spotify:album:{album_id}"},
+                            "artists": [{"id": artist_id, "name": "Band of Horses"}],
+                        },
+                    ],
+                }
+            },
+        )
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(204)
+    )
+    runner = SpotifyToolRunner(settings=Settings())
+    try:
+        raw = runner.run(
+            "spotify_play_artist_popular_track",
+            {"artist_id": artist_id, "artist": "Band of Horses"},
+        )
+        data = json.loads(raw)
+        assert (data.get("track") or {}).get("name") == "The Funeral"
+    finally:
+        runner.close()
+
+
+def test_numeric_honesty_when_artist_albums_failed() -> None:
+    failed = ("spotify_artist_albums", '{"error": "Spotify HTTP 400"}')
+    assert reply_contains_unbacked_numeric_factual_claim(
+        "Drake has 21 albums.",
+        [failed],
+    )
+    fb = numeric_factual_claim_honest_fallback().lower()
+    assert "reliable number" in fb or "couldn't get" in fb
+    assert not re.search(r"\d", numeric_factual_claim_honest_fallback())
+
+
+def test_numeric_honesty_allows_backed_count() -> None:
+    ok = (
+        "spotify_artist_albums",
+        '{"studio_album_count_deduped": 21, "discography_counts": {"albums": 21}}',
+    )
+    assert not reply_contains_unbacked_numeric_factual_claim(
+        "Drake has 21 studio albums on Spotify.",
+        [ok],
+    )
 
 
 def test_ollama_tool_trace_persists_refusal_and_run(data_dir, signed_in_tokens) -> None:

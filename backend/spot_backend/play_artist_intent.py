@@ -42,6 +42,12 @@ def extract_play_artist_name(user_text: str) -> str | None:
     name = m.group(1).strip()
     if not name or _EXCLUDE_PLAY_TARGET_RE.search(name):
         return None
+    if re.search(
+        r"\b(?:most\s+popular|biggest\s+hit|best[- ]?known)\s+(?:song|track|single)\b",
+        name,
+        re.I,
+    ):
+        return None
     if re.search(r"\s+by\s+", name, re.I):
         return None
     if re.match(r"^artist\s+", name, re.I):

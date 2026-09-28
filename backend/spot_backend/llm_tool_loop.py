@@ -10,8 +10,10 @@ from spot_backend.action_claim_guard import (
     action_claim_honest_fallback,
     action_claim_reprompt,
     is_failure_boilerplate,
+    numeric_factual_claim_honest_fallback,
     record_successful_tool,
     reply_claims_unbacked_action,
+    reply_contains_unbacked_numeric_factual_claim,
     tool_summarize_reprompt,
     turn_tool_calls_all_succeeded,
 )
@@ -209,6 +211,13 @@ def finalize_assistant_text(
                 reprompt_user_content=tool_summarize_reprompt(state.tool_results),
             )
         return TextFinalizeAction(kind="return", text=action_claim_honest_fallback())
+    if reply_contains_unbacked_numeric_factual_claim(
+        joined, state.turn_tool_calls
+    ):
+        return TextFinalizeAction(
+            kind="return",
+            text=numeric_factual_claim_honest_fallback(),
+        )
     return TextFinalizeAction(
         kind="return",
         text=prepare_user_visible_reply(joined, state.tool_results),

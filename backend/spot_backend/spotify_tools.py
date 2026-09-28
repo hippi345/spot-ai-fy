@@ -43,6 +43,77 @@ def _normalize_track_title(text: str) -> str:
     return " ".join(t.split())
 
 
+_ALBUM_EDITION_SUFFIX_RE = re.compile(
+    r"(?:"
+    r"\s*[\(\[]\s*(?:deluxe|expanded|clean|explicit|standard|anniversary|"
+    r"remaster(?:ed)?|special\s+edition)\s*(?:edition)?\s*[\)\]]"
+    r"|"
+    r"\s*-\s*(?:deluxe|expanded|clean|explicit|standard|anniversary|remaster(?:ed)?)\s*$"
+    r")",
+    re.I,
+)
+
+
+def _normalize_album_title_for_dedupe(name: str) -> str:
+    t = (name or "").strip().lower()
+    for _ in range(4):
+        new = _ALBUM_EDITION_SUFFIX_RE.sub("", t).strip()
+        if new == t:
+            break
+        t = new
+    t = re.sub(r"[^\w\s]", " ", t)
+    return " ".join(t.split())
+
+
+def _dedupe_album_items_by_title(items: list[Any]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        key = _normalize_album_title_for_dedupe(str(it.get("name") or ""))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+    return out
+
+
+def _track_matches_artist(
+    track: dict[str, Any],
+    *,
+    artist_id: str,
+    artist_name: str,
+) -> bool:
+    artists = track.get("artists") if isinstance(track.get("artists"), list) else []
+    if not artists:
+        # artist:"..." search results are already scoped; some API tiers omit artist objects.
+        return True
+    name_low = artist_name.strip().lower()
+    for row in artists:
+        if not isinstance(row, dict):
+            continue
+        if artist_id and row.get("id") == artist_id:
+            return True
+        an = str(row.get("name") or "").strip().lower()
+        if name_low and an == name_low:
+            return True
+    return False
+
+
+def _pick_track_by_popularity(tracks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not tracks:
+        return None
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for tr in tracks:
+        pop = tr.get("popularity")
+        if isinstance(pop, int):
+            scored.append((pop, tr))
+    if scored:
+        return max(scored, key=lambda pair: pair[0])[1]
+    return tracks[0]
+
+
 def _slim_recently_played_payload(data: dict[str, Any]) -> dict[str, Any]:
     raw_items = data.get("items") if isinstance(data.get("items"), list) else []
     items: list[dict[str, Any]] = []
@@ -1082,7 +1153,11 @@ class SpotifyToolRunner:
                     aid = items[0].get("id")
                     if isinstance(aid, str) and _looks_like_spotify_catalog_id(aid):
                         self._last_primary_artist_id = aid
-        if name in ("spotify_get_artist", "spotify_artist_top_tracks") and isinstance(data, dict):
+        if name in (
+            "spotify_get_artist",
+            "spotify_play_artist_popular_track",
+            "spotify_play_artist",
+        ) and isinstance(data, dict):
             aid = data.get("id")
             if isinstance(aid, str) and _looks_like_spotify_catalog_id(aid):
                 self._last_primary_artist_id = aid
@@ -1342,7 +1417,9 @@ class SpotifyToolRunner:
             case "spotify_get_artist":
                 return self._get_artist(arguments)
             case "spotify_artist_top_tracks":
-                return self._artist_top_tracks(arguments)
+                return self._artist_top_tracks_removed()
+            case "spotify_play_artist_popular_track":
+                return self._play_artist_popular_track(arguments)
             case "spotify_get_playlist":
                 return self._get_playlist(arguments)
             case "spotify_update_playlist":
@@ -1666,14 +1743,11 @@ class SpotifyToolRunner:
         raw_id = _pick_arg(arguments, "artist_id", "artistId", "id")
         artist_id = _normalize_spotify_id(raw_id, "artist")
         if not artist_id:
+            artist_id = _coerce_str(raw_id, "").strip()
+        if not artist_id:
             return json.dumps({"error": "artist_id is required"})
-        include_groups = _normalize_include_groups(_coerce_str(arguments.get("include_groups"), "album,single"))
-        # Feb-2026 dev-mode migration: Spotify reduced /artists/{id}/albums `limit`
-        # max from 50 to **10** for non-extended apps (NOT 20 — empirically
-        # verified, see backend/scripts/diag_artist_albums_limit.py). limit>10
-        # returns HTTP 400 "Invalid limit". To count an artist's full discography
-        # the agent should read response.total (returned by Spotify) rather than
-        # paginate.
+        include_groups = _normalize_include_groups(_coerce_str(arguments.get("include_groups"), "album"))
+        # Feb-2026 dev-mode: /artists/{id}/albums limit max is 10 (limit>10 → HTTP 400).
         limit = _safe_int(arguments.get("limit"), 10, lo=1, hi=10)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
@@ -1686,6 +1760,78 @@ class SpotifyToolRunner:
                     "query_tried": artist_id,
                 }
             )
+        count_studio = arguments.get("count_studio_albums")
+        want_studio_count = (
+            count_studio is True
+            or str(count_studio or "").strip().lower() in ("1", "true", "yes")
+            or (offset == 0 and include_groups == "album")
+        )
+        if want_studio_count and offset == 0:
+            try:
+                pool = self._paginate_artist_album_items(
+                    canonical_id,
+                    "album",
+                    market,
+                    max_pages=40,
+                )
+            except httpx.HTTPStatusError as e:
+                spot_msg = _spotify_http_message(e)
+                return json.dumps(
+                    {
+                        "error": f"Spotify HTTP {e.response.status_code}",
+                        "spotify_api_message": spot_msg,
+                        "artist_id": canonical_id,
+                        "hint": (
+                            "Could not list albums for this artist. Do not state an album count — "
+                            "say you could not get Spotify's count."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            studio_items = [
+                it
+                for it in pool
+                if isinstance(it, dict)
+                and str(it.get("album_type") or it.get("album_group") or "") == "album"
+            ]
+            deduped = _dedupe_album_items_by_title(studio_items)
+            payload: dict[str, Any] = {
+                "artist_id": canonical_id,
+                "studio_album_count_deduped": len(deduped),
+                "spotify_catalog_note": (
+                    "Studio albums on Spotify (include_groups=album), deduped by normalized title "
+                    "to collapse deluxe/clean/explicit editions."
+                ),
+                "discography_counts": {"albums": len(deduped)},
+                "assistant_guidance": (
+                    "Report studio_album_count_deduped as Drake's studio-album count on Spotify. "
+                    "If this tool returned an error, do not state any number."
+                ),
+                "sample_albums": [
+                    {"id": it.get("id"), "name": it.get("name")}
+                    for it in deduped[:8]
+                    if isinstance(it, dict)
+                ],
+            }
+            if include_groups != "album":
+                page = self.client.api_get(
+                    f"/artists/{canonical_id}/albums",
+                    params={
+                        "include_groups": include_groups,
+                        "limit": limit,
+                        "offset": offset,
+                        "market": market,
+                    },
+                )
+                if isinstance(page, dict):
+                    payload["items_page"] = {
+                        "items": page.get("items"),
+                        "total": page.get("total"),
+                        "limit": page.get("limit"),
+                        "offset": page.get("offset"),
+                    }
+            return json.dumps(payload, ensure_ascii=False)
+
         page = self.client.api_get(
             f"/artists/{canonical_id}/albums",
             params={
@@ -1695,39 +1841,17 @@ class SpotifyToolRunner:
                 "market": market,
             },
         )
-        if offset == 0 and isinstance(page, dict):
-
-            def _group_total(group: str) -> int | None:
-                try:
-                    gpage = self.client.api_get(
-                        f"/artists/{canonical_id}/albums",
-                        params={
-                            "include_groups": group,
-                            "limit": 1,
-                            "offset": 0,
-                            "market": market,
-                        },
-                    )
-                except httpx.HTTPError:
-                    return None
-                if isinstance(gpage, dict):
-                    total = gpage.get("total")
-                    if isinstance(total, int):
-                        return total
-                return None
-
-            counts = {
-                "albums": _group_total("album"),
-                "singles": _group_total("single"),
-                "compilations": _group_total("compilation"),
-            }
-            page = dict(page)
-            page["discography_counts"] = counts
-            page["assistant_guidance"] = (
-                "Report studio album count (discography_counts.albums), singles, and compilations "
-                "separately — do not add singles or compilations into the album number."
-            )
-        return _compact(page)
+        if not isinstance(page, dict):
+            return _compact(page)
+        slim: dict[str, Any] = {
+            "artist_id": canonical_id,
+            "items": page.get("items"),
+            "total": page.get("total"),
+            "limit": page.get("limit"),
+            "offset": page.get("offset"),
+            "next": page.get("next"),
+        }
+        return json.dumps(slim, ensure_ascii=False)
 
     def _paginate_artist_album_items(
         self,
@@ -1764,7 +1888,8 @@ class SpotifyToolRunner:
             if isinstance(total, int) and offset >= total:
                 break
             if not page.get("next"):
-                break
+                if total is None or offset >= total:
+                    break
         return collected
 
     def _pick_latest_artist_release(
@@ -1939,46 +2064,189 @@ class SpotifyToolRunner:
             )
         return _compact(self.client.api_get(f"/artists/{cid}"))
 
-    def _artist_top_tracks(self, arguments: dict[str, Any]) -> str:
-        raw = _pick_arg(arguments, "artist_id", "artistId", "id")
-        norm = _normalize_spotify_id(raw, "artist")
-        if not norm:
-            return json.dumps({"error": "artist_id is required"})
-        market = _normalize_market(_pick_arg(arguments, "market", "country"))
-        cid = self._canonical_artist_id(norm, market)
-        if not cid:
-            return json.dumps({"error": "Could not resolve artist_id", "query_tried": norm})
-        # Spotify removed GET /artists/{id}/top-tracks for dev-mode apps in Feb-2026.
-        # Use search-by-artist-name — relevance sort surfaces popular tracks.
-        artist_name = ""
-        try:
-            art = self.client.api_get(f"/artists/{cid}")
-            if isinstance(art, dict) and isinstance(art.get("name"), str):
-                artist_name = art["name"]
-        except httpx.HTTPStatusError:
-            pass
-        query = f'artist:"{artist_name}"' if artist_name else norm
-        search = self.client.api_get(
-            "/search",
-            params={"q": query, "type": "track", "market": market, "limit": 10},
-        )
-        tracks_obj = search.get("tracks") if isinstance(search, dict) else None
-        items = tracks_obj.get("items") if isinstance(tracks_obj, dict) else None
-        if not isinstance(items, list):
-            items = []
+    def _artist_top_tracks_removed(self) -> str:
         return json.dumps(
             {
-                "tracks": items,
-                "note": (
-                    "Spotify removed GET /artists/{id}/top-tracks in the Feb-2026 Web API migration for "
-                    "development-mode apps; these are the top search results for the artist as a fallback."
+                "error": (
+                    "spotify_artist_top_tracks is disabled — Spotify removed GET /artists/{id}/top-tracks "
+                    "for development-mode apps (Feb 2026). Use spotify_play_artist_popular_track or spotify_search."
                 ),
-                "fallback_used": "search_by_artist_name",
-                "artist_id": cid,
-                "artist_name": artist_name,
+                "tool_removed": True,
+                "reconnect_spotify_unnecessary": True,
             },
             ensure_ascii=False,
         )
+
+    def _resolve_artist_id_and_name(
+        self,
+        raw_ref: str,
+        market: str,
+    ) -> tuple[str | None, str]:
+        parsed = _parse_spotify_context_ref(raw_ref)
+        if parsed and parsed[0] == "artist":
+            cid = parsed[1]
+            name = ""
+            try:
+                art = self.client.api_get(f"/artists/{cid}")
+                if isinstance(art, dict) and isinstance(art.get("name"), str):
+                    name = art["name"]
+            except httpx.HTTPStatusError:
+                pass
+            return cid, name
+        cid = self._canonical_artist_id(raw_ref.strip(), market)
+        if not cid:
+            return None, raw_ref.strip()
+        name = raw_ref.strip()
+        try:
+            art = self.client.api_get(f"/artists/{cid}")
+            if isinstance(art, dict) and isinstance(art.get("name"), str):
+                name = art["name"]
+        except httpx.HTTPStatusError:
+            pass
+        return cid, name
+
+    def _search_artist_tracks_for_popularity(
+        self,
+        *,
+        artist_id: str,
+        artist_name: str,
+        market: str,
+        max_pages: int = 3,
+    ) -> list[dict[str, Any]]:
+        query = f'artist:"{artist_name}"' if artist_name else artist_id
+        collected: list[dict[str, Any]] = []
+        for page_idx in range(max_pages):
+            search = self.client.api_get(
+                "/search",
+                params={
+                    "q": query,
+                    "type": "track",
+                    "market": market,
+                    "limit": 10,
+                    "offset": page_idx * 10,
+                },
+            )
+            tracks_obj = search.get("tracks") if isinstance(search, dict) else None
+            items = tracks_obj.get("items") if isinstance(tracks_obj, dict) else None
+            if not isinstance(items, list) or not items:
+                break
+            for tr in items:
+                if isinstance(tr, dict) and _track_matches_artist(
+                    tr, artist_id=artist_id, artist_name=artist_name
+                ):
+                    collected.append(tr)
+            if not isinstance(tracks_obj, dict) or not tracks_obj.get("next"):
+                break
+        return collected
+
+    def _play_artist_popular_track(self, arguments: dict[str, Any]) -> str:
+        raw_id = _pick_arg(arguments, "artist_id", "id")
+        norm_id = _normalize_spotify_id(raw_id, "artist") if raw_id else ""
+        if norm_id and _looks_like_spotify_catalog_id(norm_id):
+            raw_ref = norm_id
+        else:
+            raw_ref = _pick_arg(
+                arguments,
+                "artist",
+                "artist_name",
+                "name",
+                "artist_id",
+                "id",
+            )
+        if not raw_ref or not str(raw_ref).strip():
+            return json.dumps(
+                {
+                    "error": "artist is required",
+                    "hint": "Pass the artist name (e.g. Band of Horses) from chat context or spotify_search.",
+                }
+            )
+        market = _normalize_market(_pick_arg(arguments, "market", "country"))
+        cid, artist_name = self._resolve_artist_id_and_name(str(raw_ref).strip(), market)
+        if not cid:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "Could not find that artist on Spotify.",
+                    "query_tried": str(raw_ref).strip(),
+                    "reconnect_spotify_unnecessary": True,
+                },
+                ensure_ascii=False,
+            )
+        tracks = self._search_artist_tracks_for_popularity(
+            artist_id=cid,
+            artist_name=artist_name,
+            market=market,
+        )
+        picked = _pick_track_by_popularity(tracks)
+        if not picked:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "artist_id": cid,
+                    "error": "I couldn't find playable tracks for that artist right now.",
+                    "reconnect_spotify_unnecessary": True,
+                },
+                ensure_ascii=False,
+            )
+        play_body = self._album_offset_body_for_track(picked)
+        if not play_body:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "artist_id": cid,
+                    "error": "I couldn't resolve an album context for that track.",
+                    "reconnect_spotify_unnecessary": True,
+                },
+                ensure_ascii=False,
+            )
+        track_name = str(picked.get("name") or "that track")
+        play_args: dict[str, Any] = dict(play_body)
+        device_id = _coerce_str(arguments.get("device_id"))
+        if device_id:
+            play_args["device_id"] = device_id
+        play_args["playback_request_label"] = track_name
+        play_raw = self._start_playback(play_args)
+        try:
+            play_result = json.loads(play_raw)
+        except (json.JSONDecodeError, ValueError):
+            play_result = {"ok": False, "raw": play_raw}
+        play_ok = isinstance(play_result, dict) and play_result.get("ok") is True
+        player = self._poll_player_state(attempts=6, delay_s=0.5)
+        verified = bool(
+            isinstance(play_result, dict) and play_result.get("playback_verified") is True
+        )
+        if player and isinstance(picked, dict):
+            track_uri = str(picked.get("uri") or "")
+            if track_uri and self._track_uri_from_player(player) == track_uri:
+                verified = True
+        summary: dict[str, Any] = {
+            "ok": play_ok or verified,
+            "artist_id": cid,
+            "artist_name": artist_name,
+            "track": {
+                "id": picked.get("id"),
+                "name": track_name,
+                "popularity": picked.get("popularity"),
+            },
+            "playback": play_result,
+            "playback_verified": verified,
+            "selection_method": (
+                "highest popularity among search results"
+                if isinstance(picked.get("popularity"), int)
+                else "first relevant search result (Spotify ranking)"
+            ),
+            "assistant_guidance": (
+                f"Reply in one short honest sentence naming the track ({track_name!r}) now playing."
+            ),
+        }
+        if not play_ok and not verified:
+            user_msg = play_result.get("user_message") if isinstance(play_result, dict) else None
+            if isinstance(user_msg, str) and user_msg.strip():
+                summary["user_message"] = user_msg.strip()
+                summary["error"] = user_msg.strip()
+            else:
+                summary["error"] = _PLAYBACK_START_FAILED_USER_MESSAGE
+        return _compact(summary)
 
     def _get_playlist(self, arguments: dict[str, Any]) -> str:
         pid, err = self._playlist_id_from_arguments(arguments)
@@ -4821,14 +5089,13 @@ class SpotifyToolRunner:
                 },
                 ensure_ascii=False,
             )
-        top_raw = self._artist_top_tracks({"artist_id": cid, "market": market})
-        try:
-            top_data = json.loads(top_raw)
-        except (json.JSONDecodeError, ValueError):
-            top_data = {}
-        track_items = top_data.get("tracks") if isinstance(top_data, dict) else None
-        track_items = track_items if isinstance(track_items, list) else []
-        track_dicts = [tr for tr in track_items if isinstance(tr, dict) and tr.get("uri")]
+        _, artist_name_resolved = self._resolve_artist_id_and_name(cid, market)
+        track_dicts = self._search_artist_tracks_for_popularity(
+            artist_id=cid,
+            artist_name=artist_name_resolved,
+            market=market,
+        )
+        track_dicts = [tr for tr in track_dicts if isinstance(tr, dict) and tr.get("uri")]
         if not track_dicts:
             return json.dumps(
                 {
@@ -4839,7 +5106,7 @@ class SpotifyToolRunner:
                 },
                 ensure_ascii=False,
             )
-        first = track_dicts[0]
+        first = _pick_track_by_popularity(track_dicts) or track_dicts[0]
         play_body = self._album_offset_body_for_track(first)
         if not play_body:
             return json.dumps(
@@ -4851,9 +5118,7 @@ class SpotifyToolRunner:
                 },
                 ensure_ascii=False,
             )
-        artist_name = top_data.get("artist_name") if isinstance(top_data, dict) else None
-        if not isinstance(artist_name, str) or not artist_name.strip():
-            artist_name = str(raw_ref).strip()
+        artist_name = artist_name_resolved or str(raw_ref).strip()
         play_args: dict[str, Any] = dict(play_body)
         device_id = _coerce_str(arguments.get("device_id"))
         if device_id:
@@ -5481,12 +5746,25 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "spotify_artist_top_tracks",
-            "description": "Get an artist's top tracks in a market. Pass catalog id or artist name.",
+            "name": "spotify_play_artist_popular_track",
+            "description": (
+                "PLAY NOW — play an artist's most popular / best-known song. Searches tracks with "
+                'artist:"<name>", keeps only that artist, picks highest popularity (or first search hit '
+                "when popularity is unavailable in dev mode). Use for "
+                "'play their most popular song', 'biggest hit by X', etc."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {"artist_id": {"type": "string"}, "market": {"type": "string"}},
-                "required": ["artist_id"],
+                "properties": {
+                    "artist": {
+                        "type": "string",
+                        "description": "Artist name or id from spotify_search / chat context.",
+                    },
+                    "artist_name": {"type": "string"},
+                    "artist_id": {"type": "string"},
+                    "device_id": {"type": "string"},
+                    "market": {"type": "string"},
+                },
             },
         },
     },

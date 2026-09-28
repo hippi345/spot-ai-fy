@@ -96,6 +96,7 @@ def evaluate_expected_tools(step: int, tools: list[ToolCallRecord]) -> tuple[boo
                 "spotify_play_artist",
                 "spotify_artist_latest_album",
                 "spotify_artist_albums",
+                "spotify_play_artist_popular_track",
                 "spotify_search",
             },
         ):

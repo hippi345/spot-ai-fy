@@ -22,7 +22,6 @@ SPOTIFY_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
         "spotify_get_artist",
         "spotify_artist_albums",
         "spotify_artist_latest_album",
-        "spotify_artist_top_tracks",
         "spotify_user_saved_tracks",
         "spotify_recently_played",
         "spotify_saved_albums",
@@ -364,6 +363,7 @@ _OLLAMA_PLAYBACK_AFTER_LIST_TOOLS = frozenset(
         "spotify_play_track",
         "spotify_play_artist",
         "spotify_play_artist_latest_release",
+        "spotify_play_artist_popular_track",
     }
 )
 

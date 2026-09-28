@@ -170,7 +170,7 @@ def spotify_get_track(track_id: str, market: str = "US") -> str:
 
 @mcp.tool()
 def spotify_artist_albums(
-    artist_id: str, include_groups: str = "album,single", limit: int = 50, offset: int = 0
+    artist_id: str, include_groups: str = "album", limit: int = 10, offset: int = 0
 ) -> str:
     """List albums and singles for an artist."""
     return _runner.run(
@@ -223,12 +223,23 @@ def spotify_get_artist(artist_id: str, market: str = "") -> str:
 
 
 @mcp.tool()
-def spotify_artist_top_tracks(artist_id: str, market: str = "") -> str:
-    """Get an artist's top tracks."""
-    args: dict = {"artist_id": artist_id}
+def spotify_play_artist_popular_track(
+    artist: str = "",
+    artist_name: str = "",
+    artist_id: str = "",
+    market: str = "",
+) -> str:
+    """Play an artist's most popular track (search-based; dev-mode safe)."""
+    args: dict[str, str] = {}
+    if artist.strip():
+        args["artist"] = artist.strip()
+    if artist_name.strip():
+        args["artist_name"] = artist_name.strip()
+    if artist_id.strip():
+        args["artist_id"] = artist_id.strip()
     if market.strip():
         args["market"] = market.strip()
-    return _runner.run("spotify_artist_top_tracks", args)
+    return _runner.run("spotify_play_artist_popular_track", args)
 
 
 @mcp.tool()

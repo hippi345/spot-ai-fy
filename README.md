@@ -278,7 +278,7 @@ All variables live in `backend/.env` (see [`backend/.env.example`](backend/.env.
 
 The backend exposes ~35 tools to the LLM (and via MCP). A few highlights:
 
-- **Search / catalog**: `spotify_search`, `spotify_search_playlists` (find playlists by free-text description), `spotify_get_track`, `spotify_get_album`, `spotify_get_artist`, `spotify_artist_albums`, `spotify_artist_top_tracks`.
+- **Search / catalog**: `spotify_search`, `spotify_search_playlists` (find playlists by free-text description), `spotify_get_track`, `spotify_get_album`, `spotify_get_artist`, `spotify_artist_albums`, `spotify_play_artist_popular_track`.
 - **Library**: `spotify_me`, `spotify_user_playlists`, `spotify_user_saved_tracks`, `spotify_get_playlist`, `spotify_playlist_tracks`.
 - **User stats**: `spotify_top_artists`, `spotify_top_tracks` (`time_range` = `short_term` ~last 4 weeks, `medium_term` ~last 6 months, `long_term` ~all-time; capped at 50). Requires the `user-top-read` scope.
 - **Following**: `spotify_followed_artists` (artists you follow — Spotify's API does **not** expose followed users), `spotify_user_public_playlists` (any user's *public* playlists, by their `user_id`), `spotify_follow_playlist`, `spotify_unfollow_playlist`. Returning users may need to **Sign out → Connect** once to re-consent for the new `user-follow-read` scope.
