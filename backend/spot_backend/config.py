@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     llm_provider: str = "ollama"
 
     ollama_host: str = "http://127.0.0.1:11434"
-    ollama_model: str = "qwen3:4b-instruct"
+    ollama_model: str = "qwen2.5:3b"
     # Ollama context window (tokens). The default agent prompt + ~50 tools is ~10k+ tokens;
     # 16384 avoids silent truncation at 8192. Set to 0 to let Ollama use its per-model default.
     ollama_num_ctx: int = 16384
@@ -63,6 +63,15 @@ class Settings(BaseSettings):
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
+
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-20250514"
+
+    xai_api_key: str = ""
+    xai_model: str = "grok-3-mini"
 
     agent_max_steps: int = 16
 

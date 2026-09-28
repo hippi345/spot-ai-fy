@@ -12,23 +12,20 @@ from pydantic import BaseModel, Field
 from spot_backend.agent import iter_chat_events, run_chat_turn
 from spot_backend.chat_sse import sse_data
 from spot_backend.config import get_settings
+from spot_backend.llm_catalog import SECRET_KEY_BY_PROVIDER, catalog_for_api
 from spot_backend.llm_prefs import (
     clear_llm_provider_override,
-    gemini_model_override_active,
-    ollama_model_override_active,
     prefs_path_exists,
     read_effective_gemini_model,
     read_effective_llm_provider,
     read_effective_ollama_model,
     write_gemini_model_override,
     write_llm_provider,
+    write_model_override,
     write_ollama_model_override,
 )
-from spot_backend.llm_provider_lists import (
-    fetch_gemini_chat_model_names,
-    fetch_ollama_model_names,
-    ollama_model_name_matches_installed,
-)
+from spot_backend.llm_status_service import llm_status_payload
+from spot_backend.secrets_store import mask_secret, write_secret
 from spot_backend.pkce import new_pkce_params
 from spot_backend.now_playing import get_now_playing, player_next, player_previous, player_toggle
 from spot_backend.spotify_client import DEFAULT_SCOPES, SpotifyAuthError, SpotifyClient, SpotifyRateLimitError
@@ -73,8 +70,11 @@ def _dump_chat_history(body: ChatBody) -> list[dict[str, str]] | None:
     return [{"role": t.role, "content": t.content} for t in body.history]
 
 
+LlmProviderLiteral = Literal["ollama", "gemini", "openai", "anthropic", "xai"]
+
+
 class LlmProviderBody(BaseModel):
-    provider: Literal["ollama", "gemini"]
+    provider: LlmProviderLiteral
 
 
 class OllamaModelBody(BaseModel):
@@ -83,6 +83,16 @@ class OllamaModelBody(BaseModel):
 
 class GeminiModelBody(BaseModel):
     model: str = Field(..., min_length=1, max_length=200)
+
+
+class ProviderModelBody(BaseModel):
+    provider: LlmProviderLiteral
+    model: str = Field(..., min_length=1, max_length=200)
+
+
+class LlmApiKeyBody(BaseModel):
+    provider: Literal["gemini", "openai", "anthropic", "xai"]
+    api_key: str = Field(..., min_length=8, max_length=500)
 
 
 class SpotifyAppSetupBody(BaseModel):
@@ -515,59 +525,43 @@ def reset_gemini_model() -> dict[str, str]:
     return {"ok": "true"}
 
 
+@app.post("/api/llm/model")
+def set_provider_model(body: ProviderModelBody) -> dict[str, str]:
+    s = get_settings()
+    write_model_override(s.data_dir, body.provider, body.model)
+    return {"ok": "true", "provider": body.provider, "model": body.model.strip()}
+
+
+@app.delete("/api/llm/model")
+def reset_provider_model(provider: LlmProviderLiteral) -> dict[str, str]:
+    s = get_settings()
+    write_model_override(s.data_dir, provider, None)
+    return {"ok": "true", "provider": provider}
+
+
+@app.post("/api/llm/api-key")
+def set_llm_api_key(body: LlmApiKeyBody) -> dict[str, str]:
+    s = get_settings()
+    secret_key = SECRET_KEY_BY_PROVIDER.get(body.provider)
+    if not secret_key:
+        raise HTTPException(status_code=400, detail="invalid provider for api key")
+    try:
+        backend = write_secret(s.data_dir, secret_key, body.api_key.strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": "true", "provider": body.provider, "storage": backend, "masked": mask_secret(body.api_key)}
+
+
+@app.get("/api/llm/catalog")
+def llm_catalog() -> dict[str, Any]:
+    return catalog_for_api()
+
+
 @app.get("/api/llm")
 def llm_status() -> dict[str, Any]:
-    """Reachability for the active LLM provider (Ollama or Gemini)."""
+    """Reachability for the active LLM provider."""
     s = get_settings()
-    env_provider = (s.llm_provider or "ollama").strip().lower()
-    active = read_effective_llm_provider(s.data_dir, s.llm_provider)
-    out: dict[str, Any] = {
-        "provider": active,
-        "env_provider": env_provider,
-        "ui_override": prefs_path_exists(s.data_dir),
-        "reachable": False,
-        "error": None,
-    }
-
-    if active == "gemini":
-        effective_gemini = read_effective_gemini_model(s.data_dir, s.gemini_model)
-        out["env_gemini_model"] = s.gemini_model
-        out["configured_model"] = effective_gemini
-        out["gemini_model_ui_override"] = gemini_model_override_active(s.data_dir)
-        key = (s.gemini_api_key or "").strip()
-        if not key:
-            out["error"] = "Gemini API key is not configured. Use the setup wizard or set GEMINI_API_KEY in backend/.env."
-            return out
-        try:
-            names = fetch_gemini_chat_model_names(key, page_size=200, timeout=10.0)
-            out["reachable"] = True
-            out["models"] = names
-            want = effective_gemini.strip().lower()
-            out["model_installed"] = any(
-                isinstance(n, str) and n.lower() == want for n in names
-            )
-        except httpx.RequestError as e:
-            out["error"] = str(e)
-        except httpx.HTTPStatusError as e:
-            out["error"] = f"HTTP {e.response.status_code}: {(e.response.text or '')[:200]}"
-        return out
-
-    base = s.ollama_host.rstrip("/")
-    effective_ollama = read_effective_ollama_model(s.data_dir, s.ollama_model)
-    out["configured_host"] = base
-    out["env_ollama_model"] = s.ollama_model
-    out["configured_model"] = effective_ollama
-    out["ollama_model_ui_override"] = ollama_model_override_active(s.data_dir)
-    try:
-        names = fetch_ollama_model_names(base, timeout=5.0)
-        out["reachable"] = True
-        out["models"] = names
-        out["model_installed"] = ollama_model_name_matches_installed(names, effective_ollama)
-    except httpx.RequestError as e:
-        out["error"] = str(e)
-    except httpx.HTTPStatusError as e:
-        out["error"] = f"HTTP {e.response.status_code}: {(e.response.text or '')[:200]}"
-    return out
+    return llm_status_payload(s, ui_override=prefs_path_exists(s.data_dir))
 
 
 @app.get("/api/health")

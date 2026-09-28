@@ -914,6 +914,36 @@ def iter_chat_events(
             conversation_id=conversation_id,
         )
         return
+    if provider == "openai":
+        from spot_backend.openai_compat_llm import iter_openai_chat_events
+
+        yield from iter_openai_chat_events(
+            user_text,
+            settings,
+            history=history,
+            conversation_id=conversation_id,
+        )
+        return
+    if provider == "anthropic":
+        from spot_backend.anthropic_llm import iter_anthropic_chat_events
+
+        yield from iter_anthropic_chat_events(
+            user_text,
+            settings,
+            history=history,
+            conversation_id=conversation_id,
+        )
+        return
+    if provider == "xai":
+        from spot_backend.openai_compat_llm import iter_xai_chat_events
+
+        yield from iter_xai_chat_events(
+            user_text,
+            settings,
+            history=history,
+            conversation_id=conversation_id,
+        )
+        return
 
     yield from iter_ollama_chat_events(
         user_text,
@@ -961,6 +991,41 @@ def run_chat_turn(
             settings,
             history=history,
             conversation_id=conversation_id,
+        )
+    if provider == "openai":
+        from spot_backend.openai_compat_llm import run_chat_turn_openai_compat
+
+        return run_chat_turn_openai_compat(
+            user_text,
+            settings,
+            base_url="https://api.openai.com/v1",
+            api_key=settings.openai_api_key,
+            provider_id="openai",
+            history=history,
+            conversation_id=conversation_id,
+            status_label="Calling OpenAI…",
+        )
+    if provider == "anthropic":
+        from spot_backend.anthropic_llm import run_chat_turn_anthropic
+
+        return run_chat_turn_anthropic(
+            user_text,
+            settings,
+            history=history,
+            conversation_id=conversation_id,
+        )
+    if provider == "xai":
+        from spot_backend.openai_compat_llm import run_chat_turn_openai_compat
+
+        return run_chat_turn_openai_compat(
+            user_text,
+            settings,
+            base_url="https://api.x.ai/v1",
+            api_key=settings.xai_api_key,
+            provider_id="xai",
+            history=history,
+            conversation_id=conversation_id,
+            status_label="Calling xAI…",
         )
     return run_chat_turn_ollama(
         user_text,

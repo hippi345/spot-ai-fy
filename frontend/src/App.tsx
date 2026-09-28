@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { DesktopTitleBar } from "./components/DesktopTitleBar";
 import { LiquidBackground } from "./components/LiquidBackground";
@@ -23,6 +23,14 @@ import {
   reduceTraceFinishStep,
   reduceTracePushStep,
 } from "./lib/chatTrace";
+import { shouldSendChatOnEnter } from "./lib/chatInputKeyboard";
+import {
+  type LlmProviderId,
+  type LlmStatus,
+  normalizeLlmProvider,
+  providerLabel,
+  providerUsesApiKey,
+} from "./lib/llmTypes";
 
 
 
@@ -55,38 +63,6 @@ type ChatMessage = { role: "user" | "assistant"; text: string; trace?: TraceStep
 
 
 
-
-
-
-type LlmStatus = {
-
-  provider?: string;
-
-  env_provider?: string;
-
-  ui_override?: boolean;
-
-  configured_host?: string;
-
-  configured_model: string;
-
-  env_ollama_model?: string;
-
-  ollama_model_ui_override?: boolean;
-
-  env_gemini_model?: string;
-
-  gemini_model_ui_override?: boolean;
-
-  reachable: boolean;
-
-  models: string[] | null;
-
-  model_installed?: boolean;
-
-  error: string | null;
-
-};
 
 
 
@@ -209,17 +185,19 @@ export function App() {
 
   const [llm, setLlm] = useState<LlmStatus | null>(null);
 
-  const [llmPick, setLlmPick] = useState<"ollama" | "gemini">("ollama");
+  const [llmPick, setLlmPick] = useState<LlmProviderId>("ollama");
 
   const [llmSaving, setLlmSaving] = useState(false);
 
-  const [ollamaModelSelect, setOllamaModelSelect] = useState("__env__");
+  const [modelSelect, setModelSelect] = useState("__env__");
 
-  const [ollamaCustomModel, setOllamaCustomModel] = useState("");
+  const [modelCustom, setModelCustom] = useState("");
 
-  const [geminiModelSelect, setGeminiModelSelect] = useState("__env__");
+  const [apiKeyDraft, setApiKeyDraft] = useState("");
 
-  const [geminiCustomModel, setGeminiCustomModel] = useState("");
+  const [apiKeySaving, setApiKeySaving] = useState(false);
+
+  const chatComposingRef = useRef(false);
 
   const [setupComplete, setSetupComplete] = useState(false);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
@@ -248,99 +226,62 @@ export function App() {
     }
   }, []);
 
-  const refreshLlm = useCallback(async () => {
-
-    try {
-
-      const data = await readJson<LlmStatus>(await fetch("/api/llm"));
-
-      setLlm(data);
-
-      const p = data.provider === "gemini" ? "gemini" : "ollama";
-
-      setLlmPick(p);
-
-      const eff = (data.configured_model || "").trim();
-
-      if (p === "ollama") {
-
-        const available = data.models ?? [];
-
-        const fromEnv = !data.ollama_model_ui_override;
-
-        if (fromEnv) {
-
-          setOllamaModelSelect("__env__");
-
-          setOllamaCustomModel(eff || (data.env_ollama_model ?? "").trim());
-
-        } else if (available.includes(eff)) {
-
-          setOllamaModelSelect(eff);
-
-          setOllamaCustomModel(eff);
-
-        } else {
-
-          setOllamaModelSelect("__custom__");
-
-          setOllamaCustomModel(eff);
-
-        }
-
-      } else {
-
-        const available = data.models ?? [];
-
-        const fromEnv = !data.gemini_model_ui_override;
-
-        if (fromEnv) {
-
-          setGeminiModelSelect("__env__");
-
-          setGeminiCustomModel(eff || (data.env_gemini_model ?? "").trim());
-
-        } else if (available.includes(eff)) {
-
-          setGeminiModelSelect(eff);
-
-          setGeminiCustomModel(eff);
-
-        } else {
-
-          setGeminiModelSelect("__custom__");
-
-          setGeminiCustomModel(eff);
-
-        }
-
-      }
-
-    } catch {
-
-      setLlm({
-
-        provider: "ollama",
-
-        env_provider: "ollama",
-
-        ui_override: false,
-
-        configured_host: "",
-
-        configured_model: "",
-
-        reachable: false,
-
-        models: null,
-
-        error: "Could not load /api/llm (is the API running?)",
-
-      });
-
+  const syncModelPickers = useCallback((data: LlmStatus) => {
+    const p = normalizeLlmProvider(data.provider);
+    setLlmPick(p);
+    const eff = (data.configured_model || "").trim();
+    const available = data.models ?? [];
+    const fromEnv =
+      p === "ollama"
+        ? !data.ollama_model_ui_override
+        : p === "gemini"
+          ? !data.gemini_model_ui_override
+          : p === "openai"
+            ? !data.openai_model_ui_override
+            : p === "anthropic"
+              ? !data.anthropic_model_ui_override
+              : !data.xai_model_ui_override;
+    if (fromEnv) {
+      setModelSelect("__env__");
+      const envFallback =
+        p === "gemini"
+          ? data.env_gemini_model
+          : p === "openai"
+            ? data.env_openai_model
+            : p === "anthropic"
+              ? data.env_anthropic_model
+              : p === "xai"
+                ? data.env_xai_model
+                : data.env_ollama_model;
+      setModelCustom(eff || (envFallback ?? "").trim());
+    } else if (available.includes(eff)) {
+      setModelSelect(eff);
+      setModelCustom(eff);
+    } else {
+      setModelSelect("__custom__");
+      setModelCustom(eff);
     }
-
+    setApiKeyDraft("");
   }, []);
+
+  const refreshLlm = useCallback(async () => {
+    try {
+      const data = await readJson<LlmStatus>(await fetch("/api/llm"));
+      setLlm(data);
+      syncModelPickers(data);
+    } catch {
+      setLlm({
+        provider: "ollama",
+        env_provider: "ollama",
+        ui_override: false,
+        configured_host: "",
+        configured_model: "",
+        reachable: false,
+        models: null,
+        error: "Could not load /api/llm (is the API running?)",
+      });
+    }
+  }, [syncModelPickers]);
 
 
 
@@ -412,163 +353,106 @@ export function App() {
 
 
 
-  const applyOllamaModel = async () => {
-
-    if (!llm || llm.provider !== "ollama") return;
-
+  const applyProviderModel = async () => {
+    if (!llm) return;
+    const provider = normalizeLlmProvider(llm.provider);
     setLlmSaving(true);
-
     setError(null);
-
     try {
-
-      if (ollamaModelSelect === "__env__") {
-
-        await readJson(await fetch("/api/llm/ollama-model", { method: "DELETE" }));
-
-        setBanner("Ollama model from .env again.");
-
+      if (modelSelect === "__env__") {
+        if (provider === "ollama") {
+          await readJson(await fetch("/api/llm/ollama-model", { method: "DELETE" }));
+        } else if (provider === "gemini") {
+          await readJson(await fetch("/api/llm/gemini-model", { method: "DELETE" }));
+        } else {
+          await readJson(await fetch(`/api/llm/model?provider=${provider}`, { method: "DELETE" }));
+        }
+        setBanner("Model from .env again.");
       } else {
-
-        const tag =
-
-          ollamaModelSelect === "__custom__" ? ollamaCustomModel.trim() : ollamaModelSelect.trim();
-
-        if (!tag) throw new Error("Enter an Ollama model tag (e.g. llama3.1:8b).");
-
-        await readJson(
-
-          await fetch("/api/llm/ollama-model", {
-
-            method: "POST",
-
-            headers: { "Content-Type": "application/json" },
-
-            body: JSON.stringify({ model: tag }),
-
-          }),
-
-        );
-
-        setBanner(`Ollama: ${tag}.`);
-
+        const tag = modelSelect === "__custom__" ? modelCustom.trim() : modelSelect.trim();
+        if (!tag) throw new Error("Enter a model name.");
+        if (provider === "ollama") {
+          await readJson(
+            await fetch("/api/llm/ollama-model", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: tag }),
+            }),
+          );
+        } else if (provider === "gemini") {
+          await readJson(
+            await fetch("/api/llm/gemini-model", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: tag }),
+            }),
+          );
+        } else {
+          await readJson(
+            await fetch("/api/llm/model", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ provider, model: tag }),
+            }),
+          );
+        }
+        setBanner(`${providerLabel(provider)}: ${tag}.`);
       }
-
       await refreshLlm();
-
     } catch (e) {
-
-      setError(e instanceof Error ? e.message : "Could not save Ollama model");
-
+      setError(e instanceof Error ? e.message : "Could not save model");
     } finally {
-
       setLlmSaving(false);
-
     }
-
   };
 
-
-
-  const ollamaModelApplyDisabled = useMemo(() => {
-
-    if (!llm || llm.provider !== "ollama") return true;
-
-    if (ollamaModelSelect === "__env__") return !llm.ollama_model_ui_override;
-
-    if (ollamaModelSelect === "__custom__") {
-
-      const t = ollamaCustomModel.trim();
-
+  const modelApplyDisabled = useMemo(() => {
+    if (!llm) return true;
+    const provider = normalizeLlmProvider(llm.provider);
+    const overrideActive =
+      provider === "ollama"
+        ? Boolean(llm.ollama_model_ui_override)
+        : provider === "gemini"
+          ? Boolean(llm.gemini_model_ui_override)
+          : provider === "openai"
+            ? Boolean(llm.openai_model_ui_override)
+            : provider === "anthropic"
+              ? Boolean(llm.anthropic_model_ui_override)
+              : Boolean(llm.xai_model_ui_override);
+    if (modelSelect === "__env__") return !overrideActive;
+    if (modelSelect === "__custom__") {
+      const t = modelCustom.trim();
       if (!t) return true;
-
-      return Boolean(llm.ollama_model_ui_override && t === (llm.configured_model || "").trim());
-
+      return Boolean(overrideActive && t === (llm.configured_model || "").trim());
     }
+    return Boolean(overrideActive && modelSelect === (llm.configured_model || "").trim());
+  }, [llm, modelSelect, modelCustom]);
 
-    return Boolean(llm.ollama_model_ui_override && ollamaModelSelect === (llm.configured_model || "").trim());
-
-  }, [llm, ollamaModelSelect, ollamaCustomModel]);
-
-
-
-  const applyGeminiModel = async () => {
-
-    if (!llm || llm.provider !== "gemini") return;
-
-    setLlmSaving(true);
-
+  const saveApiKey = async () => {
+    if (!llm) return;
+    const provider = normalizeLlmProvider(llm.provider);
+    if (!providerUsesApiKey(provider)) return;
+    const key = apiKeyDraft.trim();
+    if (!key) return;
+    setApiKeySaving(true);
     setError(null);
-
     try {
-
-      if (geminiModelSelect === "__env__") {
-
-        await readJson(await fetch("/api/llm/gemini-model", { method: "DELETE" }));
-
-        setBanner("Gemini model from .env again.");
-
-      } else {
-
-        const tag =
-
-          geminiModelSelect === "__custom__" ? geminiCustomModel.trim() : geminiModelSelect.trim();
-
-        if (!tag) throw new Error("Enter a Gemini model name (e.g. gemini-2.5-flash).");
-
-        await readJson(
-
-          await fetch("/api/llm/gemini-model", {
-
-            method: "POST",
-
-            headers: { "Content-Type": "application/json" },
-
-            body: JSON.stringify({ model: tag }),
-
-          }),
-
-        );
-
-        setBanner(`Gemini: ${tag}.`);
-
-      }
-
+      await readJson(
+        await fetch("/api/llm/api-key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider, api_key: key }),
+        }),
+      );
+      setApiKeyDraft("");
+      setBanner(`${providerLabel(provider)} API key saved locally.`);
       await refreshLlm();
-
     } catch (e) {
-
-      setError(e instanceof Error ? e.message : "Could not save Gemini model");
-
+      setError(e instanceof Error ? e.message : "Could not save API key");
     } finally {
-
-      setLlmSaving(false);
-
+      setApiKeySaving(false);
     }
-
   };
-
-
-
-  const geminiModelApplyDisabled = useMemo(() => {
-
-    if (!llm || llm.provider !== "gemini") return true;
-
-    if (geminiModelSelect === "__env__") return !llm.gemini_model_ui_override;
-
-    if (geminiModelSelect === "__custom__") {
-
-      const t = geminiCustomModel.trim();
-
-      if (!t) return true;
-
-      return Boolean(llm.gemini_model_ui_override && t === (llm.configured_model || "").trim());
-
-    }
-
-    return Boolean(llm.gemini_model_ui_override && geminiModelSelect === (llm.configured_model || "").trim());
-
-  }, [llm, geminiModelSelect, geminiCustomModel]);
 
 
 
@@ -1169,7 +1053,9 @@ export function App() {
     let spotifyLabel = "Spotify — Not connected";
     if (session?.signed_in) spotifyLabel = "Spotify — Connected";
     else if (setupStatus?.spotify_configured) spotifyLabel = "Spotify — Client ID saved, sign in to connect";
-    const llmName = (showSetupWizard ? setupStatus?.provider : llm?.provider) === "gemini" ? "Gemini" : "Ollama";
+    const llmName = providerLabel(
+      normalizeLlmProvider(showSetupWizard ? setupStatus?.provider : llm?.provider),
+    );
     const llmConnected = showSetupWizard
       ? Boolean(setupStatus?.llm_ready)
       : Boolean(setupStatus?.llm_ready ?? llm?.reachable);
@@ -1183,12 +1069,11 @@ export function App() {
     llm,
     llmPick,
     llmSaving,
-    ollamaModelSelect,
-    ollamaCustomModel,
-    geminiModelSelect,
-    geminiCustomModel,
-    ollamaModelApplyDisabled,
-    geminiModelApplyDisabled,
+    modelSelect,
+    modelCustom,
+    modelApplyDisabled,
+    apiKeyDraft,
+    apiKeySaving,
     session,
     deviceId,
     deviceOptions,
@@ -1197,12 +1082,11 @@ export function App() {
     onApplyLlmProvider: () => void applyLlmProvider(),
     onResetLlmProvider: () => void resetLlmProvider(),
     onRefreshLlm: () => void refreshLlm(),
-    onOllamaModelSelectChange: setOllamaModelSelect,
-    onOllamaCustomModelChange: setOllamaCustomModel,
-    onApplyOllamaModel: () => void applyOllamaModel(),
-    onGeminiModelSelectChange: setGeminiModelSelect,
-    onGeminiCustomModelChange: setGeminiCustomModel,
-    onApplyGeminiModel: () => void applyGeminiModel(),
+    onModelSelectChange: setModelSelect,
+    onModelCustomChange: setModelCustom,
+    onApplyModel: () => void applyProviderModel(),
+    onApiKeyDraftChange: setApiKeyDraft,
+    onSaveApiKey: () => void saveApiKey(),
     onOpenSetupWizard: () => {
       setSettingsOpen(false);
       setShowSetupWizard(true);
@@ -1211,6 +1095,13 @@ export function App() {
     onDeviceIdChange: setDeviceId,
     onRefreshDevices: () => void refreshDevices(),
     onSaveDevice: () => void saveDevice(),
+  };
+
+  const handleChatKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (shouldSendChatOnEnter(e) && !chatComposingRef.current) {
+      e.preventDefault();
+      void sendChat();
+    }
   };
 
   return (
@@ -1441,21 +1332,20 @@ export function App() {
         />
 
         <textarea
-
           id="chat"
-
           className="chat-input"
-
           placeholder="Try: Play John Mayer · What are my playlists? · Create a playlist called Focus"
-
           value={input}
-
           onChange={(e) => setInput(e.target.value)}
-
+          onCompositionStart={() => {
+            chatComposingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            chatComposingRef.current = false;
+          }}
+          onKeyDown={handleChatKeyDown}
           disabled={sending || !setupComplete}
-
           rows={3}
-
         />
 
         <div className="btn-row">

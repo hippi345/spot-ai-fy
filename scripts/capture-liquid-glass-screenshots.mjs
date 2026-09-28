@@ -24,9 +24,9 @@ const completeSetup = {
 
 const defaultLlm = {
   provider: "ollama",
-  configured_model: "qwen3:4b-instruct",
+  configured_model: "qwen2.5:3b",
   reachable: true,
-  models: ["qwen3:4b-instruct"],
+  models: ["qwen2.5:3b"],
   error: null,
 };
 
@@ -141,13 +141,14 @@ async function main() {
     const browser = await chromium.launch({ headless: true });
 
     const webShots = [
-      { file: "web-playing-mock.png", signedIn: true, mockNp: true, openSettings: false },
-      { file: "web-idle-signed-out.png", signedIn: false, mockNp: false, openSettings: false },
-      { file: "web-settings-sheet.png", signedIn: true, mockNp: false, openSettings: true },
+      { file: "web-playing-mock.png", signedIn: true, mockNp: true, openSettings: false, viewport: { width: 720, height: 900 } },
+      { file: "web-idle-signed-out.png", signedIn: false, mockNp: false, openSettings: false, viewport: { width: 720, height: 900 } },
+      { file: "web-settings-sheet-mocknp.png", signedIn: true, mockNp: true, openSettings: true, viewport: { width: 720, height: 900 } },
+      { file: "web-settings-sheet-mocknp-420x640.png", signedIn: true, mockNp: true, openSettings: true, viewport: { width: 420, height: 640 } },
     ];
 
     for (const shot of webShots) {
-      const page = await browser.newPage({ viewport: { width: 720, height: 900 } });
+      const page = await browser.newPage({ viewport: shot.viewport });
       await mockRoutes(page, { signedIn: shot.signedIn, mockNp: shot.mockNp });
       const q = shot.mockNp ? "?mockNp=1" : "";
       await page.goto(`http://127.0.0.1:5173/${q}`, { waitUntil: "networkidle" });
@@ -164,7 +165,7 @@ async function main() {
     const electronShots = [
       { file: "electron-playing-mock.png", mockNp: true, variant: "playing", signedIn: true },
       { file: "electron-idle-signed-out.png", mockNp: false, variant: "idle", signedIn: false },
-      { file: "electron-settings-sheet.png", mockNp: false, variant: "settings", signedIn: true },
+      { file: "electron-settings-sheet-mocknp.png", mockNp: true, variant: "settings", signedIn: true },
       {
         file: "electron-queue-expanded-min.png",
         mockNp: true,
@@ -184,10 +185,11 @@ async function main() {
   for (const name of [
     "web-playing-mock.png",
     "web-idle-signed-out.png",
-    "web-settings-sheet.png",
+    "web-settings-sheet-mocknp.png",
+    "web-settings-sheet-mocknp-420x640.png",
     "electron-playing-mock.png",
     "electron-idle-signed-out.png",
-    "electron-settings-sheet.png",
+    "electron-settings-sheet-mocknp.png",
     "electron-queue-expanded-min.png",
   ]) {
     const p = path.join(outDir, name);
