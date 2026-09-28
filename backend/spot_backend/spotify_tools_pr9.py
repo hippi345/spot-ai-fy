@@ -173,6 +173,25 @@ class SpotifyToolRunnerPr9Mixin:
             still = self._still_playing_user_message(state)
             if still:
                 return still
+        idle_msg = (
+            "Spotify didn't start it, and nothing is playing right now. "
+            "Open Spotify on a phone, speaker, or computer and try again."
+        )
+        if not isinstance(state, dict):
+            return idle_msg
+        item = state.get("item") if isinstance(state.get("item"), dict) else None
+        if not item:
+            return idle_msg
+        if state.get("is_playing") is False:
+            name = item.get("name") if isinstance(item.get("name"), str) else None
+            artists = item.get("artists") if isinstance(item.get("artists"), list) else []
+            artist = ""
+            if artists and isinstance(artists[0], dict):
+                artist = str(artists[0].get("name") or "").strip()
+            if name and artist:
+                return f"Spotify didn't start it. Your player is paused on {name} by {artist}."
+            if name:
+                return f"Spotify didn't start it. Your player is paused on {name}."
         base = (
             f"I found the latest episode, {episode_title!r}, but Spotify didn't confirm it started playing. "
             "Try tapping play on your device or ask me to transfer playback."
@@ -180,6 +199,9 @@ class SpotifyToolRunnerPr9Mixin:
         return base
 
     def _uris_from_show_session_context(self) -> list[str]:
+        focus = getattr(self, "_session_focus_show_id", None)
+        if isinstance(focus, str) and focus.strip():
+            return [f"spotify:show:{focus.strip()}"]
         last_show = getattr(self, "_last_show_search_id", None)
         if isinstance(last_show, str) and last_show.strip():
             return [f"spotify:show:{last_show.strip()}"]
@@ -307,6 +329,12 @@ class SpotifyToolRunnerPr9Mixin:
                 uniq.append(u)
         if user_text_s and is_show_library_intent(user_text_s, self):
             uniq = rewrite_library_uris_for_show_intent(self, user_text_s, uniq)
+            if not uniq:
+                from spot_backend.show_session_resolve import session_show_id
+
+                session = session_show_id(self)
+                if session:
+                    uniq = [f"spotify:show:{session}"]
         return uniq[: _LIBRARY_URI_CHUNK]
 
     def _library_contains(self, arguments: dict[str, Any]) -> str:
@@ -599,6 +627,17 @@ class SpotifyToolRunnerPr9Mixin:
         sid = _normalize_spotify_id(_pick_arg(arguments, "show_id", "id"), "show")
         if not sid:
             return json.dumps({"error": "show_id is required", "failure_reason": "validation_error"})
+        show_name = sid
+        try:
+            show_meta = self.client.api_get_cached(f"/shows/{sid}")
+            if isinstance(show_meta, dict) and isinstance(show_meta.get("name"), str):
+                show_name = show_meta["name"].strip() or sid
+        except Exception:
+            show_name = sid
+        if hasattr(self, "note_session_focus_show"):
+            self.note_session_focus_show(sid, show_name)
+        elif hasattr(self, "note_session_show"):
+            self.note_session_show(sid, show_name)
         from spot_backend.spotify_tools import _normalize_market
 
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
@@ -650,8 +689,8 @@ class SpotifyToolRunnerPr9Mixin:
         if not isinstance(uri, str):
             return json.dumps({"ok": False, "error": "Episode has no uri", "failure_reason": "parse_error"})
         if isinstance(eid, str):
-            self._record_library_mutation("show", [sid])
             self._record_library_mutation("episode", [eid])
+            self._record_library_mutation("show", [sid])
             self._session_known_ids.add(sid)
             self._session_known_ids.add(eid)
         play_args: dict[str, Any] = {"uris": [uri], "playback_request_label": "that episode"}

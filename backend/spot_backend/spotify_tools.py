@@ -1167,6 +1167,14 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         stored_pid = load_last_playlist_id(self.conversation_id)
         if stored_pid:
             self.note_session_playlist_id(stored_pid)
+        self._session_focus_show_id: str | None = None
+        from spot_backend.library_mutation_store import load_session_focus_show
+
+        focus = load_session_focus_show(self.conversation_id)
+        if focus:
+            fid, fname = focus
+            self._session_focus_show_id = fid
+            self.note_session_show(fid, fname)
 
     def last_saved_track_ids_for_undo(self, conversation_id: str | None = None) -> list[str]:
         """Track ids to unsave for undo — persisted session first, else this runner's last save."""
@@ -1196,6 +1204,18 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                     row["name"] = label
                     return
             self._session_show_catalog.append({"id": sid, "name": label})
+
+    def note_session_focus_show(self, show_id: str, name: str) -> None:
+        """Remember the show the user is talking about (play/save this show), across turns."""
+        sid = (show_id or "").strip()
+        label = (name or "").strip()
+        if not _looks_like_spotify_catalog_id(sid):
+            return
+        self.note_session_show(sid, label or sid)
+        self._session_focus_show_id = sid
+        from spot_backend.library_mutation_store import record_session_focus_show
+
+        record_session_focus_show(self.conversation_id, sid, label or sid)
 
     def note_session_playlist_id(self, playlist_id: str) -> None:
         pid = (playlist_id or "").strip()

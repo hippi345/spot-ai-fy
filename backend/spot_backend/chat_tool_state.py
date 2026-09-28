@@ -91,6 +91,16 @@ def format_runner_session_context(runner: SpotifyToolRunner) -> str:
                     f"Last library action (may be stale — prefer spotify_playback_state for "
                     f"'this album/song/show/episode'): {seg} id(s) {clean}."
                 )
+    focus = getattr(runner, "_session_focus_show_id", None)
+    if isinstance(focus, str) and focus.strip():
+        label = focus.strip()
+        for row in getattr(runner, "_session_show_catalog", []) or []:
+            if isinstance(row, dict) and row.get("id") == focus.strip():
+                name = row.get("name")
+                if isinstance(name, str) and name.strip():
+                    label = f"{name.strip()} ({focus.strip()})"
+                    break
+        lines.append(f"Session podcast show (this/that show for save or play): {label}.")
     if not lines:
         return ""
     return "\n\nConversation session context:\n- " + "\n- ".join(lines) + "\n"

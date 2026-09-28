@@ -276,7 +276,6 @@ def test_trace_args_utf8_emoji_safe() -> None:
 
 
 @respx.mock
-@respx.mock
 def test_t23_real_sequence_invented_show_id_not_saved(data_dir, signed_in_tokens) -> None:
     """Reproduce laptop T23: invented show id must not yield a false Saved reply."""
     session_show = "1mNsuXbbbbbbbbbbbbbbbb"
@@ -424,3 +423,263 @@ def test_builder_q_trace_when_debug_flag(tmp_path, monkeypatch) -> None:
     runner.close()
     lines = (tmp_path / "chat_tool_traces.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert any("playlist_builder_search" in ln and '"q"' in ln for ln in lines)
+
+
+@respx.mock
+def test_t23_laptop_sequence_save_this_show_wrong_id_blocked(data_dir, signed_in_tokens) -> None:
+    """T21 play_show_latest sets focus show; T23 save-this-show rewrites wrong model id."""
+    session_show = "1mNsuXbbbbbbbbbbbbbbbb"
+    wrong_show = "4M9IlPFWzCaTv60kvCMlVS"
+    ep_id = "e" * 22
+    conv = "t23-laptop-seq"
+    respx.get(f"https://api.spotify.com/v1/shows/{session_show}").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": session_show, "name": "StarTalk with Neil deGrasse Tyson"},
+        )
+    )
+    respx.get(f"https://api.spotify.com/v1/shows/{session_show}/episodes").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": ep_id,
+                        "uri": f"spotify:episode:{ep_id}",
+                        "name": "Cosmic Queries",
+                    }
+                ]
+            },
+        )
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get(f"https://api.spotify.com/v1/shows/{wrong_show}").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": wrong_show, "name": "Growth Minds with Sean Kim"},
+        )
+    )
+    saved_uris: list[str] = []
+
+    def _library_put(request: httpx.Request) -> httpx.Response:
+        q = request.url.params.get("uris") or ""
+        saved_uris.extend(q.split(","))
+        return httpx.Response(200, json={})
+
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(side_effect=_library_put)
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/library/contains.*").mock(
+        return_value=httpx.Response(200, json=[True])
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "shows": {
+                    "items": [
+                        {
+                            "id": session_show,
+                            "name": "StarTalk with Neil deGrasse Tyson",
+                        },
+                        {"id": wrong_show, "name": "Growth Minds with Sean Kim"},
+                    ]
+                }
+            },
+        )
+    )
+
+    play_runner = SpotifyToolRunner(settings=Settings(), conversation_id=conv)
+    play_raw = play_runner.run(
+        "spotify_play_show_latest_episode",
+        {"show_id": session_show, "_turn_user_text": "Play latest StarTalk"},
+    )
+    play_runner.close()
+    assert json.loads(play_raw).get("failure_reason") == "playback_not_verified"
+
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id=conv)
+    user = "Save this show"
+    runner.run("spotify_playback_state", {"_turn_user_text": user})
+    empty_raw = runner.run(
+        "spotify_library_save",
+        enforce_tool_arguments_for_turn(
+            "spotify_library_save",
+            {"uris": ["this show"]},
+            user_text=user,
+            runner=runner,
+        ),
+    )
+    empty_data = json.loads(empty_raw)
+    assert empty_data.get("failure_reason") != "empty_args"
+    assert session_show in json.dumps(empty_data)
+    runner.run(
+        "spotify_search",
+        {"query": "StarTalk with Neil deGrasse Tyson", "types": "show"},
+    )
+    save_args = enforce_tool_arguments_for_turn(
+        "spotify_library_save",
+        {"uris": [f"spotify:show:{wrong_show}"]},
+        user_text=user,
+        runner=runner,
+    )
+    assert f"spotify:show:{session_show}" in (save_args.get("uris") or [])
+    save_raw = runner.run("spotify_library_save", save_args)
+    save_data = json.loads(save_raw)
+    runner.close()
+    assert save_data.get("ok") is True
+    assert "StarTalk" in save_data.get("user_message", "")
+    assert "Growth Minds" not in save_data.get("user_message", "")
+    assert all("Growth Minds" not in u and wrong_show not in u for u in saved_uris)
+    assert any(session_show in u for u in saved_uris)
+
+
+@respx.mock
+def test_t21_play_show_idle_playback_not_verified_message(data_dir, signed_in_tokens) -> None:
+    show_id = "1mNsuXbbbbbbbbbbbbbbbb"
+    ep_id = "e" * 22
+    respx.get(f"https://api.spotify.com/v1/shows/{show_id}").mock(
+        return_value=httpx.Response(200, json={"id": show_id, "name": "StarTalk"})
+    )
+    respx.get(f"https://api.spotify.com/v1/shows/{show_id}/episodes").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {"id": ep_id, "uri": f"spotify:episode:{ep_id}", "name": "Latest ep"},
+                ]
+            },
+        )
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(204)
+    )
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id="t21-idle")
+    raw = runner.run(
+        "spotify_play_show_latest_episode",
+        {"show_id": show_id, "_turn_user_text": "Play latest StarTalk"},
+    )
+    runner.close()
+    data = json.loads(raw)
+    msg = data.get("user_message", "")
+    assert "nothing is playing right now" in msg
+    assert "Try tapping play" not in msg
+    reply = _finalize(
+        "Play latest StarTalk",
+        "ignored model text",
+        ["spotify_play_show_latest_episode"],
+        [raw],
+    )
+    assert "nothing is playing right now" in reply
+
+
+@respx.mock
+def test_gemini_save_this_show_rewrites_on_gemini_path(data_dir, signed_in_tokens) -> None:
+    from spot_backend.gemini_llm import run_chat_turn_gemini
+
+    session_show = "1mNsuXbbbbbbbbbbbbbbbb"
+    wrong_show = "4M9IlPFWzCaTv60kvCMlVS"
+    conv = "gemini-t23-save-show"
+    settings = Settings(gemini_api_key="gemini-test-t23", agent_max_steps=4)
+
+    respx.get(f"https://api.spotify.com/v1/shows/{session_show}").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": session_show, "name": "StarTalk with Neil deGrasse Tyson"},
+        )
+    )
+    respx.get(f"https://api.spotify.com/v1/shows/{session_show}/episodes").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": "e" * 22,
+                        "uri": f"spotify:episode:{'e' * 22}",
+                        "name": "Ep",
+                    }
+                ]
+            },
+        )
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get(f"https://api.spotify.com/v1/shows/{wrong_show}").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": wrong_show, "name": "Growth Minds with Sean Kim"},
+        )
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/library/contains.*").mock(
+        return_value=httpx.Response(200, json=[True])
+    )
+
+    play_runner = SpotifyToolRunner(settings=settings, conversation_id=conv)
+    play_runner.run(
+        "spotify_play_show_latest_episode",
+        {"show_id": session_show, "_turn_user_text": "Play latest StarTalk"},
+    )
+    play_runner.close()
+
+    calls = {"n": 0}
+
+    def gemini_handler(_request: httpx.Request) -> httpx.Response:
+        n = calls["n"]
+        calls["n"] += 1
+        if n == 0:
+            parts = [
+                {"functionCall": {"name": "spotify_playback_state", "args": {}}},
+                {"functionCall": {"name": "spotify_library_save", "args": {"uris": ["this show"]}}},
+                {
+                    "functionCall": {
+                        "name": "spotify_library_save",
+                        "args": {"uris": [f"spotify:show:{wrong_show}"]},
+                    }
+                },
+            ]
+            return httpx.Response(
+                200,
+                json={"candidates": [{"finishReason": "STOP", "content": {"parts": parts}}]},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "finishReason": "STOP",
+                        "content": {"parts": [{"text": "Saved Growth Minds with Sean Kim."}]},
+                    }
+                ]
+            },
+        )
+
+    respx.post(url__regex=r"https://generativelanguage\.googleapis\.com/.*").mock(
+        side_effect=gemini_handler
+    )
+
+    with patch(
+        "spot_backend.gemini_llm.gemini_deterministic_shortcut_reply",
+        return_value=None,
+    ), patch(
+        "spot_backend.gemini_llm.should_send_gemini_tool_nudge",
+        return_value=False,
+    ):
+        reply = run_chat_turn_gemini(
+            "Save this show",
+            settings,
+            conversation_id=conv,
+        )
+    assert "StarTalk" in reply
+    assert "Growth Minds" not in reply

@@ -127,7 +127,16 @@ def _search_show_id_by_name(runner: SpotifyToolRunner, hint: str) -> str | None:
 
 
 def session_show_id(runner: SpotifyToolRunner) -> str | None:
-    """Best session show id (search, catalog, last mutation) without trusting invented ids."""
+    """Best session show id (focus play target, search, catalog, last mutation) without trusting invented ids."""
+    focus = getattr(runner, "_session_focus_show_id", None)
+    if isinstance(focus, str) and focus.strip():
+        return focus.strip()
+    from spot_backend.library_mutation_store import load_session_focus_show
+
+    cid = getattr(runner, "conversation_id", None)
+    loaded = load_session_focus_show(cid)
+    if loaded:
+        return loaded[0]
     return _match_show_from_session(runner, "")
 
 
@@ -146,6 +155,9 @@ def is_show_library_intent(user_text: str, runner: SpotifyToolRunner) -> bool:
         last = getattr(runner, "_last_show_search_id", None)
         if isinstance(last, str) and last.strip():
             return True
+        focus = getattr(runner, "_session_focus_show_id", None)
+        if isinstance(focus, str) and focus.strip():
+            return True
     if re.search(r"\b(?:remove|unsave)\s+(?:it|that)\b", t, re.I):
         mut = getattr(runner, "_last_library_mutation", None)
         if isinstance(mut, dict) and mut.get("segment") == "show":
@@ -162,6 +174,16 @@ def _show_id_from_uri_token(token: str) -> str | None:
     return _normalize_spotify_id(s, "show")
 
 
+def _show_name_in_session_catalog(runner: SpotifyToolRunner, show_id: str) -> str | None:
+    sid = (show_id or "").strip()
+    if not sid:
+        return None
+    for cid, name in _session_show_catalog(runner):
+        if cid == sid:
+            return name
+    return None
+
+
 def rewrite_library_uris_for_show_intent(
     runner: SpotifyToolRunner,
     user_text: str,
@@ -174,6 +196,7 @@ def rewrite_library_uris_for_show_intent(
     if not session:
         return uris
     session_uri = f"spotify:show:{session}"
+    session_name = _show_name_in_session_catalog(runner, session)
     out: list[str] = []
     for raw in uris:
         if not isinstance(raw, str):
@@ -186,7 +209,19 @@ def rewrite_library_uris_for_show_intent(
             out.append(session_uri)
             continue
         sid = _show_id_from_uri_token(s)
+        if sid and sid == session:
+            out.append(session_uri)
+            continue
         if sid and _show_id_known_to_session(runner, sid):
+            wrong_name = _show_name_in_session_catalog(runner, sid)
+            if (
+                session_name
+                and wrong_name
+                and not _name_matches_hint(wrong_name, session_name)
+                and not _name_matches_hint(session_name, wrong_name)
+            ):
+                out.append(session_uri)
+                continue
             out.append(f"spotify:show:{sid}")
             continue
         if sid or low.startswith("spotify:show:"):

@@ -195,6 +195,21 @@ def _play_failure_user_message(data: dict[str, Any]) -> str:
         player = data.get("player_after")
         if isinstance(player, dict):
             item = player.get("item")
+            if not isinstance(item, dict) or not item:
+                return (
+                    "Spotify didn't start it, and nothing is playing right now. "
+                    "Open Spotify on a phone, speaker, or computer and try again."
+                )
+            if player.get("is_playing") is False and item.get("type") in ("track", "episode"):
+                name = item.get("name") if isinstance(item.get("name"), str) else None
+                artists = item.get("artists") if isinstance(item.get("artists"), list) else []
+                artist = ""
+                if artists and isinstance(artists[0], dict):
+                    artist = str(artists[0].get("name") or "").strip()
+                if name and artist:
+                    return f"Spotify didn't start it. Your player is paused on {name} by {artist}."
+                if name:
+                    return f"Spotify didn't start it. Your player is paused on {name}."
             if isinstance(item, dict) and item.get("type") in ("track", "episode"):
                 name = item.get("name") if isinstance(item.get("name"), str) else None
                 artists = item.get("artists") if isinstance(item.get("artists"), list) else []

@@ -234,7 +234,11 @@ def _apply_playback_overrides(
         if _CURRENT_SHOW_RE.search(user_text or "") or re.search(
             r"\b(?:this|that)\s+(?:show|podcast)\b", user_text or "", re.I
         ):
-            show = playback_id_for_segment(runner, "show")
+            from spot_backend.show_session_resolve import session_show_id
+
+            show = session_show_id(runner)
+            if not show:
+                show = playback_id_for_segment(runner, "show")
             if not show:
                 show = getattr(runner, "_last_show_search_id", None)
             if not show:
@@ -298,6 +302,49 @@ def _show_save_rewrite_to_library(
     return "spotify_library_save", out
 
 
+def _maybe_rewrite_show_save_tool_call(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    user_text: str,
+    runner: SpotifyToolRunner,
+) -> tuple[str, dict[str, Any]] | None:
+    if tool_name == "spotify_save_tracks":
+        ids = arguments.get("track_ids") or arguments.get("ids") or arguments.get("track_id")
+        blob = ids if isinstance(ids, list) else [ids] if isinstance(ids, str) else []
+        if any(isinstance(x, str) and "show:" in x.lower() for x in blob):
+            return _show_save_rewrite_to_library(arguments, user_text=user_text, runner=runner)
+    if tool_name not in ("spotify_save_tracks", "spotify_save_albums", "spotify_library_save"):
+        return None
+    uris = arguments.get("uris")
+    if not isinstance(uris, list) or not uris:
+        return _show_save_rewrite_to_library(arguments, user_text=user_text, runner=runner)
+    from spot_backend.show_session_resolve import session_show_id
+
+    session = session_show_id(runner)
+    if not session:
+        if not _uris_are_show_segment(uris):
+            return _show_save_rewrite_to_library(arguments, user_text=user_text, runner=runner)
+        return None
+    pronoun_only = all(
+        isinstance(x, str)
+        and x.strip().lower()
+        in (
+            "it",
+            "this",
+            "that",
+            "this show",
+            "that show",
+            "this podcast",
+            "that podcast",
+        )
+        for x in uris
+    )
+    if pronoun_only or not _uris_are_show_segment(uris):
+        return _show_save_rewrite_to_library(arguments, user_text=user_text, runner=runner)
+    return None
+
+
 def rewrite_tool_call_for_turn(
     tool_name: str,
     arguments: dict[str, Any],
@@ -309,26 +356,17 @@ def rewrite_tool_call_for_turn(
     from spot_backend.show_session_resolve import is_show_library_intent
 
     if is_show_library_intent(user_text, runner):
-        if tool_name == "spotify_save_tracks":
-            ids = arguments.get("track_ids") or arguments.get("ids") or arguments.get("track_id")
-            blob = ids if isinstance(ids, list) else [ids] if isinstance(ids, str) else []
-            if any(isinstance(x, str) and "show:" in x.lower() for x in blob):
-                rewritten = _show_save_rewrite_to_library(arguments, user_text=user_text, runner=runner)
-                if rewritten:
-                    return rewritten
-        if tool_name in ("spotify_save_tracks", "spotify_save_albums", "spotify_library_save"):
-            uris = arguments.get("uris")
-            if isinstance(uris, list) and uris and not _uris_are_show_segment(uris):
-                rewritten = _show_save_rewrite_to_library(arguments, user_text=user_text, runner=runner)
-                if rewritten:
-                    return rewritten
+        rewritten = _maybe_rewrite_show_save_tool_call(
+            tool_name, arguments, user_text=user_text, runner=runner
+        )
+        if rewritten:
+            return rewritten
     elif _SHOW_SAVE_INTENT_RE.search(user_text or ""):
-        if tool_name in ("spotify_save_tracks", "spotify_save_albums", "spotify_library_save"):
-            uris = arguments.get("uris")
-            if isinstance(uris, list) and uris and not _uris_are_show_segment(uris):
-                rewritten = _show_save_rewrite_to_library(arguments, user_text=user_text, runner=runner)
-                if rewritten:
-                    return rewritten
+        rewritten = _maybe_rewrite_show_save_tool_call(
+            tool_name, arguments, user_text=user_text, runner=runner
+        )
+        if rewritten:
+            return rewritten
     return tool_name, arguments if isinstance(arguments, dict) else {}
 
 
