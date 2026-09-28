@@ -20,9 +20,7 @@ from spot_backend.reply_tool_trace import tool_trace_log_path
 from spot_backend.spotify_tools import SpotifyToolRunner
 
 LAPTOP_VAGUE_PROMPTS = (
-    "Play something by The Weeknd",
     "play his latest single",
-    "Can you play podcasts via this interface?",
 )
 
 
@@ -43,6 +41,13 @@ def test_vague_laptop_prompts_skip_deterministic_shortcuts(signed_in_tokens) -> 
         for phrase in LAPTOP_VAGUE_PROMPTS:
             assert try_deterministic_chat_reply(phrase, runner) is None
             assert resolve_deterministic_chat_outcome(phrase, runner, conversation_id="lap-1") is None
+        podcast = resolve_deterministic_chat_outcome(
+            "Can you play podcasts via this interface?",
+            runner,
+            conversation_id="lap-pod",
+        )
+        assert podcast is not None
+        assert podcast.tool_names() == []
         playlist = resolve_deterministic_chat_outcome(
             "Play one of my playlists",
             runner,

@@ -444,6 +444,14 @@ def _parse_spotify_context_ref(raw: str) -> tuple[str, str] | None:
     return None
 
 
+def _spotify_http_error_fields(exc: httpx.HTTPStatusError) -> dict[str, Any]:
+    body_redacted = redact_known_api_keys((exc.response.text or "")[:2000])
+    return {
+        "spotify_http_status": exc.response.status_code,
+        "spotify_error_body_redacted": body_redacted[:800],
+    }
+
+
 def _spotify_http_message(exc: httpx.HTTPStatusError) -> str:
     try:
         payload = exc.response.json()
@@ -489,6 +497,12 @@ def _shrink_user_playlists_payload(
             pid = it.get("id")
             name = it.get("name")
             owner = it.get("owner") if isinstance(it.get("owner"), dict) else {}
+            tracks = it.get("tracks")
+            tracks_total = (
+                tracks.get("total")
+                if isinstance(tracks, dict) and isinstance(tracks.get("total"), int)
+                else None
+            )
             row: dict[str, Any] = {
                 "id": pid if isinstance(pid, str) else None,
                 "name": str(name) if isinstance(name, str) else "",
@@ -496,6 +510,8 @@ def _shrink_user_playlists_payload(
                 "collaborative": bool(it.get("collaborative")),
                 "public": it.get("public"),
             }
+            if tracks_total is not None:
+                row["tracks_total"] = tracks_total
             if not isinstance(row["id"], str):
                 continue
             row["owned_by_me"] = playlist_row_playable_owned(row, me_id or "")
@@ -1060,7 +1076,17 @@ class SpotifyToolRunner:
                 "error": f"Spotify HTTP {e.response.status_code}",
                 "detail": detail,
                 "spotify_error_body_redacted": body_redacted[:800],
+                "spotify_http_status": e.response.status_code,
             }
+            try:
+                tok = self.client.ensure_fresh_access_token()
+                if tok:
+                    err["spotify_error_body_redacted"] = redact_known_api_keys(
+                        err["spotify_error_body_redacted"],
+                        [tok],
+                    )
+            except (SpotifyAuthError, OSError, RuntimeError, ValueError):
+                pass
             spot_msg = _spotify_http_message(e)
             if spot_msg:
                 err["spotify_api_message"] = spot_msg
@@ -4617,6 +4643,7 @@ class SpotifyToolRunner:
                             "do not suggest signing out."
                         ),
                         "spotify_api_message": _spotify_http_message(e),
+                        **_spotify_http_error_fields(e),
                         "playback_verified": False,
                         "reconnect_spotify_unnecessary": True,
                         "sign_out_not_recommended": True,
@@ -4726,6 +4753,7 @@ class SpotifyToolRunner:
                         "re-invoke spotify_start_resume_playback with device_id explicitly."
                     ),
                     "devices": devices,
+                    **_spotify_http_error_fields(e),
                     "reconnect_spotify_unnecessary": True,
                     "sign_out_not_recommended": True,
                 },
@@ -5231,8 +5259,12 @@ class SpotifyToolRunner:
             else ""
         )
         exact_title = bool(norm_q and norm_track and norm_q == norm_track)
-        strong_track = exact_title or track_score >= 200
         _artist_id, artist_pop = self._exact_artist_popularity_for_query(query, market)
+        if exact_title and (not _artist_id or track_pop >= artist_pop):
+            return "track"
+        if _artist_id:
+            return "artist"
+        strong_track = exact_title or track_score >= 200
         if strong_track and not (
             _artist_id and artist_pop > track_pop + 15 and not exact_title
         ):
@@ -5546,7 +5578,17 @@ class SpotifyToolRunner:
         }
 
         play_ok = isinstance(play_result, dict) and play_result.get("ok") is True
-        if not play_ok:
+        player = self._poll_player_state(attempts=6, delay_s=0.5)
+        verified = bool(
+            isinstance(play_result, dict) and play_result.get("playback_verified") is True
+        )
+        if player and isinstance(play_result, dict) and play_result.get("body"):
+            body_play = play_result.get("body")
+            if isinstance(body_play, dict) and self._playback_matches(body_play, attempts=1, delay_s=0):
+                verified = True
+        summary["player_after"] = player
+        summary["playback_verified"] = verified
+        if not play_ok or not verified:
             summary["ok"] = False
             user_msg = play_result.get("user_message") if isinstance(play_result, dict) else None
             if isinstance(user_msg, str) and user_msg.strip():
@@ -5554,6 +5596,15 @@ class SpotifyToolRunner:
                 summary["error"] = user_msg.strip()
             else:
                 summary["error"] = _PLAYBACK_START_FAILED_USER_MESSAGE
+            if isinstance(play_result, dict):
+                for key in (
+                    "spotify_error_body_redacted",
+                    "spotify_http_status",
+                    "spotify_api_message",
+                ):
+                    val = play_result.get(key)
+                    if val is not None:
+                        summary[key] = val
             return _compact(summary)
 
         # Apply repeat if requested.
@@ -5585,6 +5636,7 @@ class SpotifyToolRunner:
         summary["shuffle"] = shuffle_applied
 
         summary["ok"] = True
+        summary["playback_verified"] = verified
         return _compact(summary)
 
     def _track_uri_from_player(self, player: dict[str, Any] | None) -> str:
@@ -5728,6 +5780,7 @@ class SpotifyToolRunner:
                     "skipped": False,
                     "error": _spotify_http_message(exc),
                     "before_uri": before_uri,
+                    **_spotify_http_error_fields(exc),
                 },
                 ensure_ascii=False,
             )

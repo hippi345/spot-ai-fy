@@ -122,6 +122,7 @@ def run_tool_calls(
                     args_summary=summarize_tool_args(args),
                     outcome=tool_trace_outcome(result),
                     known_secrets=trace_secrets,
+                    raw_result=result,
                 )
         else:
             import time as _time
@@ -140,6 +141,7 @@ def run_tool_calls(
                     outcome=tool_trace_outcome(result),
                     duration_ms=duration_ms,
                     known_secrets=trace_secrets,
+                    raw_result=result,
                 )
         state.deduped_tool_results[dedupe_key] = result
         state.turn_tool_calls.append((name, result))

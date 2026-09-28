@@ -494,6 +494,7 @@ def _persist_ollama_tool_trace(
         outcome=tool_trace_outcome(result),
         duration_ms=duration_ms,
         known_secrets=None,
+        raw_result=result,
     )
 
 

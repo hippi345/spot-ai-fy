@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from spot_backend.chat_shortcut_policy import prompt_blocks_deterministic_play_shortcuts
@@ -12,9 +13,12 @@ from spot_backend.play_bare_intent import extract_bare_play_target, extract_play
 from spot_backend.play_artist import format_play_artist_reply, play_artist_tool_step
 from spot_backend.play_track import format_play_track_chat_reply, play_track_tool_step
 from spot_backend.play_track_intent import extract_play_track_request
+from spot_backend.play_mood_intent import extract_play_something_mood
 from spot_backend.playback_reply import (
     format_now_playing_chat_reply,
+    format_playlist_play_chat_reply,
     format_skip_reply,
+    prompt_asks_previous,
     prompt_asks_skip,
     prompt_asks_whats_playing,
 )
@@ -39,6 +43,12 @@ _SAVE_SONG_RE = re.compile(
 _UNDO_RE = re.compile(r"^\s*(?:please\s+)?undo\s+that\s*[.!?]*\s*$", re.I)
 
 _NOTHING_TO_UNDO = "There's nothing to undo yet."
+_LOGGER = logging.getLogger(__name__)
+
+_WHAT_PLAYLISTS_RE = re.compile(
+    r"^\s*what playlists do i have\s*\??\s*$",
+    re.I,
+)
 
 
 def _parse_tool_json(raw: str) -> dict:
@@ -184,7 +194,7 @@ def try_deterministic_vague_playlist_reply(
             "I couldn't find a playlist in your library that I can play from here.",
             steps,
         )
-    attempts = min(2, len(candidates))
+    attempts = min(3, len(candidates))
     last_msg = "I couldn't start a playlist just now."
     for row in candidates[:attempts]:
         pid = row.get("id")
@@ -198,15 +208,137 @@ def try_deterministic_vague_playlist_reply(
             steps,
         )
         play = _parse_tool_json(play_raw)
-        if play.get("ok"):
-            return DeterministicChatResult(
-                f"Playing {pname} — want a different one?",
-                steps,
+        verified = bool(play.get("playback_verified"))
+        if play.get("ok") and verified:
+            reply = format_playlist_play_chat_reply(
+                pname,
+                play_raw,
+                offer_alternate=True,
+            )
+            return DeterministicChatResult(reply, steps)
+        err_body = play.get("spotify_error_body_redacted")
+        if isinstance(err_body, str) and err_body.strip():
+            _LOGGER.warning(
+                "owned_playlist_play_failed playlist_id=%s body=%s",
+                pid,
+                err_body[:400],
             )
         last_msg = str(
             play.get("user_message") or play.get("error") or last_msg
         ).strip()
     return DeterministicChatResult(last_msg, steps)
+
+
+def try_deterministic_list_playlists_reply(
+    user_text: str,
+    runner: SpotifyToolRunner,
+) -> DeterministicChatResult | None:
+    if not _WHAT_PLAYLISTS_RE.match((user_text or "").strip()):
+        return None
+    steps: list[tuple[str, dict, str]] = []
+    raw = _run_tool(runner, "spotify_user_playlists", {"limit": SPOTIFY_DEV_MAX_PAGE}, steps)
+    data = _parse_tool_json(raw)
+    total = data.get("total")
+    items = data.get("items") if isinstance(data.get("items"), list) else []
+    names: list[str] = []
+    for row in items[:6]:
+        if isinstance(row, dict) and isinstance(row.get("name"), str):
+            name = row["name"].strip()
+            if name:
+                names.append(name)
+    if isinstance(total, int):
+        head = f"You have {total} playlists"
+    else:
+        head = "Here are your playlists"
+    if names:
+        sample = ", ".join(names[:5])
+        reply = f"{head}, including {sample}."
+    else:
+        reply = f"{head}."
+    return DeterministicChatResult(reply, steps)
+
+
+def try_deterministic_mood_play_reply(
+    user_text: str,
+    runner: SpotifyToolRunner,
+) -> DeterministicChatResult | None:
+    mood = extract_play_something_mood(user_text)
+    if not mood:
+        return None
+    steps: list[tuple[str, dict, str]] = []
+    search_raw = _run_tool(
+        runner,
+        "spotify_search_playlists",
+        {"query": mood, "limit": 5},
+        steps,
+    )
+    search = _parse_tool_json(search_raw)
+    items = search.get("items") if isinstance(search.get("items"), list) else None
+    if not items:
+        playlists = search.get("playlists")
+        items = playlists.get("items") if isinstance(playlists, dict) else None
+    if not isinstance(items, list) or not items:
+        search_raw = _run_tool(
+            runner,
+            "spotify_search",
+            {"query": mood, "types": "track", "limit": 5},
+            steps,
+        )
+        search = _parse_tool_json(search_raw)
+        tracks = search.get("tracks")
+        track_items = tracks.get("items") if isinstance(tracks, dict) else None
+        if not isinstance(track_items, list) or not track_items:
+            return DeterministicChatResult(
+                f"I couldn't find anything {mood} to play just now.",
+                steps,
+            )
+        first = track_items[0]
+        if not isinstance(first, dict):
+            return DeterministicChatResult(
+                f"I couldn't find anything {mood} to play just now.",
+                steps,
+            )
+        title = str(first.get("name") or mood).strip()
+        artists = first.get("artists") if isinstance(first.get("artists"), list) else []
+        artist = ""
+        if artists and isinstance(artists[0], dict):
+            artist = str(artists[0].get("name") or "").strip()
+        name, args, raw = play_track_tool_step(runner, title, artist)
+        steps.append((name, args, raw))
+        reply = format_play_track_chat_reply(title, artist, raw)
+        if reply.lower().startswith("playing"):
+            return DeterministicChatResult(
+                f"{reply.rstrip('.')} — want something different?",
+                steps,
+            )
+        return DeterministicChatResult(reply, steps)
+    first_pl = items[0]
+    if not isinstance(first_pl, dict):
+        return DeterministicChatResult(
+            f"I couldn't find a {mood} playlist to play just now.",
+            steps,
+        )
+    pid = first_pl.get("id")
+    pname = str(first_pl.get("name") or mood).strip()
+    if not isinstance(pid, str):
+        return DeterministicChatResult(
+            f"I couldn't find a {mood} playlist to play just now.",
+            steps,
+        )
+    play_raw = _run_tool(
+        runner,
+        "spotify_play_playlist",
+        {"playlist_id": pid, "playback_request_label": pname},
+        steps,
+    )
+    play = _parse_tool_json(play_raw)
+    if play.get("ok") and play.get("playback_verified"):
+        reply = format_playlist_play_chat_reply(pname, play_raw, offer_alternate=True)
+        return DeterministicChatResult(reply, steps)
+    return DeterministicChatResult(
+        format_playlist_play_chat_reply(pname, play_raw, offer_alternate=False),
+        steps,
+    )
 
 
 def try_deterministic_chat_reply(
@@ -245,6 +377,15 @@ def try_deterministic_chat_reply(
             steps,
         )
 
+    if _WHAT_PLAYLISTS_RE.match(t):
+        listed = try_deterministic_list_playlists_reply(user_text, runner)
+        if listed is not None:
+            return listed
+
+    mood = try_deterministic_mood_play_reply(user_text, runner)
+    if mood is not None:
+        return mood
+
     if prompt_asks_whats_playing(t):
         state_raw = _run_tool(runner, "spotify_playback_state", {}, steps)
         try:
@@ -253,6 +394,20 @@ def try_deterministic_chat_reply(
             state = {}
         player = state if isinstance(state, dict) else {}
         return DeterministicChatResult(format_now_playing_chat_reply(player), steps)
+
+    if prompt_asks_previous(t):
+        raw = _run_tool(runner, "spotify_skip_previous", {}, steps)
+        data = _parse_tool_json(raw)
+        player = data.get("player_after")
+        skipped = bool(data.get("skipped"))
+        return DeterministicChatResult(
+            format_skip_reply(
+                player if isinstance(player, dict) else None,
+                skipped=skipped,
+                direction="previous",
+            ),
+            steps,
+        )
 
     if prompt_asks_skip(t):
         raw = _run_tool(runner, "spotify_skip_next", {}, steps)

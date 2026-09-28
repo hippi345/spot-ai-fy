@@ -43,9 +43,13 @@ _GENERIC_TRACK_TITLES = frozenset(
 
 def prompt_blocks_deterministic_play_shortcuts(user_text: str) -> bool:
     """True when play/track/queue shortcuts must not run (LLM handles the turn)."""
+    from spot_backend.play_bare_intent import extract_play_music_by_artist
+
     t = (user_text or "").strip()
     if not t:
         return True
+    if extract_play_music_by_artist(t):
+        return False
     if prompt_is_informational(t) or prompt_is_capability_question(t):
         return True
     if prompt_is_multi_step(t):

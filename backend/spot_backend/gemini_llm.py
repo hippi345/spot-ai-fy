@@ -551,7 +551,7 @@ def run_chat_turn_gemini(
     tool_nudge_used = False
     vague_playlist_nudge_used = False
     first_text_answer: str | None = None
-    empty_turn_retries = 3
+    empty_turn_retries = 1
     # Gemini 2.5-flash with our 40-tool catalog is *unreliable* in AUTO function-
     # calling mode — measured empty-content rate is 12/15 (80%) even with a
     # short system prompt. ANY mode forces the model to emit a tool call, which
@@ -723,6 +723,7 @@ def run_chat_turn_gemini(
                                 args_summary=summarize_tool_args(args),
                                 outcome=tool_trace_outcome(result),
                                 known_secrets=[key],
+                                raw_result=result,
                             )
                         else:
                             import time as _time
@@ -744,6 +745,7 @@ def run_chat_turn_gemini(
                                 outcome=tool_trace_outcome(result),
                                 duration_ms=duration_ms,
                                 known_secrets=[key],
+                                raw_result=result,
                             )
                         turn_tool_calls.append((name, result))
                         last_tool_signature = sig

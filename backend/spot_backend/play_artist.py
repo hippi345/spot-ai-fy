@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from spot_backend.playback_reply import describe_playing_item
+from spot_backend.playback_reply import describe_playing_item, format_verified_playback_line
 from spot_backend.spotify_tools import SpotifyToolRunner
 
 
@@ -54,13 +54,13 @@ def format_play_artist_reply(artist_name: str, raw: str) -> str:
     play_ok = data.get("ok") is True or (
         isinstance(playback, dict) and playback.get("ok") is True
     )
-    if play_ok and (verified or _artist_credit_matches_requested(player, resolved_name)):
-        title, credit = describe_playing_item(
-            player.get("item") if isinstance(player, dict) else None
+    if verified:
+        line = format_verified_playback_line(
+            player if isinstance(player, dict) else None,
+            verified=True,
         )
-        if credit:
-            return f"Playing {title} by {credit}."
-        return f"Playing {title}."
+        if line:
+            return line
     if play_ok and not verified:
         return (
             f"I requested playback for {resolved_name}, but I could not confirm it on your device yet."

@@ -16,6 +16,36 @@ def playlist_id_is_spotify_curated(playlist_id: str) -> bool:
     return pid.startswith(_SPOTIFY_CURATED_PREFIX)
 
 
+def playlist_row_track_total(row: dict[str, Any]) -> int | None:
+    """Track count from /me/playlists row; None when the API omitted counts."""
+    direct = row.get("tracks_total")
+    if isinstance(direct, int) and direct >= 0:
+        return direct
+    tracks = row.get("tracks")
+    if isinstance(tracks, dict):
+        total = tracks.get("total")
+        if isinstance(total, int) and total >= 0:
+            return total
+    items = row.get("items")
+    if isinstance(items, dict):
+        total = items.get("total")
+        if isinstance(total, int) and total >= 0:
+            return total
+    return None
+
+
+def playlist_row_track_total_or_zero(row: dict[str, Any]) -> int:
+    total = playlist_row_track_total(row)
+    return total if isinstance(total, int) else 0
+
+
+def playlist_row_has_tracks(row: dict[str, Any]) -> bool:
+    total = playlist_row_track_total(row)
+    if total is None:
+        return True
+    return total > 0
+
+
 def playlist_row_playable_owned(row: dict[str, Any], me_id: str) -> bool:
     if not isinstance(row, dict):
         return False
@@ -44,7 +74,11 @@ def owned_playlist_candidates(
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in items:
-        if isinstance(row, dict) and playlist_row_playable_owned(row, me_id):
+        if (
+            isinstance(row, dict)
+            and playlist_row_playable_owned(row, me_id)
+            and playlist_row_has_tracks(row)
+        ):
             out.append(row)
     return out
 
@@ -76,6 +110,7 @@ def fetch_owned_playlist_candidates_paginated(
         owned.extend(owned_playlist_candidates(items, me_id))
         if owned:
             return owned, steps
+        # Keep paging when the only owned rows on this page were empty playlists.
         total = data.get("total")
         if not items:
             break

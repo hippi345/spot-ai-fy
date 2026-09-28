@@ -66,6 +66,36 @@ def tool_trace_outcome(raw_result: str) -> str:
     return "ok"
 
 
+def tool_trace_spotify_error_body(raw_result: str) -> str | None:
+    """Extract redacted Spotify error body from a tool JSON payload (nested or top-level)."""
+    try:
+        data = json.loads(raw_result)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    stack: list[dict[str, Any]] = [data]
+    playback = data.get("playback")
+    if isinstance(playback, dict):
+        stack.append(playback)
+    inner = data.get("playback_result")
+    if isinstance(inner, str):
+        try:
+            parsed = json.loads(inner)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            stack.append(parsed)
+            pb = parsed.get("playback")
+            if isinstance(pb, dict):
+                stack.append(pb)
+    for row in stack:
+        body = row.get("spotify_error_body_redacted")
+        if isinstance(body, str) and body.strip():
+            return body.strip()
+    return None
+
+
 def persist_shortcut_tool_steps(
     data_dir: Path,
     steps: list[tuple[str, dict[str, Any] | None, str]],
@@ -85,6 +115,7 @@ def persist_shortcut_tool_steps(
             args_summary=summarize_tool_args(safe_args),
             outcome=tool_trace_outcome(raw),
             known_secrets=known_secrets,
+            raw_result=raw,
         )
 
 
@@ -97,6 +128,8 @@ def append_tool_trace_record(
     outcome: str,
     duration_ms: int | None = None,
     known_secrets: list[str] | None = None,
+    raw_result: str | None = None,
+    spotify_error_body_redacted: str | None = None,
 ) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     path = tool_trace_log_path(data_dir)
@@ -109,6 +142,11 @@ def append_tool_trace_record(
     }
     if duration_ms is not None:
         row["duration_ms"] = duration_ms
+    err_body = spotify_error_body_redacted
+    if not err_body and raw_result:
+        err_body = tool_trace_spotify_error_body(raw_result)
+    if err_body and outcome == "error":
+        row["spotify_error_body_redacted"] = err_body
     line = json.dumps(row, ensure_ascii=False)
     secrets = [s for s in (known_secrets or []) if s]
     if secrets:

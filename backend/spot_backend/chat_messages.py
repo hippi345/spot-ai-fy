@@ -372,10 +372,37 @@ def sanitize_raw_tool_json_in_reply(text: str) -> str:
     return text
 
 
+def collapse_duplicate_reply_text(text: str) -> str:
+    """Drop exact duplicate sentences or paragraphs while preserving first occurrence."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", raw) if p.strip()]
+    if not paragraphs:
+        return ""
+    seen_paras: set[str] = set()
+    kept_paras: list[str] = []
+    for para in paragraphs:
+        if para in seen_paras:
+            continue
+        seen_paras.add(para)
+        seen_sent: set[str] = set()
+        sent_parts: list[str] = []
+        for sentence in _split_sentences(para):
+            if sentence in seen_sent:
+                continue
+            seen_sent.add(sentence)
+            sent_parts.append(sentence)
+        if sent_parts:
+            kept_paras.append(_join_sentences(sent_parts))
+    return "\n\n".join(kept_paras).strip()
+
+
 def prepare_user_visible_reply(text: str, tool_results: list[str] | None = None) -> str:
     from spot_backend.reply_grounding import ground_reply_artist_credits
 
-    cleaned = scrub_internal_tool_references(text)
+    cleaned = collapse_duplicate_reply_text(text)
+    cleaned = scrub_internal_tool_references(cleaned)
     cleaned = scrub_user_visible_spotify_errors(cleaned)
     cleaned = strip_internal_correction_leaks(cleaned)
     cleaned = sanitize_raw_tool_json_in_reply(cleaned)
