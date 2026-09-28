@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 
+from spot_backend.chat_shortcut_policy import prompt_blocks_deterministic_play_shortcuts
 from spot_backend.deterministic_chat_types import DeterministicChatResult
 from spot_backend.play_artist import format_play_artist_reply, play_artist_tool_step
 from spot_backend.play_artist_intent import extract_play_artist_name
@@ -170,7 +171,7 @@ def try_deterministic_chat_reply(
             steps,
         )
 
-    track_req = extract_play_track_request(t)
+    track_req = extract_play_track_request(t) if not prompt_blocks_deterministic_play_shortcuts(t) else None
     if track_req:
         track_title, track_artist = track_req
         name, args, raw = play_track_tool_step(runner, track_title, track_artist)
@@ -180,13 +181,15 @@ def try_deterministic_chat_reply(
             steps,
         )
 
-    artist_name = extract_play_artist_name(t)
+    artist_name = (
+        extract_play_artist_name(t) if not prompt_blocks_deterministic_play_shortcuts(t) else None
+    )
     if artist_name:
         name, args, raw = play_artist_tool_step(runner, artist_name)
         steps.append((name, args, raw))
         return DeterministicChatResult(format_play_artist_reply(artist_name, raw), steps)
 
-    queue_req = extract_queue_track_request(t)
+    queue_req = extract_queue_track_request(t) if not prompt_blocks_deterministic_play_shortcuts(t) else None
     if queue_req:
         track_title, artist = queue_req
         qargs: dict[str, str] = {"track_name": track_title}

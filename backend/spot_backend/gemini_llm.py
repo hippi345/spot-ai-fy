@@ -478,6 +478,8 @@ def run_chat_turn_gemini(
         runner,
         conversation_id=conversation_id,
         emit=emit,
+        settings=settings,
+        known_secrets=[key],
     )
     if shortcut_reply is not None:
         runner.close()
@@ -661,6 +663,20 @@ def run_chat_turn_gemini(
                             emit({"type": "tool_start", "name": name})
                         if informational_turn and spotify_tool_is_mutating(name):
                             result = refused_mutating_tool_result(name)
+                            from spot_backend.reply_tool_trace import (
+                                append_tool_trace_record,
+                                summarize_tool_args,
+                                tool_trace_outcome,
+                            )
+
+                            append_tool_trace_record(
+                                settings.data_dir,
+                                conversation_id=conversation_id,
+                                tool_name=name,
+                                args_summary=summarize_tool_args(args),
+                                outcome=tool_trace_outcome(result),
+                                known_secrets=[key],
+                            )
                         else:
                             import time as _time
 

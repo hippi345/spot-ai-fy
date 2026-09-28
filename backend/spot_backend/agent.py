@@ -528,6 +528,7 @@ def iter_ollama_chat_events(
         user_text,
         runner,
         conversation_id=conversation_id,
+        settings=settings,
     )
     if shortcut_events is not None:
         yield from shortcut_events

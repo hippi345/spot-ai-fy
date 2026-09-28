@@ -71,7 +71,12 @@ def run_chat_turn_anthropic(
     hist = _coerce_chat_history(history)
     seed_runner_from_chat_history(runner, hist, conversation_id=conversation_id)
     shortcut = gemini_deterministic_shortcut_reply(
-        user_text, runner, conversation_id=conversation_id, emit=emit
+        user_text,
+        runner,
+        conversation_id=conversation_id,
+        emit=emit,
+        settings=settings,
+        known_secrets=[key],
     )
     if shortcut is not None:
         runner.close()

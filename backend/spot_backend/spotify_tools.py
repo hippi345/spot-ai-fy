@@ -4717,14 +4717,24 @@ class SpotifyToolRunner:
         except (json.JSONDecodeError, ValueError):
             play_result = {"ok": False, "raw": play_raw}
         play_ok = isinstance(play_result, dict) and play_result.get("ok") is True
+        player = self._poll_player_state()
+        verified = bool(
+            isinstance(play_result, dict) and play_result.get("playback_verified") is True
+        )
+        if player and isinstance(first, dict):
+            track_uri = str(first.get("uri") or "")
+            if track_uri and self._track_uri_from_player(player) == track_uri:
+                verified = True
         summary: dict[str, Any] = {
             "artist_id": cid,
             "artist_name": artist_name,
             "play_body": play_body,
             "playback": play_result,
-            "ok": play_ok,
+            "player_after": player,
+            "playback_verified": verified,
+            "ok": verified,
         }
-        if not play_ok:
+        if not play_ok and not verified:
             user_msg = play_result.get("user_message") if isinstance(play_result, dict) else None
             if isinstance(user_msg, str) and user_msg.strip():
                 summary["user_message"] = user_msg.strip()

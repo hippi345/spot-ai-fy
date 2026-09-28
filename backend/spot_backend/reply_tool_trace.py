@@ -62,6 +62,28 @@ def tool_trace_outcome(raw_result: str) -> str:
     return "ok"
 
 
+def persist_shortcut_tool_steps(
+    data_dir: Path,
+    steps: list[tuple[str, dict[str, Any] | None, str]],
+    *,
+    conversation_id: str | None = None,
+    known_secrets: list[str] | None = None,
+) -> None:
+    """Append trace rows for deterministic shortcut tool chains."""
+    for name, args, raw in steps:
+        if not isinstance(name, str) or not name.strip():
+            continue
+        safe_args = args if isinstance(args, dict) else {}
+        append_tool_trace_record(
+            data_dir,
+            conversation_id=conversation_id,
+            tool_name=name,
+            args_summary=summarize_tool_args(safe_args),
+            outcome=tool_trace_outcome(raw),
+            known_secrets=known_secrets,
+        )
+
+
 def append_tool_trace_record(
     data_dir: Path,
     *,

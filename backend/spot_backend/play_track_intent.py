@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import re
 
+from spot_backend.chat_shortcut_policy import play_track_title_too_vague_for_shortcut
+
 _PLAY_TRACK_BY_RE = re.compile(
-    r"^\s*(?:(?:can|could|will|would)\s+you\s+)?(?:please\s+)?play\s+(.+?)\s+by\s+(.+?)\s*[.!?]*\s*$",
+    r"^\s*(?:please\s+)?play\s+(.+?)\s+by\s+(.+?)\s*[.!?]*\s*$",
     re.I,
 )
 
@@ -30,5 +32,7 @@ def extract_play_track_request(user_text: str) -> tuple[str, str] | None:
     if _EXCLUDE_PLAY_TRACK_RE.search(title):
         return None
     if re.match(r"^(?:some\s+)?music\b", title, re.I):
+        return None
+    if play_track_title_too_vague_for_shortcut(title):
         return None
     return title, artist

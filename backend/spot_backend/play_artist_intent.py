@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import re
 
+from spot_backend.chat_shortcut_policy import play_artist_name_too_vague_for_shortcut
+
 _PLAY_ARTIST_RE = re.compile(
-    r"^\s*(?:(?:can|could|will|would)\s+you\s+)?(?:please\s+)?play\s+(.+?)\s*[.!?]*\s*$",
+    r"^\s*(?:please\s+)?play\s+(.+?)\s*[.!?]*\s*$",
     re.I,
 )
 
 _EXCLUDE_PLAY_TARGET_RE = re.compile(
-    r"\b(?:playlist|album|song|track|episode|podcast|music|my\s+\w+\s+playlist)\b",
+    r"\b(?:playlists?|albums?|songs?|tracks?|episodes?|podcasts?|music|my\s+\w+\s+playlist)\b",
     re.I,
 )
 
@@ -45,5 +47,7 @@ def extract_play_artist_name(user_text: str) -> str | None:
     if re.match(r"^artist\s+", name, re.I):
         return None
     if name.lower() in _GENERIC_PLAY_TARGETS:
+        return None
+    if play_artist_name_too_vague_for_shortcut(name):
         return None
     return name
