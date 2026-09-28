@@ -119,15 +119,15 @@ _MULTI_STEP_RE = re.compile(
     re.I,
 )
 
-
-def _prompt_has_action_request(text: str) -> bool:
-    """True when the user is asking the agent to perform a Spotify action now."""
-    t = text.strip()
-    if not t:
-        return False
-    if _LEADING_ACTION_REQUEST_RE.match(t):
-        return True
-    return bool(_POLITE_ACTION_REQUEST_RE.search(t))
+_CAPABILITY_INTERFACE_RE = re.compile(
+    r"(?:"
+    r"\b(?:via|through|using|with)\s+(?:this\s+)?(?:interface|app|chat|spot-?ai-?fy|here)\b"
+    r"|(?:does|can)\s+(?:this|the)\s+(?:app|interface|chat)\b"
+    r"|(?:are\s+you\s+able|is\s+it\s+possible)\s+to\b"
+    r"|(?:what\s+can\s+you|what\s+do\s+you)\s+(?:do|support)\b"
+    r")",
+    re.I,
+)
 
 
 def _prompt_is_question_form(text: str) -> bool:
@@ -137,6 +137,38 @@ def _prompt_is_question_form(text: str) -> bool:
     if t.endswith("?"):
         return True
     return bool(_QUESTION_START_RE.match(t))
+
+
+def prompt_is_capability_question(user_text: str) -> bool:
+    """Whether the user asks what the app can do (not a command to act now)."""
+    t = (user_text or "").strip()
+    if not t or not _prompt_is_question_form(t):
+        return False
+    if _CAPABILITY_INTERFACE_RE.search(t):
+        return True
+    low = t.lower()
+    if re.search(r"\bcan\s+(?:you|this)\b", t, re.I) and re.search(
+        r"\b(?:podcasts?|episodes?)\b", low
+    ):
+        if not re.search(
+            r"\bplay\s+(?:the\s+)?(?:episode|podcast)\s+[\"']?\w",
+            t,
+            re.I,
+        ):
+            return True
+    return False
+
+
+def _prompt_has_action_request(text: str) -> bool:
+    """True when the user is asking the agent to perform a Spotify action now."""
+    t = text.strip()
+    if not t:
+        return False
+    if prompt_is_capability_question(t):
+        return False
+    if _LEADING_ACTION_REQUEST_RE.match(t):
+        return True
+    return bool(_POLITE_ACTION_REQUEST_RE.search(t))
 
 
 def _prompt_is_advice_or_explanation(text: str) -> bool:
@@ -278,6 +310,13 @@ def refused_mutating_tool_result(tool_name: str) -> str:
     )
 
 
+CAPABILITY_QUESTION_SUFFIX = """
+
+APP CAPABILITY QUESTION:
+- Answer whether the feature is supported in plain language (yes/no). Do NOT call playback, queue, or library-mutation tools on this turn.
+- Podcast episodes are not supported through these Spotify Web API tools — only music (tracks, albums, artists) and the user's playlists/library controls.
+"""
+
 INFORMATIONAL_REPLY_SYSTEM_SUFFIX = """
 
 INFORMATIONAL TURN (read-only Spotify data allowed; no mutations):
@@ -300,6 +339,8 @@ PURE HOW-TO (app instructions only):
 
 def informational_system_suffix(user_text: str) -> str:
     base = INFORMATIONAL_REPLY_SYSTEM_SUFFIX
+    if prompt_is_capability_question(user_text):
+        return base + CAPABILITY_QUESTION_SUFFIX
     if prompt_is_pure_how_to(user_text):
         return base + PURE_HOW_TO_NO_LOOKUP_SUFFIX
     return base

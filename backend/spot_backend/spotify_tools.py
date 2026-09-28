@@ -1672,17 +1672,48 @@ class SpotifyToolRunner:
                     "query_tried": artist_id,
                 }
             )
-        return _compact(
-            self.client.api_get(
-                f"/artists/{canonical_id}/albums",
-                params={
-                    "include_groups": include_groups,
-                    "limit": limit,
-                    "offset": offset,
-                    "market": market,
-                },
-            )
+        page = self.client.api_get(
+            f"/artists/{canonical_id}/albums",
+            params={
+                "include_groups": include_groups,
+                "limit": limit,
+                "offset": offset,
+                "market": market,
+            },
         )
+        if offset == 0 and isinstance(page, dict):
+
+            def _group_total(group: str) -> int | None:
+                try:
+                    gpage = self.client.api_get(
+                        f"/artists/{canonical_id}/albums",
+                        params={
+                            "include_groups": group,
+                            "limit": 1,
+                            "offset": 0,
+                            "market": market,
+                        },
+                    )
+                except httpx.HTTPError:
+                    return None
+                if isinstance(gpage, dict):
+                    total = gpage.get("total")
+                    if isinstance(total, int):
+                        return total
+                return None
+
+            counts = {
+                "albums": _group_total("album"),
+                "singles": _group_total("single"),
+                "compilations": _group_total("compilation"),
+            }
+            page = dict(page)
+            page["discography_counts"] = counts
+            page["assistant_guidance"] = (
+                "Report studio album count (discography_counts.albums), singles, and compilations "
+                "separately — do not add singles or compilations into the album number."
+            )
+        return _compact(page)
 
     def _artist_latest_album(self, arguments: dict[str, Any]) -> str:
         raw_id = _pick_arg(arguments, "artist_id", "artistId", "id")
@@ -1690,6 +1721,7 @@ class SpotifyToolRunner:
         if not artist_id:
             return json.dumps({"error": "artist_id is required"})
         include_groups = _normalize_include_groups(_coerce_str(arguments.get("include_groups"), "album"))
+        prefer = _coerce_str(arguments.get("prefer"), "album").strip().lower()
         limit = _safe_int(arguments.get("limit"), 10, lo=1, hi=10)
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
         canonical_id = self._canonical_artist_id(artist_id, market)
@@ -1716,27 +1748,43 @@ class SpotifyToolRunner:
                 return [it for it in page["items"] if isinstance(it, dict)]
             return []
 
-        items = [
-            it
-            for it in _album_items(include_groups)
-            if str(it.get("album_type") or "album") == "album"
-        ]
-        if not items:
-            items = [
-                it
-                for it in _album_items("single")
-                if str(it.get("album_type") or "single") == "single"
-            ]
-        latest = pick_latest_album_release(items)
+        pool = _album_items(include_groups)
+        if prefer == "single":
+            singles = [it for it in pool if str(it.get("album_type") or "") == "single"]
+            if not singles:
+                singles = [
+                    it
+                    for it in _album_items("single")
+                    if str(it.get("album_type") or "single") == "single"
+                ]
+            latest = pick_latest_album_release(singles)
+            kind = "single"
+        elif prefer == "album":
+            albums = [it for it in pool if str(it.get("album_type") or "") == "album"]
+            if not albums:
+                albums = [
+                    it
+                    for it in _album_items("album")
+                    if str(it.get("album_type") or "album") == "album"
+                ]
+            latest = pick_latest_album_release(albums)
+            kind = "album"
+        else:
+            combined = _album_items("album,single")
+            latest = pick_latest_album_release(combined)
+            kind = str(latest.get("album_type") if latest else "release")
         if not latest:
-            return json.dumps({"error": "No albums found for this artist", "artist_id": canonical_id})
+            return json.dumps({"error": "No releases found for this artist", "artist_id": canonical_id})
         return json.dumps(
             {
                 "ok": True,
                 "artist_id": canonical_id,
+                "latest_release": latest,
                 "latest_album": latest,
                 "release_date": latest.get("release_date"),
                 "album_type": latest.get("album_type"),
+                "prefer": prefer,
+                "release_kind": kind,
             },
             ensure_ascii=False,
         )

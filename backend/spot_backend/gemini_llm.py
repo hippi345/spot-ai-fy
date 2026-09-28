@@ -38,6 +38,7 @@ from spot_backend.prompt_intent import (
     spotify_tool_is_mutating,
 )
 from spot_backend.context_loader import load_optional_agent_context_markdown
+from spot_backend.agent_system_extras import SHARED_AGENT_BEHAVIOR_SUFFIX
 from spot_backend.llm_catalog import DEFAULT_MODEL_BY_PROVIDER
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
 
@@ -482,7 +483,7 @@ def run_chat_turn_gemini(
         runner.close()
         return shortcut_reply
     informational_turn = prompt_is_informational(user_text)
-    full_system = _SYSTEM + load_optional_agent_context_markdown(settings)
+    full_system = _SYSTEM + SHARED_AGENT_BEHAVIOR_SUFFIX + load_optional_agent_context_markdown(settings)
     if informational_turn:
         full_system = full_system + informational_system_suffix(user_text)
 
@@ -661,7 +662,26 @@ def run_chat_turn_gemini(
                         if informational_turn and spotify_tool_is_mutating(name):
                             result = refused_mutating_tool_result(name)
                         else:
+                            import time as _time
+
+                            t0 = _time.perf_counter()
                             result = runner.run(name, args)
+                            duration_ms = int((_time.perf_counter() - t0) * 1000)
+                            from spot_backend.reply_tool_trace import (
+                                append_tool_trace_record,
+                                summarize_tool_args,
+                                tool_trace_outcome,
+                            )
+
+                            append_tool_trace_record(
+                                settings.data_dir,
+                                conversation_id=conversation_id,
+                                tool_name=name,
+                                args_summary=summarize_tool_args(args),
+                                outcome=tool_trace_outcome(result),
+                                duration_ms=duration_ms,
+                                known_secrets=[key],
+                            )
                         turn_tool_calls.append((name, result))
                         last_tool_signature = sig
                         last_tool_result = result
@@ -713,7 +733,12 @@ def run_chat_turn_gemini(
                                 }
                             )
                             continue
-                    if reply_claims_unbacked_action(joined, successful_tools, user_text=user_text):
+                    if reply_claims_unbacked_action(
+                        joined,
+                        successful_tools,
+                        user_text=user_text,
+                        turn_tool_calls=turn_tool_calls,
+                    ):
                         if not action_claim_reprompted:
                             action_claim_reprompted = True
                             contents.append({"role": "model", "parts": [{"text": joined}]})

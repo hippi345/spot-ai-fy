@@ -339,6 +339,7 @@ Default data directory: `~/.spot_ai_fy` on macOS/Linux and `%USERPROFILE%\.spot_
 | Secrets fallback | `{DATA_DIR}/secrets.json` (mode `0600`) | JSON when OS keychain is unavailable |
 | Gemini API key (wizard) | OS keychain service **`spot-ai-fy`** (preferred) or `secrets.json` | Not returned from API responses |
 | LLM UI overrides | `{DATA_DIR}/llm_provider.json` | JSON: `provider`, optional `ollama_model` / `gemini_model` / `ollama_small_model` |
+| Chat tool traces (debug) | `{DATA_DIR}/chat_tool_traces.jsonl` | Append-only JSONL per tool call: tool name, short args summary, ok/error/refused, optional duration — no tokens or API keys |
 | Setup / secrets write lock | `{DATA_DIR}/.spot_ai_fy_setup.lock` | `filelock` sidecar while merging setup files |
 | Optional agent context | `AGENT_CONTEXT_FILE` from `.env`, else `backend/AGENT_CONTEXT.md`, else `{DATA_DIR}/Spot-AI-fy-agent-context.md` | Markdown read into the system prompt |
 | PKCE `state` → `code_verifier` | Backend process memory only | Cleared after OAuth callback |

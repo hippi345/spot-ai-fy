@@ -85,6 +85,44 @@ def evaluate_expected_tools(step: int, tools: list[ToolCallRecord]) -> tuple[boo
         if "spotify_add_to_queue" in names:
             return True, "spotify_add_to_queue"
         return False, f"Expected spotify_add_to_queue; got {names}"
+    if step == 8:
+        if _has_any(
+            names,
+            {
+                "spotify_play_track",
+                "spotify_start_resume_playback",
+                "spotify_play_artist",
+                "spotify_artist_latest_album",
+                "spotify_artist_albums",
+                "spotify_search",
+            },
+        ):
+            return True, "follow-up resolved pronoun with catalog/play tools"
+        return False, f"Expected play/search/album tools after pronoun follow-up; got {names}"
+    if step == 9:
+        if _has_any(
+            names,
+            {
+                "spotify_start_resume_playback",
+                "spotify_play_playlist",
+                "spotify_play_track",
+                "spotify_play_artist",
+                "spotify_play_next",
+                "spotify_add_to_queue",
+            },
+        ):
+            return False, f"Capability question must not call playback; got {names}"
+        return True, "no playback tools"
+    if step == 10:
+        if "spotify_play_playlist" in names or "spotify_start_resume_playback" in names:
+            if "spotify_user_playlists" in names:
+                return True, "user_playlists + playback"
+            return True, "playback without listing (acceptable if playlists cached)"
+        return False, f"Expected playlist pick + play; got {names}"
+    if step == 11:
+        if _has_any(names, {"spotify_play_playlist", "spotify_start_resume_playback", "spotify_search"}):
+            return True, "ambiguous name → search or play"
+        return False, f"Expected play/search for ambiguous name; got {names}"
     return False, "Unknown step"
 
 
@@ -207,11 +245,41 @@ def build_reply_validators(state_holder: dict[str, Any]) -> dict[int, ReplyValid
             return True, ""
         return False, "Reply did not mention queue/Gravity"
 
+    def v8(reply: str, _np: dict[str, Any]) -> tuple[bool, str]:
+        low = reply.lower()
+        if low.startswith("playing") and "weeknd" not in low and "single" not in low:
+            return False, "Claimed playing without context"
+        return True, ""
+
+    def v9(reply: str, _np: dict[str, Any]) -> tuple[bool, str]:
+        low = reply.lower()
+        if low.startswith("playing"):
+            return False, "Capability answer must not claim playback"
+        if "podcast" in low or "no" in low or "not" in low:
+            return True, ""
+        return True, ""
+
+    def v10(reply: str, np: dict[str, Any]) -> tuple[bool, str]:
+        if np.get("is_playing") is True:
+            return True, ""
+        if "playing" in reply.lower():
+            return True, ""
+        return False, "Expected playback or playing acknowledgement"
+
+    def v11(reply: str, np: dict[str, Any]) -> tuple[bool, str]:
+        if np.get("is_playing") is True or "playing" in reply.lower():
+            return True, ""
+        return False, "Expected to act on ambiguous playlist name"
+
     return {
         1: v1,
         2: v2,
         6: v6,
         7: v7,
+        8: v8,
+        9: v9,
+        10: v10,
+        11: v11,
     }
 
 

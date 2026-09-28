@@ -37,6 +37,7 @@ from spot_backend.prompt_intent import (
 )
 from spot_backend.config import Settings, get_settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
+from spot_backend.agent_system_extras import SHARED_AGENT_BEHAVIOR_SUFFIX
 from spot_backend.llm_prefs import read_effective_llm_provider, read_effective_ollama_model
 from spot_backend.ollama_agent_profile import (
     SMALL_MODEL_SYSTEM_PROMPT,
@@ -515,7 +516,7 @@ def iter_ollama_chat_events(
         small_model = use_small_model_mode(settings, ollama_model)
         base_system = (
             SMALL_MODEL_SYSTEM_PROMPT if small_model else _SYSTEM
-        ) + load_optional_agent_context_markdown(settings)
+        ) + SHARED_AGENT_BEHAVIOR_SUFFIX + load_optional_agent_context_markdown(settings)
         active_tools = filter_ollama_tools(OLLAMA_TOOLS, small=small_model)
         informational_turn = prompt_is_informational(user_text)
         if informational_turn:
@@ -779,7 +780,7 @@ def iter_ollama_chat_events(
                             reprompt_action_claim = True
                             break
                     if reply_claims_unbacked_action(
-                        final_text, successful_tools, user_text=user_text
+                        final_text, successful_tools, user_text=user_text, turn_tool_calls=turn_tool_calls
                     ):
                         if not action_claim_reprompted:
                             action_claim_reprompted = True

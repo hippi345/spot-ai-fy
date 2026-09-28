@@ -142,7 +142,11 @@ def run_chat_turn_anthropic(
                         openai_style_calls,
                         state,
                         informational_turn=informational_turn,
+                        user_text=user_text,
                         emit=emit,
+                        trace_data_dir=settings.data_dir,
+                        trace_conversation_id=conversation_id,
+                        trace_secrets=[key],
                     )
                     tool_result_blocks: list[dict[str, Any]] = []
                     for tm in tool_msgs:

@@ -185,6 +185,7 @@ def reply_claims_unbacked_action(
     successful_tools: set[str],
     *,
     user_text: str = "",
+    turn_tool_calls: list[tuple[str, str]] | None = None,
 ) -> bool:
     stripped = (text or "").strip()
     if not stripped:
@@ -198,6 +199,10 @@ def reply_claims_unbacked_action(
             continue
         if successful_tools.intersection(required_any):
             continue
+        if turn_tool_calls:
+            attempted = [name for name, raw in turn_tool_calls if name in required_any]
+            if attempted and all(not tool_result_succeeded(name, raw) for name, raw in turn_tool_calls if name in required_any):
+                return True
         if required_any is _PLAYBACK_TOOLS and _playback_state_backs_reply(
             user_text, successful_tools, stripped
         ):

@@ -32,6 +32,8 @@ from tests.smoke_spotify_state import SpotifyPlaybackState, install_stateful_spo
 
 pytestmark = pytest.mark.ollama_smoke
 
+from dataclasses import dataclass
+
 SMOKE_PROMPTS: list[tuple[int, str]] = [
     (1, "Play John Mayer"),
     (2, "What's playing?"),
@@ -40,6 +42,31 @@ SMOKE_PROMPTS: list[tuple[int, str]] = [
     (5, "Resume"),
     (6, "What are my playlists?"),
     (7, "Queue Gravity by John Mayer"),
+]
+
+
+@dataclass(frozen=True)
+class OllamaSmokeTurn:
+    step: int
+    message: str
+    history: list[dict[str, str]] | None = None
+
+
+SMOKE_EXTENDED_TURNS: list[OllamaSmokeTurn] = [
+    OllamaSmokeTurn(
+        8,
+        "play his latest single",
+        history=[
+            {"role": "user", "content": "Tell me about The Weeknd"},
+            {
+                "role": "assistant",
+                "content": "The Weeknd is a Canadian singer known for hits like Blinding Lights.",
+            },
+        ],
+    ),
+    OllamaSmokeTurn(9, "Can you play podcasts via this interface?"),
+    OllamaSmokeTurn(10, "play one of my playlists"),
+    OllamaSmokeTurn(11, "play Jamz"),
 ]
 
 
@@ -60,6 +87,8 @@ def _run_ollama_smoke_case(
     step: int,
     message: str,
     state_holder: dict[str, Any],
+    *,
+    history: list[dict[str, str]] | None = None,
 ) -> PromptSmokeResult:
     reply_validators = build_reply_validators(state_holder)
     state_validators = build_state_validators(state_holder)
@@ -67,7 +96,10 @@ def _run_ollama_smoke_case(
     tool_log.clear()
     result = PromptSmokeResult(step=step, prompt=message, latency_s=0.0)
     try:
-        resp = client.post("/api/chat/stream", json={"message": message})
+        payload: dict[str, Any] = {"message": message}
+        if history:
+            payload["history"] = history
+        resp = client.post("/api/chat/stream", json=payload)
         if resp.status_code != 200:
             result.error = f"HTTP {resp.status_code}: {resp.text[:300]}"
             result.latency_s = time.perf_counter() - t0
@@ -162,6 +194,19 @@ def test_ollama_smoke_steps_1_through_7(
         row = _run_ollama_smoke_case(client, tool_call_log, step, message, state_holder)
         results.append(row)
         print(f"\n--- Step {step}: {message!r} ({row.latency_s:.1f}s) ---")
+        print(results_to_markdown_table([row], model=model))
+
+    for turn in SMOKE_EXTENDED_TURNS:
+        row = _run_ollama_smoke_case(
+            client,
+            tool_call_log,
+            turn.step,
+            turn.message,
+            state_holder,
+            history=turn.history,
+        )
+        results.append(row)
+        print(f"\n--- Step {turn.step}: {turn.message!r} ({row.latency_s:.1f}s) ---")
         print(results_to_markdown_table([row], model=model))
 
     total_s = time.perf_counter() - total_t0

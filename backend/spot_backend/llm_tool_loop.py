@@ -25,6 +25,11 @@ from spot_backend.prompt_intent import (
     refused_mutating_tool_result,
     spotify_tool_is_mutating,
 )
+from spot_backend.reply_tool_trace import (
+    append_tool_trace_record,
+    summarize_tool_args,
+    tool_trace_outcome,
+)
 from spot_backend.spotify_tools import SpotifyToolRunner, _sanitize_model_device_id
 
 EmitFn = Callable[[dict[str, Any]], None]
@@ -59,8 +64,12 @@ def run_tool_calls(
     state: ToolLoopState,
     *,
     informational_turn: bool,
+    user_text: str = "",
     emit: EmitFn | None = None,
     tool_result_cap: int = 12_000,
+    trace_data_dir: Any | None = None,
+    trace_conversation_id: str | None = None,
+    trace_secrets: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Execute tool calls; returns OpenAI-style tool messages to append."""
     tool_messages: list[dict[str, Any]] = []
@@ -101,8 +110,35 @@ def run_tool_calls(
             emit({"type": "tool_start", "name": name})
         if informational_turn and spotify_tool_is_mutating(name):
             result = refused_mutating_tool_result(name)
+            if trace_data_dir is not None:
+                from pathlib import Path
+
+                append_tool_trace_record(
+                    Path(trace_data_dir),
+                    conversation_id=trace_conversation_id,
+                    tool_name=name,
+                    args_summary=summarize_tool_args(args),
+                    outcome=tool_trace_outcome(result),
+                    known_secrets=trace_secrets,
+                )
         else:
+            import time as _time
+
+            t0 = _time.perf_counter()
             result = runner.run(name, args)
+            duration_ms = int((_time.perf_counter() - t0) * 1000)
+            if trace_data_dir is not None:
+                from pathlib import Path
+
+                append_tool_trace_record(
+                    Path(trace_data_dir),
+                    conversation_id=trace_conversation_id,
+                    tool_name=name,
+                    args_summary=summarize_tool_args(args),
+                    outcome=tool_trace_outcome(result),
+                    duration_ms=duration_ms,
+                    known_secrets=trace_secrets,
+                )
         state.deduped_tool_results[dedupe_key] = result
         state.turn_tool_calls.append((name, result))
         state.tool_results.append(result)
@@ -154,7 +190,12 @@ def finalize_assistant_text(
                 kind="reprompt",
                 reprompt_user_content=tool_summarize_reprompt(state.tool_results),
             )
-    if reply_claims_unbacked_action(joined, state.successful_tools, user_text=user_text):
+    if reply_claims_unbacked_action(
+        joined,
+        state.successful_tools,
+        user_text=user_text,
+        turn_tool_calls=state.turn_tool_calls,
+    ):
         if not state.action_claim_reprompted:
             state.action_claim_reprompted = True
             return TextFinalizeAction(kind="reprompt", reprompt_user_content=action_claim_reprompt())
