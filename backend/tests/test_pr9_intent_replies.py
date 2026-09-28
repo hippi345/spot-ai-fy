@@ -402,6 +402,9 @@ def test_t23_save_this_show_uses_last_show_not_track_playback(data_dir, signed_i
     respx.put(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
         return_value=httpx.Response(200, json={})
     )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/library/contains.*").mock(
+        return_value=httpx.Response(200, json=[True])
+    )
     respx.get(f"https://api.spotify.com/v1/shows/{show_id}").mock(
         return_value=httpx.Response(200, json={"id": show_id, "name": "StarTalk"})
     )
@@ -675,6 +678,9 @@ def test_gemini_t23_save_this_show_after_list(data_dir, signed_in_tokens) -> Non
     )
     respx.put(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
         return_value=httpx.Response(200, json={})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/library/contains.*").mock(
+        return_value=httpx.Response(200, json=[True])
     )
     respx.get(f"https://api.spotify.com/v1/shows/{show_id}").mock(
         return_value=httpx.Response(200, json={"id": show_id, "name": "StarTalk"})

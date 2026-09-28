@@ -2645,6 +2645,25 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                 out.append(tr)
         return out
 
+    def _now_playing_user_message(self, player: dict[str, Any] | None) -> str | None:
+        if not isinstance(player, dict):
+            return None
+        item = player.get("item")
+        if not isinstance(item, dict):
+            return None
+        if item.get("type") not in ("track", "episode"):
+            return None
+        name = item.get("name") if isinstance(item.get("name"), str) else None
+        artists = item.get("artists") if isinstance(item.get("artists"), list) else []
+        artist = ""
+        if artists and isinstance(artists[0], dict):
+            artist = str(artists[0].get("name") or "").strip()
+        if name and artist:
+            return f"Now playing {name} by {artist}."
+        if name:
+            return f"Now playing {name}."
+        return None
+
     def _still_playing_user_message(self, player: dict[str, Any] | None) -> str | None:
         if not isinstance(player, dict):
             return None
@@ -2841,10 +2860,16 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                 if isinstance(picked.get("popularity"), int)
                 else "first relevant search result (Spotify ranking)"
             ),
-            "assistant_guidance": (
-                f"Reply in one short honest sentence naming the track ({track_name!r}) now playing."
-            ),
         }
+        if (play_ok or verified) and player:
+            summary["player_after"] = player
+            now_msg = self._now_playing_user_message(player)
+            if now_msg:
+                summary["user_message"] = now_msg
+                item = player.get("item") if isinstance(player.get("item"), dict) else None
+                if isinstance(item, dict) and isinstance(summary.get("track"), dict):
+                    summary["track"]["name"] = item.get("name") or summary["track"].get("name")
+                    summary["track"]["id"] = item.get("id") or summary["track"].get("id")
         if not play_ok and not verified:
             user_msg = play_result.get("user_message") if isinstance(play_result, dict) else None
             if isinstance(user_msg, str) and user_msg.strip():
@@ -6385,6 +6410,16 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             "playback_verified": verified,
             "ok": play_ok or verified,
         }
+        if (play_ok or verified) and player:
+            now_msg = self._now_playing_user_message(player)
+            if now_msg:
+                summary["user_message"] = now_msg
+                item = player.get("item") if isinstance(player.get("item"), dict) else None
+                if isinstance(item, dict):
+                    summary["verified_track"] = {
+                        "id": item.get("id"),
+                        "name": item.get("name"),
+                    }
         if not play_ok and not verified:
             user_msg = play_result.get("user_message") if isinstance(play_result, dict) else None
             still = self._still_playing_user_message(player)

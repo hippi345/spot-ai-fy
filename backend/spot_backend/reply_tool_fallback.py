@@ -172,6 +172,7 @@ _FAILURE_REASON_HUMAN: dict[str, str] = {
         "That's one of your own playlists. Say its exact name if you want me to remove or change it."
     ),
     "show_not_found": "I couldn't find that show's latest episode.",
+    "save_not_verified": "I couldn't confirm that was saved to your Spotify library.",
     "no_episodes_for_show": "I couldn't find that show's latest episode.",
 }
 

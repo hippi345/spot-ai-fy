@@ -172,6 +172,9 @@ def test_t23_rewrite_save_tracks_fake_id_to_show(data_dir, signed_in_tokens) -> 
     respx.put(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
         return_value=httpx.Response(200, json={})
     )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/library/contains.*").mock(
+        return_value=httpx.Response(200, json=[True])
+    )
     respx.get(f"https://api.spotify.com/v1/shows/{show_id}").mock(
         return_value=httpx.Response(200, json={"id": show_id, "name": "StarTalk"})
     )
@@ -273,33 +276,151 @@ def test_trace_args_utf8_emoji_safe() -> None:
 
 
 @respx.mock
-def test_builder_q_trace_when_debug_flag(data_dir, signed_in_tokens, tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("SPOT_DEBUG_BUILDER_Q", "1")
-    settings = Settings()
-    settings = settings.model_copy(update={"data_dir": tmp_path})
-    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(
+@respx.mock
+def test_t23_real_sequence_invented_show_id_not_saved(data_dir, signed_in_tokens) -> None:
+    """Reproduce laptop T23: invented show id must not yield a false Saved reply."""
+    session_show = "1mNsuXbbbbbbbbbbbbbbbb"
+    invented = "4o8R8J8jPqRj2m9L7m4L4M"
+    invented_uri = f"spotify:show:{invented}"
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get(f"https://api.spotify.com/v1/shows/{session_show}").mock(
+        return_value=httpx.Response(200, json={"id": session_show, "name": "StarTalk"})
+    )
+    respx.get(f"https://api.spotify.com/v1/shows/{invented}").mock(
+        return_value=httpx.Response(404, json={"error": {"status": 404, "message": "Not found"}})
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/library/contains.*").mock(
+        return_value=httpx.Response(200, json=[False])
+    )
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id="t23-seq")
+    runner.note_session_show(session_show, "StarTalk")
+    user = "Save this show"
+    name1, args1 = rewrite_tool_call_for_turn(
+        "spotify_save_tracks",
+        {"track_ids": [invented_uri]},
+        user_text=user,
+        runner=runner,
+    )
+    assert name1 == "spotify_library_save"
+    args1 = enforce_tool_arguments_for_turn(name1, args1, user_text=user, runner=runner)
+    raw1 = runner.run(name1, args1)
+    data1 = json.loads(raw1)
+    assert session_show in json.dumps(data1)
+    args2 = enforce_tool_arguments_for_turn(
+        "spotify_library_save",
+        {"uris": ["this show"]},
+        user_text=user,
+        runner=runner,
+    )
+    assert session_show in json.dumps(args2)
+    raw2 = runner.run(
+        "spotify_library_save",
+        enforce_tool_arguments_for_turn(
+            "spotify_library_save",
+            {"uris": [invented_uri]},
+            user_text=user,
+            runner=runner,
+        ),
+    )
+    data2 = json.loads(raw2)
+    assert data2.get("ok") is not True
+    assert data2.get("failure_reason") in ("save_not_verified", "show_not_found")
+    assert "Saved" not in (data2.get("user_message") or "")
+    runner.close()
+
+
+@respx.mock
+def test_t21_play_show_latest_still_playing_reply(data_dir, signed_in_tokens) -> None:
+    show_id = "1mNsuXbbbbbbbbbbbbbbbb"
+    respx.get(f"https://api.spotify.com/v1/shows/{show_id}/episodes").mock(
         return_value=httpx.Response(
             200,
             json={
-                "tracks": {
-                    "items": [
-                        {
-                            "id": "a" * 22,
-                            "uri": f"spotify:track:{'a' * 22}",
-                            "name": "Hit",
-                            "artists": [{"name": "Band"}],
-                            "album": {"name": "Al", "release_date": "1995-01-01"},
-                        }
-                    ]
-                }
+                "items": [
+                    {
+                        "id": "e" * 22,
+                        "uri": f"spotify:episode:{'e' * 22}",
+                        "name": "Latest ep",
+                    }
+                ]
             },
         )
     )
-    runner = SpotifyToolRunner(settings=settings, conversation_id="builder-q")
-    runner.run(
-        "spotify_playlist_builder_preview",
-        {"name": "mix", "theme": "90s", "track_queries": ["90s pop"]},
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
     )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_playing": True,
+                "item": {
+                    "type": "track",
+                    "name": "Enjoy The Show",
+                    "artists": [{"name": "The Weeknd"}],
+                },
+            },
+        )
+    )
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id="t21-show")
+    runner.note_session_show(show_id, "StarTalk")
+    raw = runner.run(
+        "spotify_play_show_latest_episode",
+        {"show_id": show_id, "_turn_user_text": "Play latest StarTalk"},
+    )
+    runner.close()
+    data = json.loads(raw)
+    assert data.get("failure_reason") == "playback_not_verified"
+    assert "Enjoy The Show" in data.get("user_message", "")
+    assert "Weeknd" in data.get("user_message", "")
+
+
+def test_p1_play_artist_reply_uses_verified_player_track() -> None:
+    from spot_backend.turn_reply_intent import primary_tool_user_reply
+
+    raw = json.dumps(
+        {
+            "ok": True,
+            "playback_verified": True,
+            "user_message": "Now playing The Party & The After Party by The Weeknd.",
+            "track": {"name": "Enjoy The Show", "id": "wrong" * 4},
+            "player_after": {
+                "item": {
+                    "type": "track",
+                    "name": "The Party & The After Party",
+                    "artists": [{"name": "The Weeknd"}],
+                }
+            },
+        }
+    )
+    reply = primary_tool_user_reply("spotify_play_artist", raw, user_text="play something by The Weeknd")
+    assert reply is not None
+    assert "Party" in reply
+    assert "Enjoy The Show" not in reply
+
+
+def test_builder_q_trace_when_debug_flag(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("SPOT_DEBUG_BUILDER_Q", "1")
+    settings = Settings().model_copy(update={"data_dir": tmp_path})
+    runner = SpotifyToolRunner(settings=settings, conversation_id="builder-q")
+    track = {
+        "id": "a" * 22,
+        "uri": f"spotify:track:{'a' * 22}",
+        "name": "Hit",
+        "artists": [{"name": "Band"}],
+        "album": {"name": "Al", "release_date": "1995-01-01"},
+    }
+    with patch.object(
+        runner.client,
+        "api_get",
+        return_value={"tracks": {"items": [track]}},
+    ):
+        runner._resolve_track_query("90s pop", "from_token", theme_blob="chill 90s")
     runner.close()
     lines = (tmp_path / "chat_tool_traces.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert any("playlist_builder_search" in ln and '"q"' in ln for ln in lines)

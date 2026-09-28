@@ -267,9 +267,16 @@ def primary_tool_user_reply(
     if not data:
         return None
     intent = intent or classify_turn_primary_intent(user_text)
+    if tool_name in _PLAYBACK_FAILURE_TOOLS and data.get("ok") is True:
+        custom_ok = data.get("user_message")
+        if isinstance(custom_ok, str) and custom_ok.strip():
+            return custom_ok.strip()
     if tool_name in _PLAYBACK_FAILURE_TOOLS and (data.get("ok") is False or data.get("failure_reason")):
         if data.get("failure_reason") == "guard_refused":
             return None
+        custom = data.get("user_message")
+        if isinstance(custom, str) and custom.strip():
+            return custom.strip()
         return _play_failure_user_message(data)
     if tool_name in _MUTATION_SUCCESS_TOOLS and data.get("ok") is True:
         removed = tool_name in _INTENT_TOOLS[TurnPrimaryIntent.ACTION_REMOVE]
