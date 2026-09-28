@@ -29,11 +29,19 @@ from spot_backend.chat_messages import (
 from spot_backend.deterministic_chat import ollama_deterministic_shortcut_events
 from spot_backend.chat_tool_state import seed_runner_from_chat_history
 from spot_backend.prompt_intent import (
+    OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE,
     filter_ollama_tools_for_prompt,
     informational_system_suffix,
     prompt_is_informational,
+    prompt_is_vague_playlist_play_request,
     refused_mutating_tool_result,
     spotify_tool_is_mutating,
+    turn_needs_vague_playlist_play_nudge,
+)
+from spot_backend.reply_tool_trace import (
+    append_tool_trace_record,
+    summarize_tool_args,
+    tool_trace_outcome,
 )
 from spot_backend.config import Settings, get_settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
@@ -466,6 +474,27 @@ def _synthetic_assistant_json_content(tool_calls: list[dict[str, Any]]) -> str:
     return "```json\n" + json.dumps(arr, ensure_ascii=False) + "\n```"
 
 
+def _persist_ollama_tool_trace(
+    settings: Settings,
+    *,
+    conversation_id: str | None,
+    tool_name: str,
+    args: dict[str, Any],
+    result: str,
+    duration_ms: int | None = None,
+) -> None:
+    """Append one Ollama tool row to DATA_DIR/chat_tool_traces.jsonl (secrets redacted)."""
+    append_tool_trace_record(
+        settings.data_dir,
+        conversation_id=conversation_id,
+        tool_name=tool_name,
+        args_summary=summarize_tool_args(args),
+        outcome=tool_trace_outcome(result),
+        duration_ms=duration_ms,
+        known_secrets=None,
+    )
+
+
 def _coerce_chat_history(history: Any) -> list[dict[str, str]]:
     """Normalize optional client history to user/assistant turns with string content."""
     out: list[dict[str, str]] = []
@@ -511,6 +540,7 @@ def iter_ollama_chat_events(
     promise_nudge_used = False
     action_claim_reprompted = False
     tool_summarize_reprompted = False
+    vague_playlist_nudge_used = False
     try:
         ollama_model = read_effective_ollama_model(settings.data_dir, settings.ollama_model)
         small_model = use_small_model_mode(settings, ollama_model)
@@ -630,12 +660,12 @@ def iter_ollama_chat_events(
                                             "message": "Using JSON tool mode (this model does not support native Ollama tools).",
                                         }
                                     continue
-                            try:
-                                r.raise_for_status()
-                            except httpx.HTTPStatusError as e:
+                            if r.status_code >= 400:
+                                if not err_body:
+                                    err_body = r.read().decode("utf-8", errors="replace")
                                 yield {
                                     "type": "error",
-                                    "message": f"Ollama HTTP {e.response.status_code}: {(e.response.text or '')[:600]}",
+                                    "message": f"Ollama HTTP {r.status_code}: {err_body[:600]}",
                                 }
                                 return
 
@@ -836,8 +866,16 @@ def iter_ollama_chat_events(
                     if informational_turn and spotify_tool_is_mutating(name):
                         yield {"type": "tool_start", "name": name}
                         result = refused_mutating_tool_result(name)
+                        _persist_ollama_tool_trace(
+                            settings,
+                            conversation_id=conversation_id,
+                            tool_name=name,
+                            args=args,
+                            result=result,
+                        )
                         preview = result[:240] + ("…" if len(result) > 240 else "")
                         yield {"type": "tool_done", "name": name, "preview": preview}
+                        turn_tool_calls.append((name, result))
                         tool_results.append(result)
                         if native_tools:
                             messages.append({"role": "tool", "name": name, "content": result})
@@ -867,7 +905,19 @@ def iter_ollama_chat_events(
                             )
                         continue
                     yield {"type": "tool_start", "name": name}
+                    import time as _time
+
+                    t0 = _time.perf_counter()
                     result = runner.run(name, args)
+                    duration_ms = int((_time.perf_counter() - t0) * 1000)
+                    _persist_ollama_tool_trace(
+                        settings,
+                        conversation_id=conversation_id,
+                        tool_name=name,
+                        args=args,
+                        result=result,
+                        duration_ms=duration_ms,
+                    )
                     deduped_tool_results[dedupe_key] = result
                     turn_tool_calls.append((name, result))
                     record_successful_tool(successful_tools, name, result)
@@ -881,6 +931,19 @@ def iter_ollama_chat_events(
                         messages.append(
                             {"role": "user", "content": f"Tool `{name}` result:\n{result_chat}"},
                         )
+
+                if (
+                    not vague_playlist_nudge_used
+                    and prompt_is_vague_playlist_play_request(user_text)
+                    and turn_needs_vague_playlist_play_nudge(turn_tool_calls)
+                ):
+                    vague_playlist_nudge_used = True
+                    messages.append({"role": "user", "content": OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE})
+                    yield {
+                        "type": "status",
+                        "message": "Listed playlists — nudging the model to start playback…",
+                    }
+                    continue
 
                 if json_mode_patched:
                     messages.append({"role": "user", "content": _JSON_PLAIN_ANSWER_FOLLOWUP})

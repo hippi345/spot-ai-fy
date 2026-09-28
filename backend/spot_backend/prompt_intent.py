@@ -346,6 +346,43 @@ def informational_system_suffix(user_text: str) -> str:
     return base
 
 
+_VAGUE_PLAYLIST_PLAY_RE = re.compile(
+    r"\bplay\s+(?:one\s+of\s+)?(?:my|a)\s+playlists?\b",
+    re.I,
+)
+
+_OLLAMA_PLAYBACK_AFTER_LIST_TOOLS = frozenset(
+    {
+        "spotify_play_playlist",
+        "spotify_start_resume_playback",
+        "spotify_play_track",
+        "spotify_play_artist",
+    }
+)
+
+OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE = (
+    "You listed the user's playlists but did not start playback. Pick one playlist id from "
+    "the spotify_user_playlists result and call spotify_play_playlist now. Then reply in one "
+    "short sentence (e.g. which playlist you started)."
+)
+
+
+def prompt_is_vague_playlist_play_request(user_text: str) -> bool:
+    """True for requests like 'play one of my playlists' without naming a specific list."""
+    t = (user_text or "").strip()
+    if not t:
+        return False
+    return bool(_VAGUE_PLAYLIST_PLAY_RE.search(t))
+
+
+def turn_needs_vague_playlist_play_nudge(turn_tool_calls: list[tuple[str, str]]) -> bool:
+    """True when user_playlists ran this turn but no playback tool did."""
+    names = [name for name, _ in turn_tool_calls]
+    if "spotify_user_playlists" not in names:
+        return False
+    return not any(name in _OLLAMA_PLAYBACK_AFTER_LIST_TOOLS for name in names)
+
+
 def gemini_should_use_any_first_round(
     user_text: str,
     *,

@@ -53,12 +53,12 @@ def tool_trace_outcome(raw_result: str) -> str:
         return "error"
     if not isinstance(data, dict):
         return "error"
+    if data.get("informational_refusal"):
+        return "refused"
     if data.get("error"):
         return "error"
     if data.get("ok") is False:
         return "error"
-    if data.get("informational_refusal"):
-        return "refused"
     return "ok"
 
 

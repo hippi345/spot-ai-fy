@@ -59,6 +59,8 @@ def _has_any(names: list[str], candidates: set[str]) -> bool:
 def evaluate_expected_tools(step: int, tools: list[ToolCallRecord]) -> tuple[bool, str]:
     names = _tool_names(tools)
     if not names:
+        if step == 9:
+            return True, "no tools (capability answer)"
         return False, "Model did not call any Spotify tools"
     if step == 1:
         if "spotify_play_artist" in names:

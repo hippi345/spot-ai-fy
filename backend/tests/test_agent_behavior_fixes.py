@@ -12,6 +12,8 @@ import respx
 
 from spot_backend.action_claim_guard import reply_claims_unbacked_action
 from spot_backend.agent import run_chat_turn_ollama
+from spot_backend.prompt_intent import OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE
+from spot_backend.spotify_tools import SpotifyToolRunner
 from spot_backend.anthropic_llm import run_chat_turn_anthropic
 from spot_backend.config import Settings
 from spot_backend.gemini_llm import run_chat_turn_gemini
@@ -19,7 +21,6 @@ from spot_backend.llm_tool_loop import ToolLoopState, finalize_assistant_text, r
 from spot_backend.openai_compat_llm import run_chat_turn_openai_compat
 from spot_backend.prompt_intent import prompt_is_capability_question, prompt_is_informational
 from spot_backend.reply_tool_trace import append_tool_trace_record, tool_trace_log_path
-from spot_backend.spotify_tools import SpotifyToolRunner
 from tests.recheck_helpers import FakeOllamaStream
 
 
@@ -178,6 +179,130 @@ def test_gemini_adapter_includes_full_chat_history(data_dir, signed_in_tokens) -
     assert len(contents) >= 2
 
 
+def test_ollama_failed_playback_claim_uses_honest_fallback(data_dir, signed_in_tokens) -> None:
+    settings = Settings(agent_max_steps=3)
+    fail_json = '{"ok": false, "error": "playback failed"}'
+    streams = [
+        FakeOllamaStream(
+            [
+                json.dumps(
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "spotify_play_track",
+                                        "arguments": {"track_id": "aaaaaaaaaaaaaaaaaaaaa1"},
+                                    }
+                                }
+                            ],
+                        },
+                        "done": True,
+                    }
+                )
+            ]
+        ),
+        FakeOllamaStream(
+            [
+                json.dumps(
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Playing his latest single now.",
+                        },
+                        "done": True,
+                    }
+                )
+            ]
+        ),
+    ]
+    idx = {"i": 0}
+
+    def fake_stream(_self, _method, _url, **kwargs):
+        i = idx["i"]
+        idx["i"] += 1
+        return streams[min(i, len(streams) - 1)]
+
+    with patch("httpx.Client.stream", fake_stream), patch(
+        "spot_backend.agent.ollama_deterministic_shortcut_events",
+        return_value=None,
+    ), patch.object(SpotifyToolRunner, "run", return_value=fail_json):
+        reply = run_chat_turn_ollama("play his latest single", settings)
+    low = reply.lower()
+    assert "wasn't able" in low or "can't confirm" in low or "unable" in low
+
+
+def test_ollama_vague_playlist_nudge_after_user_playlists_only(
+    data_dir, signed_in_tokens
+) -> None:
+    settings = Settings(agent_max_steps=4)
+    playlists_json = json.dumps({"ok": True, "playlists": [{"id": "p1", "name": "Evening Acoustic"}]})
+    streams = [
+        FakeOllamaStream(
+            [
+                json.dumps(
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "spotify_user_playlists",
+                                        "arguments": {},
+                                    }
+                                }
+                            ],
+                        },
+                        "done": True,
+                    }
+                )
+            ]
+        ),
+        FakeOllamaStream(
+            [
+                json.dumps(
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Playing Evening Acoustic for you.",
+                        },
+                        "done": True,
+                    }
+                )
+            ]
+        ),
+    ]
+    bodies: list[dict[str, Any]] = []
+    idx = {"i": 0}
+
+    def fake_stream(_self, _method, _url, **kwargs):
+        bodies.append(kwargs["json"])
+        i = idx["i"]
+        idx["i"] += 1
+        return streams[min(i, len(streams) - 1)]
+
+    def fake_run(_self, name: str, arguments: dict[str, Any] | None = None, **kwargs: Any) -> str:
+        if name == "spotify_user_playlists":
+            return playlists_json
+        return '{"ok": true}'
+
+    with patch("httpx.Client.stream", fake_stream), patch(
+        "spot_backend.agent.ollama_deterministic_shortcut_events",
+        return_value=None,
+    ), patch.object(SpotifyToolRunner, "run", fake_run):
+        run_chat_turn_ollama("play one of my playlists", settings)
+
+    assert len(bodies) >= 2
+    second_msgs = bodies[1]["messages"]
+    nudge_msgs = [
+        m
+        for m in second_msgs
+        if m.get("role") == "user" and OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE in str(m.get("content"))
+    ]
+    assert nudge_msgs, "Expected vague-playlist nudge user message before second model round"
+
+
 def test_ollama_adapter_includes_full_chat_history(data_dir, signed_in_tokens) -> None:
     settings = Settings()
     history = [
@@ -277,6 +402,67 @@ def test_artist_albums_discography_counts(data_dir, signed_in_tokens) -> None:
         assert counts.get("singles") == 79
     finally:
         runner.close()
+
+
+def test_ollama_tool_trace_persists_refusal_and_run(data_dir, signed_in_tokens) -> None:
+    settings = Settings(agent_max_steps=2)
+    streams = [
+        FakeOllamaStream(
+            [
+                json.dumps(
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "spotify_play_playlist",
+                                        "arguments": {"playlist_id": "plist000000000000000001"},
+                                    }
+                                }
+                            ],
+                        },
+                        "done": True,
+                    }
+                )
+            ]
+        ),
+        FakeOllamaStream(
+            [
+                json.dumps(
+                    {
+                        "message": {"role": "assistant", "content": "No — podcasts are not supported."},
+                        "done": True,
+                    }
+                )
+            ]
+        ),
+    ]
+    idx = {"i": 0}
+
+    def fake_stream(_self, _method, _url, **kwargs):
+        i = idx["i"]
+        idx["i"] += 1
+        return streams[min(i, len(streams) - 1)]
+
+    with patch("httpx.Client.stream", fake_stream), patch(
+        "spot_backend.agent.ollama_deterministic_shortcut_events",
+        return_value=None,
+    ):
+        run_chat_turn_ollama(
+            "Can you play podcasts via this interface?",
+            settings,
+        )
+    path = tool_trace_log_path(data_dir)
+    assert path.is_file()
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    playlist_rows = [
+        json.loads(ln)
+        for ln in lines
+        if json.loads(ln).get("tool") == "spotify_play_playlist"
+    ]
+    assert playlist_rows
+    assert playlist_rows[-1].get("outcome") == "refused"
 
 
 def test_tool_trace_never_persists_api_key(data_dir) -> None:
