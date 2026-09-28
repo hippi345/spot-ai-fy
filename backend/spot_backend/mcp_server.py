@@ -30,7 +30,7 @@ def spotify_me() -> str:
 
 
 @mcp.tool()
-def spotify_user_playlists(limit: int = 20, offset: int = 0) -> str:
+def spotify_user_playlists(limit: int = 10, offset: int = 0) -> str:
     """List the current user's playlists."""
     return _runner.run("spotify_user_playlists", {"limit": limit, "offset": offset})
 
@@ -45,7 +45,7 @@ def spotify_get_playlist(playlist_id: str, market: str = "") -> str:
 
 
 @mcp.tool()
-def spotify_playlist_tracks(playlist_id: str, limit: int = 50, offset: int = 0) -> str:
+def spotify_playlist_tracks(playlist_id: str, limit: int = 10, offset: int = 0) -> str:
     """List tracks in a playlist."""
     return _runner.run(
         "spotify_playlist_tracks",
@@ -54,14 +54,14 @@ def spotify_playlist_tracks(playlist_id: str, limit: int = 50, offset: int = 0) 
 
 
 @mcp.tool()
-def spotify_user_saved_tracks(limit: int = 50, offset: int = 0) -> str:
+def spotify_user_saved_tracks(limit: int = 10, offset: int = 0) -> str:
     """List the user's saved (liked) tracks."""
     return _runner.run("spotify_user_saved_tracks", {"limit": limit, "offset": offset})
 
 
 @mcp.tool()
 def spotify_top_artists(
-    time_range: str = "medium_term", limit: int = 20, offset: int = 0
+    time_range: str = "medium_term", limit: int = 10, offset: int = 0
 ) -> str:
     """Return the signed-in user's top artists for a time window.
 
@@ -76,7 +76,7 @@ def spotify_top_artists(
 
 @mcp.tool()
 def spotify_top_tracks(
-    time_range: str = "medium_term", limit: int = 20, offset: int = 0
+    time_range: str = "medium_term", limit: int = 10, offset: int = 0
 ) -> str:
     """Return the signed-in user's top tracks for a time window.
 
@@ -90,7 +90,7 @@ def spotify_top_tracks(
 
 
 @mcp.tool()
-def spotify_followed_artists(limit: int = 20, after: str = "") -> str:
+def spotify_followed_artists(limit: int = 10, after: str = "") -> str:
     """List artists the signed-in user follows (cursor-paginated).
 
     The Web API does not expose users the user follows, nor the user's own
@@ -103,7 +103,7 @@ def spotify_followed_artists(limit: int = 20, after: str = "") -> str:
 
 
 @mcp.tool()
-def spotify_user_public_playlists(user_id: str, limit: int = 20, offset: int = 0) -> str:
+def spotify_user_public_playlists(user_id: str, limit: int = 10, offset: int = 0) -> str:
     """List a Spotify user's PUBLIC playlists by their user_id (no scope required)."""
     return _runner.run(
         "spotify_user_public_playlists",
@@ -492,7 +492,7 @@ def spotify_set_volume(volume_percent: int, device_id: str = "") -> str:
 
 
 @mcp.tool()
-def spotify_recently_played(limit: int = 20, after: str = "", before: str = "") -> str:
+def spotify_recently_played(limit: int = 10, after: str = "", before: str = "") -> str:
     """Recently played tracks for the signed-in user."""
     args: dict[str, Any] = {"limit": limit}
     if after.strip():
@@ -547,7 +547,7 @@ def spotify_unsave_albums(album_id: str = "", album_ids: list[str] | None = None
 
 
 @mcp.tool()
-def spotify_saved_albums(limit: int = 20, offset: int = 0, market: str = "") -> str:
+def spotify_saved_albums(limit: int = 10, offset: int = 0, market: str = "") -> str:
     """List saved albums."""
     args: dict[str, Any] = {"limit": limit, "offset": offset}
     if market.strip():

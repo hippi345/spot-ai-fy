@@ -14,10 +14,13 @@ from typing import Any
 import httpx
 
 from spot_backend.config import Settings, get_settings
+from spot_backend.artist_name_match import artist_name_similarity, artist_names_match
+from spot_backend.llm_secret_safety import redact_known_api_keys
 from spot_backend.playlist_pick import (
     playlist_id_is_spotify_curated,
     playlist_row_playable_owned,
 )
+from spot_backend.spotify_dev_limits import SPOTIFY_DEV_MAX_PAGE, clamp_spotify_page_limit
 from spot_backend.spotify_client import SpotifyAuthError, SpotifyClient, SpotifyRateLimitError
 from spot_backend.token_store import load_device
 
@@ -1046,9 +1049,17 @@ class SpotifyToolRunner:
                 detail = e.response.json()
             except (json.JSONDecodeError, ValueError):
                 detail = (e.response.text or "")[:800]
+            body_redacted = redact_known_api_keys((e.response.text or "")[:2000])
+            logger.warning(
+                "spotify_tool_http_error tool=%s status=%s body=%s",
+                name,
+                e.response.status_code,
+                body_redacted,
+            )
             err: dict[str, Any] = {
                 "error": f"Spotify HTTP {e.response.status_code}",
                 "detail": detail,
+                "spotify_error_body_redacted": body_redacted[:800],
             }
             spot_msg = _spotify_http_message(e)
             if spot_msg:
@@ -1546,7 +1557,7 @@ class SpotifyToolRunner:
             return None
         data = self.client.api_get(
             "/search",
-            params={"q": q, "type": "artist", "limit": 10, "market": market},
+            params={"q": q, "type": "artist", "limit": SPOTIFY_DEV_MAX_PAGE, "market": market},
         )
         if not isinstance(data, dict):
             return None
@@ -1556,8 +1567,8 @@ class SpotifyToolRunner:
         items = artists.get("items")
         if not isinstance(items, list):
             return None
-        q_lower = q.lower()
-        fallback: str | None = None
+        best_id: str | None = None
+        best_ratio = 0.0
         for it in items:
             if not isinstance(it, dict):
                 continue
@@ -1565,11 +1576,15 @@ class SpotifyToolRunner:
             if not isinstance(aid, str) or not _looks_like_spotify_catalog_id(aid):
                 continue
             name = it.get("name")
-            if isinstance(name, str) and name.strip().lower() == q_lower:
-                return aid
-            if fallback is None:
-                fallback = aid
-        return fallback
+            if not isinstance(name, str):
+                continue
+            if not artist_names_match(q, name):
+                continue
+            ratio = artist_name_similarity(q, name)
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_id = aid
+        return best_id
 
     def _canonical_artist_id(self, normalized_artist: str, market: str) -> str | None:
         if not normalized_artist:
@@ -1622,7 +1637,7 @@ class SpotifyToolRunner:
         return _compact(data)
 
     def _user_playlists(self, arguments: dict[str, Any]) -> str:
-        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
         data = self.client.api_get("/me/playlists", params={"limit": limit, "offset": offset})
         me_id: str | None = None
@@ -1700,7 +1715,7 @@ class SpotifyToolRunner:
                 },
                 ensure_ascii=False,
             )
-        limit = _safe_int(arguments.get("limit"), 50, lo=1, hi=100)
+        limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
         params: dict[str, Any] = {"limit": limit, "offset": offset, "market": market}
@@ -1742,7 +1757,7 @@ class SpotifyToolRunner:
         offset = 0
         truncated = False
         while len(collected) < cap:
-            page_limit = min(50, cap - len(collected))
+            page_limit = min(SPOTIFY_DEV_MAX_PAGE, cap - len(collected))
             page = self.client.api_get(
                 f"/albums/{album_id}/tracks",
                 params={"limit": page_limit, "offset": offset, "market": market},
@@ -2498,7 +2513,10 @@ class SpotifyToolRunner:
         if norm and _looks_like_spotify_catalog_id(norm):
             return norm, None
         want = text.lower()
-        page = self.client.api_get("/me/playlists", params={"limit": 50})
+        page = self.client.api_get(
+            "/me/playlists",
+            params={"limit": SPOTIFY_DEV_MAX_PAGE},
+        )
         items = page.get("items") if isinstance(page, dict) else None
         if not isinstance(items, list):
             return None, json.dumps(
@@ -2553,7 +2571,7 @@ class SpotifyToolRunner:
         return json.dumps({"ok": True, "playlist_id": pid})
 
     def _user_saved_tracks(self, arguments: dict[str, Any]) -> str:
-        limit = _safe_int(arguments.get("limit"), 50, lo=1, hi=50)
+        limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
         data = self.client.api_get("/me/tracks", params={"limit": limit, "offset": offset})
         if isinstance(data, dict):
@@ -2586,7 +2604,7 @@ class SpotifyToolRunner:
         return uniq
 
     def _recently_played(self, arguments: dict[str, Any]) -> str:
-        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         after = _pick_arg(arguments, "after", "cursor")
         params: dict[str, Any] = {"limit": limit}
         if after:
@@ -2771,7 +2789,7 @@ class SpotifyToolRunner:
         return json.dumps({"ok": True, "removed_album_ids": ids})
 
     def _saved_albums(self, arguments: dict[str, Any]) -> str:
-        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
         data = self.client.api_get(
@@ -2844,7 +2862,10 @@ class SpotifyToolRunner:
         truncated = False
         page: dict[str, Any] = {}
         while scanned < max_playlists:
-            page = self.client.api_get("/me/playlists", params={"limit": 50, "offset": offset})
+            page = self.client.api_get(
+                "/me/playlists",
+                params={"limit": SPOTIFY_DEV_MAX_PAGE, "offset": offset},
+            )
             pages_fetched += 1
             if not isinstance(page, dict):
                 break
@@ -2868,7 +2889,11 @@ class SpotifyToolRunner:
                 for _ in range(max_pages_per_playlist):
                     tr_page = self.client.api_get(
                         f"/playlists/{pid}/items",
-                        params={"limit": 100, "offset": track_offset, "fields": "items(item(id,uri)),next"},
+                        params={
+                            "limit": SPOTIFY_DEV_MAX_PAGE,
+                            "offset": track_offset,
+                            "fields": "items(item(id,uri)),next",
+                        },
                     )
                     pages_fetched += 1
                     if not isinstance(tr_page, dict):
@@ -2946,7 +2971,7 @@ class SpotifyToolRunner:
 
     def _top_artists(self, arguments: dict[str, Any]) -> str:
         time_range = self._coerce_time_range(arguments.get("time_range"))
-        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=49)
         data = self.client.api_get(
             "/me/top/artists",
@@ -2992,7 +3017,7 @@ class SpotifyToolRunner:
 
     def _top_tracks(self, arguments: dict[str, Any]) -> str:
         time_range = self._coerce_time_range(arguments.get("time_range"))
-        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=49)
         data = self.client.api_get(
             "/me/top/tracks",
@@ -3047,7 +3072,7 @@ class SpotifyToolRunner:
 
     def _followed_artists(self, arguments: dict[str, Any]) -> str:
         """List artists the signed-in user follows. Web API does NOT expose followed *users*."""
-        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         after = _coerce_str(_pick_arg(arguments, "after", "cursor", "next_cursor"), "")
         params: dict[str, Any] = {"type": "artist", "limit": limit}
         if after:
@@ -3110,7 +3135,7 @@ class SpotifyToolRunner:
                     ),
                 }
             )
-        limit = _safe_int(arguments.get("limit"), 20, lo=1, hi=50)
+        limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
         try:
             data = self.client.api_get(
@@ -3917,7 +3942,7 @@ class SpotifyToolRunner:
                     page = self.client.api_get(
                         f"/playlists/{pid}/items",
                         params={
-                            "limit": 100,
+                            "limit": SPOTIFY_DEV_MAX_PAGE,
                             "offset": offset_p,
                             "market": market,
                             "fields": "items(track(uri),item(uri)),next",
@@ -4844,7 +4869,10 @@ class SpotifyToolRunner:
         try:
             if ctx.startswith("spotify:album:"):
                 aid = ctx.split(":", 2)[2]
-                page = self.client.api_get(f"/albums/{aid}/tracks", params={"limit": 50})
+                page = self.client.api_get(
+                    f"/albums/{aid}/tracks",
+                    params={"limit": SPOTIFY_DEV_MAX_PAGE},
+                )
                 items = page.get("items") if isinstance(page, dict) else None
                 items = items if isinstance(items, list) else []
                 passed_current = not cur
@@ -4864,7 +4892,7 @@ class SpotifyToolRunner:
                 pid = ctx.split(":", 2)[2]
                 page = self.client.api_get(
                     f"/playlists/{pid}/items",
-                    params={"limit": 50, "fields": "items(item(uri))"},
+                    params={"limit": SPOTIFY_DEV_MAX_PAGE, "fields": "items(item(uri))"},
                 )
                 items = page.get("items") if isinstance(page, dict) else None
                 items = items if isinstance(items, list) else []
@@ -5178,16 +5206,18 @@ class SpotifyToolRunner:
         items = artists.get("items") if isinstance(artists, dict) else None
         if not isinstance(items, list):
             return None, 0
-        q_lower = q.lower()
         for it in items:
             if not isinstance(it, dict):
                 continue
             name = it.get("name")
-            if isinstance(name, str) and name.strip().lower() == q_lower:
-                pop = int(it.get("popularity") or 0)
-                aid = it.get("id")
-                if isinstance(aid, str) and _looks_like_spotify_catalog_id(aid):
-                    return aid, pop
+            if not isinstance(name, str):
+                continue
+            if not artist_names_match(q, name):
+                continue
+            pop = int(it.get("popularity") or 0)
+            aid = it.get("id")
+            if isinstance(aid, str) and _looks_like_spotify_catalog_id(aid):
+                return aid, pop
         return None, 0
 
     def _bare_play_mode(self, query: str, market: str) -> str:
@@ -5284,7 +5314,21 @@ class SpotifyToolRunner:
                 },
                 ensure_ascii=False,
             )
+        requested_label = str(raw_ref).strip()
+        name_was_free_text = not _looks_like_spotify_catalog_id(
+            requested_label
+        ) and not (parsed and parsed[0] == "artist")
         _, artist_name_resolved = self._resolve_artist_id_and_name(cid, market)
+        if name_was_free_text and not artist_names_match(requested_label, artist_name_resolved):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": f"I couldn't find an artist called {requested_label} on Spotify.",
+                    "user_message": f"I couldn't find an artist called {requested_label} on Spotify.",
+                    "reconnect_spotify_unnecessary": True,
+                },
+                ensure_ascii=False,
+            )
         track_dicts = self._search_artist_tracks_for_popularity(
             artist_id=cid,
             artist_name=artist_name_resolved,

@@ -18,7 +18,8 @@ from spot_backend.playback_reply import (
     prompt_asks_skip,
     prompt_asks_whats_playing,
 )
-from spot_backend.playlist_pick import owned_playlist_candidates
+from spot_backend.playlist_pick import fetch_owned_playlist_candidates_paginated
+from spot_backend.spotify_dev_limits import SPOTIFY_DEV_MAX_PAGE
 from spot_backend.prompt_intent import (
     prompt_is_vague_playlist_play_request,
     prompt_requests_current_track_release,
@@ -111,7 +112,7 @@ def try_deterministic_recently_played_reply(
     if not prompt_requests_recent_listening_history(user_text):
         return None
     steps: list[tuple[str, dict, str]] = []
-    args = {"limit": 20}
+    args = {"limit": SPOTIFY_DEV_MAX_PAGE}
     raw = _run_tool(runner, "spotify_recently_played", args, steps)
     data = _parse_tool_json(raw)
     items = data.get("items") if isinstance(data.get("items"), list) else []
@@ -173,10 +174,11 @@ def try_deterministic_vague_playlist_reply(
     me_raw = _run_tool(runner, "spotify_me", {}, steps)
     me = _parse_tool_json(me_raw)
     me_id = me.get("id") if isinstance(me.get("id"), str) else ""
-    pl_raw = _run_tool(runner, "spotify_user_playlists", {"limit": 50}, steps)
-    pl_data = _parse_tool_json(pl_raw)
-    items = pl_data.get("items") if isinstance(pl_data.get("items"), list) else []
-    candidates = owned_playlist_candidates(items, me_id)
+
+    def _fetch_pl(args: dict[str, int]) -> str:
+        return _run_tool(runner, "spotify_user_playlists", args, steps)
+
+    candidates, _pl_steps = fetch_owned_playlist_candidates_paginated(_fetch_pl, me_id)
     if not candidates:
         return DeterministicChatResult(
             "I couldn't find a playlist in your library that I can play from here.",
