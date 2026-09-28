@@ -215,11 +215,23 @@ def _release_date_sort_key(release_date: str) -> tuple[int, int, int]:
     return (year, month, day)
 
 
-def pick_latest_album_release(items: list[Any]) -> dict[str, Any] | None:
+def pick_latest_album_release(
+    items: list[Any],
+    *,
+    on_or_before: tuple[int, int, int] | None = None,
+) -> dict[str, Any] | None:
     """Pick the newest album/single by release_date (deluxe reissues beat older originals)."""
     candidates = [it for it in items if isinstance(it, dict) and it.get("name")]
     if not candidates:
         return None
+    if on_or_before is not None:
+        candidates = [
+            it
+            for it in candidates
+            if _release_date_sort_key(str(it.get("release_date") or "")) <= on_or_before
+        ]
+        if not candidates:
+            return None
     return max(
         candidates,
         key=lambda album: _release_date_sort_key(str(album.get("release_date") or "")),
@@ -1716,12 +1728,17 @@ class SpotifyToolRunner:
         return _compact(page)
 
     def _artist_latest_album(self, arguments: dict[str, Any]) -> str:
+        from datetime import date
+
         raw_id = _pick_arg(arguments, "artist_id", "artistId", "id")
         artist_id = _normalize_spotify_id(raw_id, "artist")
         if not artist_id:
             return json.dumps({"error": "artist_id is required"})
-        include_groups = _normalize_include_groups(_coerce_str(arguments.get("include_groups"), "album"))
+        include_groups = _normalize_include_groups(
+            _coerce_str(arguments.get("include_groups"), "album,single")
+        )
         prefer = _coerce_str(arguments.get("prefer"), "album").strip().lower()
+        today_key = _release_date_sort_key(date.today().isoformat())
         limit = _safe_int(arguments.get("limit"), 10, lo=1, hi=10)
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
         canonical_id = self._canonical_artist_id(artist_id, market)
@@ -1757,7 +1774,7 @@ class SpotifyToolRunner:
                     for it in _album_items("single")
                     if str(it.get("album_type") or "single") == "single"
                 ]
-            latest = pick_latest_album_release(singles)
+            latest = pick_latest_album_release(singles, on_or_before=today_key)
             kind = "single"
         elif prefer == "album":
             albums = [it for it in pool if str(it.get("album_type") or "") == "album"]
@@ -1767,11 +1784,11 @@ class SpotifyToolRunner:
                     for it in _album_items("album")
                     if str(it.get("album_type") or "album") == "album"
                 ]
-            latest = pick_latest_album_release(albums)
+            latest = pick_latest_album_release(albums, on_or_before=today_key)
             kind = "album"
         else:
-            combined = _album_items("album,single")
-            latest = pick_latest_album_release(combined)
+            combined = _album_items(include_groups if include_groups else "album,single")
+            latest = pick_latest_album_release(combined, on_or_before=today_key)
             kind = str(latest.get("album_type") if latest else "release")
         if not latest:
             return json.dumps({"error": "No releases found for this artist", "artist_id": canonical_id})
@@ -1785,6 +1802,11 @@ class SpotifyToolRunner:
                 "album_type": latest.get("album_type"),
                 "prefer": prefer,
                 "release_kind": kind,
+                "reference_date_utc": date.today().isoformat(),
+                "assistant_guidance": (
+                    "latest_release is the newest album or single already released (release_date <= today). "
+                    "Play it with spotify_play_playlist (album/single URI) or spotify_start_resume_playback."
+                ),
             },
             ensure_ascii=False,
         )
@@ -4021,7 +4043,7 @@ class SpotifyToolRunner:
     ) -> str:
         """Read /me/player after play; at most one replay PUT, then a clear success or failure."""
         prior = prior_state if isinstance(prior_state, dict) else {"had_playback": False}
-        if self._playback_matches(body, attempts=4, delay_s=0.35):
+        if self._playback_matches(body, attempts=6, delay_s=0.5):
             payload: dict[str, Any] = {
                 "ok": True,
                 "device_id": device_id or None,
@@ -4035,7 +4057,7 @@ class SpotifyToolRunner:
             self._try_play(device_id, body)
         except httpx.HTTPStatusError:
             pass
-        if self._playback_matches(body, attempts=4, delay_s=0.35):
+        if self._playback_matches(body, attempts=6, delay_s=0.5):
             return json.dumps(
                 {
                     "ok": True,
@@ -4081,6 +4103,8 @@ class SpotifyToolRunner:
             or (isinstance(body.get("offset"), dict) and body["offset"].get("uri"))
         )
         label_override = _coerce_str(arguments.get("playback_request_label"), "")
+        if label_override.strip():
+            body["playback_request_label"] = label_override.strip()
         prior_state = self._fetch_pre_play_restore_state()
         device_id, device_note = self._coerce_playback_device_id(raw_device)
         try:
@@ -4296,6 +4320,19 @@ class SpotifyToolRunner:
                                 ctx_ok = True
                                 break
                 track_ok = True if not want_track_uri else (cur_uri == want_track_uri)
+                if want_track_uri and not track_ok and isinstance(item, dict):
+                    label = str(body.get("playback_request_label") or "").strip().lower()
+                    if label:
+                        artists = item.get("artists")
+                        if isinstance(artists, list):
+                            for artist in artists:
+                                if (
+                                    isinstance(artist, dict)
+                                    and isinstance(artist.get("name"), str)
+                                    and label in artist.get("name", "").strip().lower()
+                                ):
+                                    track_ok = True
+                                    break
                 if ctx_ok and track_ok:
                     return True
                 if (
@@ -4717,13 +4754,15 @@ class SpotifyToolRunner:
         except (json.JSONDecodeError, ValueError):
             play_result = {"ok": False, "raw": play_raw}
         play_ok = isinstance(play_result, dict) and play_result.get("ok") is True
-        player = self._poll_player_state()
+        player = self._poll_player_state(attempts=6, delay_s=0.5)
         verified = bool(
             isinstance(play_result, dict) and play_result.get("playback_verified") is True
         )
         if player and isinstance(first, dict):
             track_uri = str(first.get("uri") or "")
             if track_uri and self._track_uri_from_player(player) == track_uri:
+                verified = True
+            elif self._player_item_features_artist(player, artist_name):
                 verified = True
         summary: dict[str, Any] = {
             "artist_id": cid,
@@ -4732,7 +4771,7 @@ class SpotifyToolRunner:
             "playback": play_result,
             "player_after": player,
             "playback_verified": verified,
-            "ok": verified,
+            "ok": play_ok or verified,
         }
         if not play_ok and not verified:
             user_msg = play_result.get("user_message") if isinstance(play_result, dict) else None
@@ -4916,6 +4955,26 @@ class SpotifyToolRunner:
             return ""
         uri = item.get("uri")
         return uri.strip() if isinstance(uri, str) else ""
+
+    def _player_item_features_artist(self, player: dict[str, Any] | None, artist_name: str) -> bool:
+        if not player or not isinstance(player, dict):
+            return False
+        req = (artist_name or "").strip().lower()
+        if not req:
+            return False
+        item = player.get("item") if isinstance(player.get("item"), dict) else None
+        if not item:
+            return False
+        artists = item.get("artists")
+        if not isinstance(artists, list):
+            return False
+        for artist in artists:
+            if not isinstance(artist, dict):
+                continue
+            name = artist.get("name")
+            if isinstance(name, str) and req in name.strip().lower():
+                return True
+        return False
 
     def _poll_player_state(self, *, attempts: int = 8, delay_s: float = 0.35) -> dict[str, Any] | None:
         for _ in range(max(1, attempts)):

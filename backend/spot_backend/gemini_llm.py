@@ -30,15 +30,21 @@ from spot_backend.deterministic_chat import gemini_deterministic_shortcut_reply
 from spot_backend.chat_tool_state import seed_runner_from_chat_history
 from spot_backend.gemini_nudge import should_send_gemini_tool_nudge
 from spot_backend.prompt_intent import (
+    OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE,
     gemini_declarations_for_prompt,
     gemini_should_use_any_first_round,
     informational_system_suffix,
+    prompt_is_capability_question,
     prompt_is_informational,
+    prompt_is_vague_playlist_play_request,
     refused_mutating_tool_result,
     spotify_tool_is_mutating,
+    turn_needs_vague_playlist_play_nudge,
 )
 from spot_backend.context_loader import load_optional_agent_context_markdown
-from spot_backend.agent_system_extras import SHARED_AGENT_BEHAVIOR_SUFFIX
+from spot_backend.agent_system_extras import shared_agent_system_suffix
+from spot_backend.gemini_history import gemini_part_for_history, validate_gemini_contents
+from spot_backend.llm_secret_safety import redact_known_api_keys
 from spot_backend.llm_catalog import DEFAULT_MODEL_BY_PROVIDER
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
 
@@ -72,6 +78,11 @@ def _gemini_post_with_retry(
         resp = client.post(url, params=params, json=json_body)
         last = resp
         if resp.status_code not in _GEMINI_RETRY_STATUSES:
+            if resp.status_code == 400:
+                logger.error(
+                    "gemini_http_400 body=%s",
+                    redact_known_api_keys((resp.text or "")[:2000], [params.get("key", "")]),
+                )
             resp.raise_for_status()
             return resp
         # Honor an explicit Retry-After header when present; otherwise
@@ -339,6 +350,8 @@ def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
     t = (user_text or "").strip().lower()
     if not t:
         return None
+    if prompt_is_capability_question(user_text):
+        return None
     if extract_play_track_request(user_text):
         return ["spotify_play_track"]
     artist = extract_play_artist_name(user_text)
@@ -485,7 +498,7 @@ def run_chat_turn_gemini(
         runner.close()
         return shortcut_reply
     informational_turn = prompt_is_informational(user_text)
-    full_system = _SYSTEM + SHARED_AGENT_BEHAVIOR_SUFFIX + load_optional_agent_context_markdown(settings)
+    full_system = _SYSTEM + shared_agent_system_suffix() + load_optional_agent_context_markdown(settings)
     if informational_turn:
         full_system = full_system + informational_system_suffix(user_text)
 
@@ -510,6 +523,7 @@ def run_chat_turn_gemini(
     turn_tool_calls: list[tuple[str, str]] = []
     promise_nudge_used = False
     tool_nudge_used = False
+    vague_playlist_nudge_used = False
     first_text_answer: str | None = None
     empty_turn_retries = 3
     # Gemini 2.5-flash with our 40-tool catalog is *unreliable* in AUTO function-
@@ -542,6 +556,7 @@ def run_chat_turn_gemini(
                 decls = gemini_declarations_for_prompt(
                     declarations,
                     informational=informational_turn,
+                    user_text=user_text,
                 )
                 body: dict[str, Any] = {
                     "systemInstruction": {"parts": [{"text": full_system}]},
@@ -549,6 +564,12 @@ def run_chat_turn_gemini(
                     "generationConfig": _gemini_generation_config_for_model(model),
                 }
                 apply_gemini_function_calling_tools(body, decls=decls, fc_cfg=fc_cfg)
+                history_errors = validate_gemini_contents(contents)
+                if history_errors:
+                    logger.warning(
+                        "gemini_history_validation issues=%s",
+                        history_errors[:8],
+                    )
 
                 resp = _gemini_post_with_retry(client, url, params=params, json_body=body)
                 data = resp.json()
@@ -634,17 +655,13 @@ def run_chat_turn_gemini(
                         continue
                     is_thought = bool(part.get("thought"))
                     text_val = part.get("text") if "text" in part else None
-                    if isinstance(text_val, str):
-                        # Gemini 2.5 thinking models echo their reasoning as parts with
-                        # thought=true. Keep them in the model turn so Gemini can chain
-                        # reasoning across rounds, but DON'T treat them as the user-visible
-                        # final answer (else we'd surface raw chain-of-thought to the user).
-                        model_parts_out.append({"text": text_val})
-                        if not is_thought and text_val.strip():
-                            visible_text_chunks.append(text_val)
+                    preserved = gemini_part_for_history(part)
+                    if preserved:
+                        model_parts_out.append(preserved)
+                    if isinstance(text_val, str) and not is_thought and text_val.strip():
+                        visible_text_chunks.append(text_val)
                     fc = part.get("functionCall")
                     if isinstance(fc, dict) and fc.get("name"):
-                        model_parts_out.append({"functionCall": fc})
                         name = str(fc["name"])
                         raw_args = fc.get("args")
                         args: dict[str, Any] = {}
@@ -716,10 +733,16 @@ def run_chat_turn_gemini(
                             }
                         )
 
-                if model_parts_out:
-                    contents.append({"role": "model", "parts": model_parts_out})
-
                 if fr_parts:
+                    if model_parts_out:
+                        contents.append({"role": "model", "parts": model_parts_out})
+                    if (
+                        not vague_playlist_nudge_used
+                        and prompt_is_vague_playlist_play_request(user_text)
+                        and turn_needs_vague_playlist_play_nudge(turn_tool_calls)
+                    ):
+                        vague_playlist_nudge_used = True
+                        fr_parts.append({"text": OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE})
                     contents.append({"role": "user", "parts": fr_parts})
                     had_tool_results = True
                     continue
@@ -733,7 +756,7 @@ def run_chat_turn_gemini(
                         and not promise_nudge_used
                     ):
                         promise_nudge_used = True
-                        contents.append({"role": "model", "parts": [{"text": joined}]})
+                        contents.append({"role": "model", "parts": model_parts_out or [{"text": joined}]})
                         contents.append(
                             {"role": "user", "parts": [{"text": PROMISE_AFTER_ID_ERROR_NUDGE}]}
                         )
@@ -741,7 +764,9 @@ def run_chat_turn_gemini(
                     if is_failure_boilerplate(joined) and turn_tool_calls_all_succeeded(turn_tool_calls):
                         if not tool_summarize_reprompted:
                             tool_summarize_reprompted = True
-                            contents.append({"role": "model", "parts": [{"text": joined}]})
+                            contents.append(
+                                {"role": "model", "parts": model_parts_out or [{"text": joined}]}
+                            )
                             contents.append(
                                 {
                                     "role": "user",
@@ -757,7 +782,9 @@ def run_chat_turn_gemini(
                     ):
                         if not action_claim_reprompted:
                             action_claim_reprompted = True
-                            contents.append({"role": "model", "parts": [{"text": joined}]})
+                            contents.append(
+                                {"role": "model", "parts": model_parts_out or [{"text": joined}]}
+                            )
                             contents.append(
                                 {"role": "user", "parts": [{"text": action_claim_reprompt()}]}
                             )
@@ -767,7 +794,9 @@ def run_chat_turn_gemini(
                             and turn_tool_calls_all_succeeded(turn_tool_calls)
                         ):
                             tool_summarize_reprompted = True
-                            contents.append({"role": "model", "parts": [{"text": joined}]})
+                            contents.append(
+                                {"role": "model", "parts": model_parts_out or [{"text": joined}]}
+                            )
                             contents.append(
                                 {
                                     "role": "user",
@@ -786,11 +815,15 @@ def run_chat_turn_gemini(
                         if first_text_answer is None:
                             first_text_answer = joined
                         tool_nudge_used = True
-                        contents.append({"role": "model", "parts": [{"text": joined}]})
+                        contents.append(
+                            {"role": "model", "parts": model_parts_out or [{"text": joined}]}
+                        )
                         contents.append({"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]})
                         continue
                     if tool_nudge_used and first_text_answer and not had_tool_results:
                         return prepare_user_visible_reply(first_text_answer, tool_results)
+                    if model_parts_out:
+                        contents.append({"role": "model", "parts": model_parts_out})
                     return prepare_user_visible_reply(joined, tool_results)
 
                 # No visible text and no tool calls. Log everything we have so we can
@@ -837,6 +870,11 @@ def run_chat_turn_gemini(
             "Try a simpler or more specific request, or break it into smaller steps."
         )
     except httpx.HTTPStatusError as e:
+        if e.response.status_code == 400:
+            logger.error(
+                "gemini_http_400_turn body=%s",
+                redact_known_api_keys((e.response.text or "")[:2000], [key]),
+            )
         return _gemini_friendly_error_message(e, model)
     except httpx.TimeoutException:
         return (
@@ -885,6 +923,11 @@ def _gemini_friendly_error_message(exc: httpx.HTTPStatusError, model: str) -> st
             "Google rejected the Gemini API key (it's missing, expired, or doesn't have access "
             "to this model). Please double-check GEMINI_API_KEY in backend/.env and restart the "
             "backend, or switch to Ollama in Settings if you don't have a working key handy."
+        )
+    if code == 400:
+        return (
+            "Gemini rejected the chat history for this turn (malformed tool-call sequence). "
+            "Please start a new chat or try again — if it keeps happening, switch models in Settings."
         )
     if 500 <= code < 600:
         return (

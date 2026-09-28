@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import date
+
+
+def system_prompt_today_line() -> str:
+    """UTC calendar date for release-date comparisons (injected every provider turn)."""
+    return f"\nToday's date (UTC): {date.today().isoformat()}. When picking latest releases, ignore future release dates.\n"
+
+
+def shared_agent_system_suffix() -> str:
+    return SHARED_AGENT_BEHAVIOR_SUFFIX + system_prompt_today_line()
+
+
 SHARED_AGENT_BEHAVIOR_SUFFIX = """
 
 Conversation and style (all providers):

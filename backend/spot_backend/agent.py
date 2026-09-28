@@ -45,7 +45,7 @@ from spot_backend.reply_tool_trace import (
 )
 from spot_backend.config import Settings, get_settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
-from spot_backend.agent_system_extras import SHARED_AGENT_BEHAVIOR_SUFFIX
+from spot_backend.agent_system_extras import shared_agent_system_suffix
 from spot_backend.llm_prefs import read_effective_llm_provider, read_effective_ollama_model
 from spot_backend.ollama_agent_profile import (
     SMALL_MODEL_SYSTEM_PROMPT,
@@ -547,7 +547,7 @@ def iter_ollama_chat_events(
         small_model = use_small_model_mode(settings, ollama_model)
         base_system = (
             SMALL_MODEL_SYSTEM_PROMPT if small_model else _SYSTEM
-        ) + SHARED_AGENT_BEHAVIOR_SUFFIX + load_optional_agent_context_markdown(settings)
+        ) + shared_agent_system_suffix() + load_optional_agent_context_markdown(settings)
         active_tools = filter_ollama_tools(OLLAMA_TOOLS, small=small_model)
         informational_turn = prompt_is_informational(user_text)
         if informational_turn:
@@ -555,6 +555,7 @@ def iter_ollama_chat_events(
         active_tools = filter_ollama_tools_for_prompt(
             active_tools,
             informational=informational_turn,
+            user_text=user_text,
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": base_system}]
         hist_cap = int(getattr(settings, "ollama_history_messages", 0) or 0)

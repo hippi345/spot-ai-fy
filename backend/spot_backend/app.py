@@ -480,7 +480,11 @@ def chat_stream(body: ChatBody) -> StreamingResponse:
         yield sse_data({"type": "done"})
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-    return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream; charset=utf-8",
+        headers=headers,
+    )
 
 
 @app.post("/api/llm/provider")

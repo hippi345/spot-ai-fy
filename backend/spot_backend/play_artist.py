@@ -20,10 +20,18 @@ def _artist_credit_matches_requested(player: dict | None, requested: str) -> boo
     item = player.get("item") if isinstance(player.get("item"), dict) else None
     if not item:
         return False
-    _, credit = describe_playing_item(item)
     req = requested.strip().lower()
     if not req:
         return False
+    artists = item.get("artists")
+    if isinstance(artists, list):
+        for artist in artists:
+            if not isinstance(artist, dict):
+                continue
+            name = artist.get("name")
+            if isinstance(name, str) and req in name.strip().lower():
+                return True
+    _, credit = describe_playing_item(item)
     return req in credit.lower()
 
 
@@ -43,16 +51,19 @@ def format_play_artist_reply(artist_name: str, raw: str) -> str:
         data.get("playback_verified") is True
         or playback.get("playback_verified") is True
     )
-    if data.get("ok") is True and verified and _artist_credit_matches_requested(player, resolved_name):
+    play_ok = data.get("ok") is True or (
+        isinstance(playback, dict) and playback.get("ok") is True
+    )
+    if play_ok and (verified or _artist_credit_matches_requested(player, resolved_name)):
         title, credit = describe_playing_item(
             player.get("item") if isinstance(player, dict) else None
         )
         if credit:
             return f"Playing {title} by {credit}."
         return f"Playing {title}."
-    if data.get("ok") is True and not verified:
+    if play_ok and not verified:
         return (
-            f"I tried to start {resolved_name}, but I could not confirm playback on your device."
+            f"I requested playback for {resolved_name}, but I could not confirm it on your device yet."
         )
     err = str(
         data.get("user_message")

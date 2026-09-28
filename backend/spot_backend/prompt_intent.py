@@ -270,7 +270,10 @@ def filter_ollama_tools_for_prompt(
     tools: list[dict[str, Any]],
     *,
     informational: bool,
+    user_text: str = "",
 ) -> list[dict[str, Any]]:
+    if informational and prompt_is_capability_question(user_text):
+        return []
     if not informational:
         return tools
     allowed = SPOTIFY_READ_ONLY_TOOL_NAMES
@@ -286,7 +289,10 @@ def gemini_declarations_for_prompt(
     declarations: list[dict[str, Any]],
     *,
     informational: bool,
+    user_text: str = "",
 ) -> list[dict[str, Any]]:
+    if informational and prompt_is_capability_question(user_text):
+        return []
     if not informational:
         return declarations
     allowed = SPOTIFY_READ_ONLY_TOOL_NAMES

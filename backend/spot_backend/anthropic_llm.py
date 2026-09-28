@@ -13,6 +13,7 @@ from spot_backend.chat_tool_state import seed_runner_from_chat_history
 from spot_backend.config import Settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
 from spot_backend.deterministic_chat import gemini_deterministic_shortcut_reply
+from spot_backend.agent_system_extras import shared_agent_system_suffix
 from spot_backend.gemini_llm import _SYSTEM as _SHARED_SYSTEM
 from spot_backend.llm_prefs import read_effective_model_for_provider
 from spot_backend.llm_secret_safety import redact_known_api_keys
@@ -83,7 +84,7 @@ def run_chat_turn_anthropic(
         return shortcut
 
     informational_turn = prompt_is_informational(user_text)
-    system = _SHARED_SYSTEM + load_optional_agent_context_markdown(settings)
+    system = _SHARED_SYSTEM + shared_agent_system_suffix() + load_optional_agent_context_markdown(settings)
     if informational_turn:
         system = system + informational_system_suffix(user_text)
 
