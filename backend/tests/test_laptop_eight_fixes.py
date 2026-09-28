@@ -383,6 +383,7 @@ def test_issue3_play_something_chill_plays_without_asking(data_dir, signed_in_to
 def test_issue4_play_ye_prefers_artist(data_dir, signed_in_tokens) -> None:
     def search_handler(request: httpx.Request) -> httpx.Response:
         qtype = request.url.params.get("type")
+        q = request.url.params.get("q") or ""
         if qtype == "artist":
             return httpx.Response(
                 200,
@@ -390,6 +391,25 @@ def test_issue4_play_ye_prefers_artist(data_dir, signed_in_tokens) -> None:
                     "artists": {
                         "items": [
                             {"id": YE_ARTIST_ID, "name": "Ye", "popularity": 85},
+                        ]
+                    }
+                },
+            )
+        if qtype == "track" and (
+            YE_ARTIST_ID in q or 'artist:"Ye"' in q or q.strip() == "Ye"
+        ):
+            return httpx.Response(
+                200,
+                json={
+                    "tracks": {
+                        "items": [
+                            {
+                                "name": "Runaway",
+                                "popularity": 80,
+                                "uri": "spotify:track:runaway000000000001",
+                                "album": {"id": "alb0000000000000000002"},
+                                "artists": [{"id": YE_ARTIST_ID, "name": "Ye"}],
+                            }
                         ]
                     }
                 },
@@ -417,22 +437,10 @@ def test_issue4_play_ye_prefers_artist(data_dir, signed_in_tokens) -> None:
     respx.get(f"https://api.spotify.com/v1/artists/{YE_ARTIST_ID}").mock(
         return_value=httpx.Response(200, json={"id": YE_ARTIST_ID, "name": "Ye"})
     )
-    respx.get(f"https://api.spotify.com/v1/artists/{YE_ARTIST_ID}/albums").mock(
-        return_value=httpx.Response(200, json={"items": []})
-    )
-    respx.get(url__regex=rf"https://api\.spotify\.com/v1/artists/{YE_ARTIST_ID}/top-tracks.*").mock(
+    respx.get(f"https://api.spotify.com/v1/albums/alb0000000000000000002/tracks").mock(
         return_value=httpx.Response(
             200,
-            json={
-                "tracks": [
-                    {
-                        "name": "Runaway",
-                        "uri": "spotify:track:runaway000000000001",
-                        "album": {"id": "alb0000000000000000002"},
-                        "popularity": 80,
-                    }
-                ]
-            },
+            json={"items": [{"uri": "spotify:track:runaway000000000001"}]},
         )
     )
     respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
@@ -480,7 +488,9 @@ def test_issue4_play_ye_verifies_kanye_west_credits(data_dir, signed_in_tokens) 
                     }
                 },
             )
-        if qtype == "track" and YE_ARTIST_ID in q:
+        if qtype == "track" and (
+            YE_ARTIST_ID in q or 'artist:"Ye"' in q or 'artist:"Kanye West"' in q
+        ):
             return httpx.Response(
                 200,
                 json={
