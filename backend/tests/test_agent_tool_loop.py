@@ -117,5 +117,5 @@ def test_agent_dispatch_exception_fed_back_to_model(data_dir, signed_in_tokens) 
     assert second_messages[3] == {
         "role": "tool",
         "name": "spotify_search",
-        "content": tool_result,
+        "content": '{"error": "RuntimeError: boom", "failure_reason": "parse_error"}',
     }

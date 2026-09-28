@@ -10,7 +10,10 @@ import respx
 from spot_backend.config import Settings
 from spot_backend.playlist_builder_store import clear_playlist_preview, load_playlist_preview
 from spot_backend.playlist_pick import playlist_id_is_spotify_curated
-from spot_backend.simulated_chat_bank import run_simulated_chat_bank
+from spot_backend.simulated_chat_bank import (
+    podcast_tool_names_in_agent_payload,
+    run_simulated_chat_bank,
+)
 from spot_backend.spotify_client import SpotifyClient, SpotifyQuotaExceededError
 from spot_backend.spotify_removed_routes import SpotifyRemovedRouteError, assert_spotify_route_allowed
 from spot_backend.spotify_tools import SpotifyToolRunner
@@ -114,28 +117,31 @@ def test_r15_get_show_and_episode(data_dir, signed_in_tokens) -> None:
 @respx.mock
 def test_r15_playlist_builder_preview_and_commit(data_dir, signed_in_tokens) -> None:
     clear_playlist_preview("pb-test")
-    respx.get(url__regex=r"https://api\.spotify\.com/v1/search.*").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "tracks": {
-                    "items": [
-                        {
-                            "id": "1111111111111111111111",
-                            "uri": "spotify:track:1111111111111111111111",
-                            "name": "One",
-                            "artists": [{"name": "A"}],
-                        }
-                    ]
-                }
-            },
-        )
-    )
+    track_items = [
+        {
+            "id": f"{i:022d}",
+            "uri": f"spotify:track:{i:022d}",
+            "name": f"Track {i}",
+            "artists": [{"name": f"Artist {i}"}],
+        }
+        for i in range(1, 16)
+    ]
+
+    def search_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"tracks": {"items": track_items}})
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search.*").mock(side_effect=search_handler)
     respx.post("https://api.spotify.com/v1/me/playlists").mock(
         return_value=httpx.Response(
             200,
-            json={"id": "newpl0000000000000001", "name": "spot-ai-fy test", "public": False},
+            json={"id": "newpl0000000000000001", "name": "spot-ai-fy test", "public": True},
         )
+    )
+    respx.get("https://api.spotify.com/v1/playlists/newpl0000000000000001").mock(
+        return_value=httpx.Response(200, json={"id": "newpl0000000000000001", "public": False})
+    )
+    respx.put("https://api.spotify.com/v1/playlists/newpl0000000000000001").mock(
+        return_value=httpx.Response(200, json={"id": "newpl0000000000000001", "public": False})
     )
     respx.post("https://api.spotify.com/v1/playlists/newpl0000000000000001/items").mock(
         return_value=httpx.Response(200, json={})
@@ -143,10 +149,15 @@ def test_r15_playlist_builder_preview_and_commit(data_dir, signed_in_tokens) -> 
     runner = SpotifyToolRunner(settings=Settings(), conversation_id="pb-test")
     preview_raw = runner.run(
         "spotify_playlist_builder_preview",
-        {"name": "spot-ai-fy test", "track_queries": ["one song"]},
+        {
+            "name": "spot-ai-fy test",
+            "track_queries": ["1990s chill"],
+            "theme": "chill 90s",
+        },
     )
     preview = json.loads(preview_raw)
     assert preview.get("awaiting_approval") is True
+    assert len(preview.get("preview", {}).get("tracks", [])) >= 10
     assert load_playlist_preview("pb-test")
     commit_raw = runner.run(
         "spotify_playlist_builder_commit",
@@ -155,7 +166,7 @@ def test_r15_playlist_builder_preview_and_commit(data_dir, signed_in_tokens) -> 
     commit = json.loads(commit_raw)
     runner.close()
     assert commit.get("ok") is True
-    assert commit.get("public") is False
+    assert commit.get("verified_private") is True
 
 
 @respx.mock
@@ -253,6 +264,14 @@ def test_r15_playback_tools_shuffle_repeat_seek_transfer(data_dir, signed_in_tok
 @respx.mock
 def test_r15_simulated_chat_bank_runs(data_dir, signed_in_tokens) -> None:
     me_id = "user123456789012345678901"
+    show_id = "ssssssssssssssssssssss"
+    episode_id = "eeeeeeeeeeeeeeeeeeeeee"
+    track = {
+        "id": "1111111111111111111111",
+        "uri": "spotify:track:1111111111111111111111",
+        "name": "One",
+        "artists": [{"name": "A"}],
+    }
     respx.get("https://api.spotify.com/v1/me").mock(
         return_value=httpx.Response(200, json={"id": me_id})
     )
@@ -263,16 +282,120 @@ def test_r15_simulated_chat_bank_runs(data_dir, signed_in_tokens) -> None:
         return_value=httpx.Response(200, json=[False])
     )
     respx.get(url__regex=r"https://api\.spotify\.com/v1/search.*").mock(
-        return_value=httpx.Response(200, json={"shows": {"items": []}})
+        return_value=httpx.Response(200, json={"shows": {"items": []}, "tracks": {"items": [track]}})
+    )
+    respx.get(f"https://api.spotify.com/v1/shows/{show_id}/episodes").mock(
+        return_value=httpx.Response(
+            200,
+            json={"items": [{"id": episode_id, "uri": f"spotify:episode:{episode_id}", "name": "Ep1"}]},
+        )
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/shows.*").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0})
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
+        return_value=httpx.Response(200)
+    )
+    respx.delete(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
+        return_value=httpx.Response(200)
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/albums.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "total": 1,
+                "items": [
+                    {
+                        "added_at": "2020-01-01",
+                        "album": {
+                            "id": "aaaaaaaaaaaaaaaaaaaa",
+                            "name": "Album A",
+                            "uri": "spotify:album:aaaaaaaaaaaaaaaaaaaa",
+                            "artists": [{"name": "Artist A"}],
+                        },
+                    }
+                ],
+            },
+        )
     )
     respx.get("https://api.spotify.com/v1/me/player").mock(
         return_value=httpx.Response(200, json={})
     )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
     respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/shuffle.*").mock(
         return_value=httpx.Response(200, text="ok")
     )
-    runner = SpotifyToolRunner(settings=Settings())
-    rows = run_simulated_chat_bank(runner)
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/playlists/.*/items").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/playlists/.*").mock(
+        return_value=httpx.Response(200, json={"id": "newpl0000000000000001", "public": False})
+    )
+    respx.post("https://api.spotify.com/v1/me/playlists").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "newpl0000000000000001", "name": "spot-ai-fy test", "public": False},
+        )
+    )
+    respx.post(url__regex=r"https://api\.spotify\.com/v1/playlists/.*/items").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/tracks/.*").mock(
+        return_value=httpx.Response(200, json={"id": "1111111111111111111111"})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/playlists/2HfFccisPxQfprhgIHM7XH").mock(
+        return_value=httpx.Response(200, json={"id": "2HfFccisPxQfprhgIHM7XH", "name": "90s Rock Classics"})
+    )
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id="chat-bank")
+    rows = run_simulated_chat_bank(runner, show_id=show_id, episode_id=episode_id)
     runner.close()
     assert rows
     assert all(isinstance(r.prompt, str) for r in rows)
+    flow_rows = [r for r in rows if r.flow]
+    assert len(flow_rows) >= 12
+    assert all(r.passed for r in flow_rows), [r for r in flow_rows if not r.passed]
+
+
+def test_r15_podcast_tools_in_agent_catalog() -> None:
+    missing = {
+        "spotify_library_contains",
+        "spotify_play_show_latest_episode",
+        "spotify_user_saved_shows",
+        "spotify_playlist_builder_preview",
+    } - podcast_tool_names_in_agent_payload()
+    assert not missing, f"missing tools: {missing}"
+
+
+@respx.mock
+def test_r15_reorder_sends_json_body(data_dir, signed_in_tokens) -> None:
+    captured: dict[str, Any] = {}
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={})
+
+    pid = "ownedpl000000000000099"
+    respx.put(f"https://api.spotify.com/v1/playlists/{pid}/items").mock(side_effect=capture)
+    runner = SpotifyToolRunner(settings=Settings())
+    runner._session_known_ids.add(pid)
+    raw = runner.run(
+        "spotify_reorder_playlist_tracks",
+        {"playlist_id": pid, "range_start": 1, "insert_before": 0, "range_length": 1},
+    )
+    runner.close()
+    assert json.loads(raw).get("ok") is True or "error" not in json.loads(raw)
+    body = captured.get("body")
+    assert isinstance(body, dict)
+    assert body.get("range_start") == 1
+    assert body.get("insert_before") == 0
+    assert body.get("range_length") == 1
+
+
+def test_r15_library_remove_empty_args_rejected(data_dir, signed_in_tokens) -> None:
+    runner = SpotifyToolRunner(settings=Settings())
+    raw = runner.run("spotify_library_remove", {})
+    runner.close()
+    data = json.loads(raw)
+    assert data.get("failure_reason") == "empty_args"

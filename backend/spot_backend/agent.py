@@ -29,7 +29,7 @@ from spot_backend.chat_messages import (
     tool_result_is_rejected_or_invalid_id,
 )
 from spot_backend.deterministic_chat import ollama_deterministic_shortcut_events
-from spot_backend.chat_tool_state import seed_runner_from_chat_history
+from spot_backend.chat_tool_state import format_runner_session_context, seed_runner_from_chat_history
 from spot_backend.prompt_intent import (
     OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE,
     filter_ollama_tools_for_prompt,
@@ -123,7 +123,14 @@ High-level phrasing (you resolve intent → concrete tools; do not ask the user 
 - DO NOT attempt to add or remove tracks on a playlist owned by another user — explain that the Web API blocks it and propose spotify_duplicate_playlist as the workaround.
 - "Most popular song / biggest hit / play their best-known track" → spotify_play_artist_popular_track (never spotify_artist_top_tracks — removed). Other "most popular album" questions → spotify_search + spotify_get_album and popularity fields.
 - Ambiguous artist, album, or playlist names → disambiguate with spotify_search or spotify_user_playlists before playback or edits.
-- If a tool fails, read error JSON (detail, hint), adjust the plan (e.g. different playlist id, smaller batch), and continue when possible instead of giving up after one call."""
+- If a tool fails, read error JSON (detail, hint), adjust the plan (e.g. different playlist id, smaller batch), and continue when possible instead of giving up after one call.
+
+Podcasts and library checks:
+- Find podcast shows → spotify_search with types=show (never spotify_search_playlists for podcasts).
+- Play latest episode → spotify_play_show_latest_episode with show_id from search.
+- Saved/followed shows → spotify_user_saved_shows.
+- Save/check/remove show, episode, track, album, playlist → spotify_library_save / spotify_library_contains / spotify_library_remove (spotify: URIs). Prefer library_contains for "is X in my likes/saved/library?".
+- Build a themed playlist → spotify_playlist_builder_preview then spotify_playlist_builder_commit after explicit user approval (do NOT spotify_create_playlist while a preview is pending)."""
 
 _JSON_TOOL_MODE_SUFFIX = """
 
@@ -551,6 +558,9 @@ def iter_ollama_chat_events(
         base_system = (
             SMALL_MODEL_SYSTEM_PROMPT if small_model else _SYSTEM
         ) + shared_agent_system_suffix() + load_optional_agent_context_markdown(settings)
+        session_ctx = format_runner_session_context(runner)
+        if session_ctx:
+            base_system = base_system + session_ctx
         active_tools = filter_ollama_tools(OLLAMA_TOOLS, small=small_model)
         informational_turn = prompt_is_informational(user_text)
         if informational_turn:

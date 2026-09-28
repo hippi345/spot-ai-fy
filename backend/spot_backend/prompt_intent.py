@@ -28,6 +28,12 @@ SPOTIFY_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
         "spotify_followed_artists",
         "spotify_top_artists",
         "spotify_top_tracks",
+        "spotify_library_contains",
+        "spotify_get_show",
+        "spotify_get_show_episodes",
+        "spotify_get_episode",
+        "spotify_user_saved_shows",
+        "spotify_user_saved_episodes",
         "spotify_playlists_containing_track",
         "spotify_get_queue",
         "spotify_devices",
@@ -360,7 +366,7 @@ CAPABILITY_QUESTION_SUFFIX = """
 
 APP CAPABILITY QUESTION:
 - Answer whether the feature is supported in plain language (yes/no). Do NOT call playback, queue, or library-mutation tools on this turn.
-- Podcast episodes are not supported through these Spotify Web API tools — only music (tracks, albums, artists) and the user's playlists/library controls.
+- Podcast shows and episodes ARE supported here via spotify_search (types=show), spotify_play_show_latest_episode, spotify_user_saved_shows, and spotify_library_save / spotify_library_contains for shows.
 """
 
 INFORMATIONAL_REPLY_SYSTEM_SUFFIX = """

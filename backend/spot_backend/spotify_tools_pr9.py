@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
@@ -19,9 +20,27 @@ from spot_backend.spotify_dev_limits import (
     clamp_spotify_page_limit,
 )
 
-# Imported from spotify_tools at runtime via mixin — duplicate small helpers inline.
 _LIBRARY_URI_CHUNK = 40
 _TEST_PLAYLIST_NAME = "spot-ai-fy test"
+_MIN_BUILDER_TRACKS = 10
+_MAX_BUILDER_TRACKS = 25
+
+_LIBRARY_PRONOUNS = frozenset(
+    {
+        "it",
+        "this",
+        "that",
+        "this show",
+        "that show",
+        "this episode",
+        "that episode",
+        "this track",
+        "this song",
+        "this album",
+        "this playlist",
+        "that playlist",
+    }
+)
 
 
 def _compact_pr9(data: Any, limit: int = 6000) -> str:
@@ -31,12 +50,59 @@ def _compact_pr9(data: Any, limit: int = 6000) -> str:
     return s
 
 
+def _empty_library_args_error(action: str) -> str:
+    return json.dumps(
+        {
+            "ok": False,
+            "failure_reason": "empty_args",
+            "error": f"{action} requires at least one Spotify URI (or a resolved 'this/it' reference).",
+            "hint": (
+                "Call spotify_playback_state, spotify_search, or spotify_get_show first, "
+                "then pass the id/uri from that tool output."
+            ),
+            "reconnect_spotify_unnecessary": True,
+        },
+        ensure_ascii=False,
+    )
+
+
 class SpotifyToolRunnerPr9Mixin:
     """Extra tool handlers mixed into SpotifyToolRunner."""
+
+    def _library_argument_is_pronoun(self, arguments: dict[str, Any]) -> bool:
+        raw = arguments.get("uris")
+        if raw is None:
+            raw = arguments.get("uri")
+        if isinstance(raw, list) and len(raw) == 1 and isinstance(raw[0], str):
+            return raw[0].strip().lower() in _LIBRARY_PRONOUNS
+        if isinstance(raw, str):
+            return raw.strip().lower() in _LIBRARY_PRONOUNS
+        return False
+
+    def _uris_from_last_library_mutation(self) -> list[str]:
+        mut = getattr(self, "_last_library_mutation", None)
+        if not isinstance(mut, dict):
+            return []
+        segment = mut.get("segment")
+        ids = mut.get("ids")
+        if not isinstance(segment, str) or not isinstance(ids, list):
+            return []
+        seg = segment.strip().lower()
+        if seg not in ("track", "album", "artist", "playlist", "show", "episode"):
+            return []
+        out: list[str] = []
+        for bare in ids:
+            if isinstance(bare, str) and bare.strip():
+                out.append(f"spotify:{seg}:{bare.strip()}")
+        return out[: _LIBRARY_URI_CHUNK]
 
     def _normalize_library_uris(self, arguments: dict[str, Any]) -> list[str]:
         from spot_backend.spotify_tools import _normalize_spotify_id
 
+        if self._library_argument_is_pronoun(arguments):
+            resolved = self._uris_from_last_library_mutation()
+            if resolved:
+                return resolved
         raw = arguments.get("uris")
         if raw is None:
             raw = arguments.get("uri")
@@ -50,6 +116,10 @@ class SpotifyToolRunnerPr9Mixin:
                 continue
             s = item.strip()
             if not s:
+                continue
+            low = s.lower()
+            if low in _LIBRARY_PRONOUNS:
+                out.extend(self._uris_from_last_library_mutation())
                 continue
             if s.lower().startswith("spotify:"):
                 out.append(s)
@@ -70,40 +140,88 @@ class SpotifyToolRunnerPr9Mixin:
     def _library_contains(self, arguments: dict[str, Any]) -> str:
         uris = self._normalize_library_uris(arguments)
         if not uris:
-            return json.dumps({"error": "uris is required (max 40 spotify: URIs)"})
+            return _empty_library_args_error("spotify_library_contains")
         data = self.client.api_get(
             "/me/library/contains",
             params={"uris": ",".join(uris)},
         )
         if isinstance(data, list):
-            return _compact_pr9({"uris": uris, "saved": data})
+            payload: dict[str, Any] = {"ok": True, "uris": uris, "saved": data}
+            if len(uris) == 1:
+                payload["saved_single"] = bool(data[0]) if data else False
+            return _compact_pr9(payload)
         return _compact_pr9(data)
 
     def _library_save_uris(self, arguments: dict[str, Any]) -> str:
         uris = self._normalize_library_uris(arguments)
         if not uris:
-            return json.dumps({"error": "uris is required"})
+            return _empty_library_args_error("spotify_library_save")
         for offset in range(0, len(uris), _LIBRARY_URI_CHUNK):
             chunk = uris[offset : offset + _LIBRARY_URI_CHUNK]
             self.client.api_put("/me/library", params={"uris": ",".join(chunk)})
+        self._record_library_mutation_from_uris(uris)
         return json.dumps({"ok": True, "saved_uris": uris})
 
     def _library_remove_uris(self, arguments: dict[str, Any]) -> str:
         uris = self._normalize_library_uris(arguments)
         if not uris:
-            return json.dumps({"error": "uris is required"})
+            return _empty_library_args_error("spotify_library_remove")
         for offset in range(0, len(uris), _LIBRARY_URI_CHUNK):
             chunk = uris[offset : offset + _LIBRARY_URI_CHUNK]
             self.client.api_delete("/me/library", params={"uris": ",".join(chunk)})
-        return json.dumps({"ok": True, "removed_uris": uris})
+        try:
+            check = self.client.api_get(
+                "/me/library/contains",
+                params={"uris": ",".join(uris[: _LIBRARY_URI_CHUNK])},
+            )
+            still = isinstance(check, list) and any(bool(x) for x in check)
+        except httpx.HTTPStatusError:
+            still = None
+        if still is True:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": "remove_verify_failed",
+                    "error": "Spotify still reports at least one URI as saved after removal.",
+                    "removed_uris": uris,
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "removed_uris": uris,
+                "verified_removed": still is False,
+            }
+        )
+
+    def _record_library_mutation_from_uris(self, uris: list[str]) -> None:
+        from spot_backend.spotify_tools import _looks_like_spotify_catalog_id
+
+        by_seg: dict[str, list[str]] = {}
+        for uri in uris:
+            if not isinstance(uri, str) or not uri.lower().startswith("spotify:"):
+                continue
+            parts = uri.split(":")
+            if len(parts) < 3:
+                continue
+            seg, bare = parts[1], parts[2]
+            if _looks_like_spotify_catalog_id(bare):
+                by_seg.setdefault(seg, []).append(bare)
+        if len(by_seg) == 1:
+            seg, ids = next(iter(by_seg.items()))
+            if hasattr(self, "_record_library_mutation"):
+                self._record_library_mutation(seg, ids)
 
     def _get_show(self, arguments: dict[str, Any]) -> str:
         from spot_backend.spotify_tools import _normalize_spotify_id, _pick_arg
 
         sid = _normalize_spotify_id(_pick_arg(arguments, "show_id", "id"), "show")
         if not sid:
-            return json.dumps({"error": "show_id is required"})
+            return json.dumps({"error": "show_id is required", "failure_reason": "validation_error"})
         data = self.client.api_get_cached(f"/shows/{sid}")
+        if isinstance(data, dict) and data.get("id"):
+            self._session_known_ids.add(str(data["id"]))
         return _compact_pr9(data)
 
     def _get_show_episodes(self, arguments: dict[str, Any]) -> str:
@@ -111,7 +229,7 @@ class SpotifyToolRunnerPr9Mixin:
 
         sid = _normalize_spotify_id(_pick_arg(arguments, "show_id", "id"), "show")
         if not sid:
-            return json.dumps({"error": "show_id is required"})
+            return json.dumps({"error": "show_id is required", "failure_reason": "validation_error"})
         limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
         data = self.client.api_get(
@@ -125,9 +243,46 @@ class SpotifyToolRunnerPr9Mixin:
 
         eid = _normalize_spotify_id(_pick_arg(arguments, "episode_id", "id"), "episode")
         if not eid:
-            return json.dumps({"error": "episode_id is required"})
+            return json.dumps({"error": "episode_id is required", "failure_reason": "validation_error"})
         data = self.client.api_get_cached(f"/episodes/{eid}")
         return _compact_pr9(data)
+
+    def _play_show_latest_episode(self, arguments: dict[str, Any]) -> str:
+        from spot_backend.spotify_tools import _normalize_spotify_id, _pick_arg
+
+        sid = _normalize_spotify_id(_pick_arg(arguments, "show_id", "id"), "show")
+        if not sid:
+            return json.dumps({"error": "show_id is required", "failure_reason": "validation_error"})
+        page = self.client.api_get(
+            f"/shows/{sid}/episodes",
+            params={"limit": 1, "offset": 0},
+        )
+        items = page.get("items") if isinstance(page, dict) else None
+        if not isinstance(items, list) or not items or not isinstance(items[0], dict):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": "no_episodes_for_show",
+                    "error": "No episodes returned for that show.",
+                    "show_id": sid,
+                },
+                ensure_ascii=False,
+            )
+        ep = items[0]
+        uri = ep.get("uri")
+        eid = ep.get("id")
+        if not isinstance(uri, str):
+            return json.dumps({"ok": False, "error": "Episode has no uri", "failure_reason": "parse_error"})
+        if isinstance(eid, str):
+            self._record_library_mutation("show", [sid])
+            self._record_library_mutation("episode", [eid])
+            self._session_known_ids.add(sid)
+            self._session_known_ids.add(eid)
+        play_args = {"uris": [uri]}
+        device_id = _pick_arg(arguments, "device_id")
+        if device_id:
+            play_args["device_id"] = device_id
+        return self._start_playback(play_args)
 
     def _get_audiobook(self, arguments: dict[str, Any]) -> str:
         from spot_backend.spotify_tools import _normalize_spotify_id, _pick_arg
@@ -167,7 +322,43 @@ class SpotifyToolRunnerPr9Mixin:
         limit = clamp_spotify_page_limit(arguments.get("limit"), default=SPOTIFY_DEV_MAX_PAGE)
         offset = _safe_int(arguments.get("offset"), 0, lo=0, hi=900_000)
         data = self.client.api_get("/me/shows", params={"limit": limit, "offset": offset})
-        return _compact_pr9(data)
+        if not isinstance(data, dict):
+            return _compact_pr9(data)
+        items_out: list[dict[str, Any]] = []
+        raw = data.get("items")
+        if isinstance(raw, list):
+            for row in raw[:50]:
+                if not isinstance(row, dict):
+                    continue
+                show = row.get("show") if isinstance(row.get("show"), dict) else row
+                if not isinstance(show, dict):
+                    continue
+                items_out.append(
+                    {
+                        "added_at": row.get("added_at"),
+                        "id": show.get("id"),
+                        "name": show.get("name"),
+                        "uri": show.get("uri"),
+                        "publisher": show.get("publisher"),
+                    }
+                )
+        lines = [
+            f"{offset + i + 1}. {r.get('name') or 'Show'} — {r.get('publisher') or ''}".strip()
+            for i, r in enumerate(items_out)
+        ]
+        summary = "\n".join(lines) if lines else "You have no saved shows on this page."
+        if data.get("next"):
+            summary += f"\n(More saved shows — pass offset={offset + len(items_out)}.)"
+        payload = {
+            "ok": True,
+            "total": data.get("total"),
+            "offset": offset,
+            "returned_count": len(items_out),
+            "items": items_out,
+            "summary_lines": lines,
+            "user_message": summary,
+        }
+        return _compact_pr9(payload)
 
     def _me_episodes(self, arguments: dict[str, Any]) -> str:
         from spot_backend.spotify_tools import _safe_int
@@ -185,8 +376,8 @@ class SpotifyToolRunnerPr9Mixin:
         data = self.client.api_get("/me/audiobooks", params={"limit": limit, "offset": offset})
         return _compact_pr9(data)
 
-    def _resolve_track_query(self, query: str, market: str) -> dict[str, Any] | None:
-        from spot_backend.spotify_tools import _normalize_market, _pick_arg
+    def _resolve_track_query(self, query: str, market: str, *, pick_index: int = 0) -> dict[str, Any] | None:
+        from spot_backend.spotify_tools import _normalize_market
 
         q = query.strip()
         if not q:
@@ -204,34 +395,93 @@ class SpotifyToolRunnerPr9Mixin:
             return None
         tracks = data.get("tracks")
         items = tracks.get("items") if isinstance(tracks, dict) else None
-        if not isinstance(items, list):
+        if not isinstance(items, list) or not items:
             return None
-        for row in items:
-            if isinstance(row, dict) and row.get("uri"):
-                return row
+        idx = pick_index % len(items)
+        row = items[idx]
+        if isinstance(row, dict) and row.get("uri"):
+            return row
+        for alt in items:
+            if isinstance(alt, dict) and alt.get("uri"):
+                return alt
         return None
+
+    def _builder_seed_queries(self, arguments: dict[str, Any]) -> list[str]:
+        from spot_backend.spotify_tools import _coerce_str, _pick_arg
+
+        raw = arguments.get("track_queries") or arguments.get("tracks") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        seeds: list[str] = []
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str) and item.strip():
+                    seeds.append(item.strip())
+        theme = _coerce_str(
+            _pick_arg(arguments, "theme", "description", "vibe", "name", "playlist_name"),
+            "",
+        ).strip()
+        blob = theme.lower()
+        if "90" in blob or "1990" in blob:
+            decades = ["1990s", "1991", "1994", "1995", "1997", "1998"]
+            moods = ["chill", "relax", "slow", "soft", "easy listening"]
+            for d in decades:
+                for m in moods:
+                    seeds.append(f"{d} {m}")
+                    if len(seeds) >= 40:
+                        break
+                if len(seeds) >= 40:
+                    break
+        if "chill" in blob:
+            seeds.extend(
+                [
+                    "chill vibes",
+                    "chillout classics",
+                    "relaxing hits",
+                    "mellow 90s",
+                    "downtempo",
+                    "lofi chill",
+                    "ambient pop",
+                ]
+            )
+        generic = [
+            "chill track",
+            "relaxing song",
+            "soft rock 90s",
+            "easy listening",
+            "mellow hits",
+            "slow jam",
+            "acoustic chill",
+            "indie chill",
+            "rnb chill",
+            "soul mellow",
+        ]
+        seeds.extend(generic)
+        seen: set[str] = set()
+        out: list[str] = []
+        for s in seeds:
+            key = s.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+        return out
 
     def _playlist_builder_preview(self, arguments: dict[str, Any]) -> str:
         from spot_backend.spotify_tools import _coerce_str, _normalize_market, _pick_arg
 
         name = _coerce_str(_pick_arg(arguments, "name", "playlist_name"), "New mix").strip()
-        queries = arguments.get("track_queries") or arguments.get("tracks") or []
-        if isinstance(queries, str):
-            queries = [queries]
-        if not isinstance(queries, list) or not queries:
-            return json.dumps({"error": "track_queries is required (10-25 search strings)"})
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
+        queries = self._builder_seed_queries(arguments)
         resolved: list[dict[str, Any]] = []
         seen_uris: set[str] = set()
         for raw_q in queries:
-            if not isinstance(raw_q, str):
-                continue
             q = raw_q.strip()
             if not q:
                 continue
-            if len(resolved) >= 25:
+            if len(resolved) >= _MAX_BUILDER_TRACKS:
                 break
-            track = self._resolve_track_query(q, market)
+            track = self._resolve_track_query(q, market, pick_index=len(resolved))
             if not track:
                 continue
             uri = track.get("uri")
@@ -251,13 +501,18 @@ class SpotifyToolRunnerPr9Mixin:
                     "query": q,
                 }
             )
-        if len(resolved) < 1:
+        if len(resolved) < _MIN_BUILDER_TRACKS:
             return json.dumps(
                 {
                     "ok": False,
-                    "failure_reason": "playlist_preview_empty",
-                    "error": "Could not resolve any tracks for that list.",
-                }
+                    "failure_reason": "playlist_preview_insufficient",
+                    "error": (
+                        f"Resolved only {len(resolved)} tracks (need at least {_MIN_BUILDER_TRACKS}). "
+                        "Try broader theme keywords or different decades."
+                    ),
+                    "resolved_count": len(resolved),
+                },
+                ensure_ascii=False,
             )
         preview = {
             "proposed_name": name,
@@ -281,6 +536,32 @@ class SpotifyToolRunnerPr9Mixin:
             ensure_ascii=False,
         )
 
+    def _ensure_playlist_private(self, playlist_id: str) -> tuple[bool, bool | None]:
+        """Return (verified_private, public_after_checks)."""
+        pid = (playlist_id or "").strip()
+        if not pid:
+            return False, None
+        public_flag: bool | None = None
+        try:
+            meta = self.client.api_get(f"/playlists/{pid}", params={"fields": "id,public"})
+            if isinstance(meta, dict) and isinstance(meta.get("public"), bool):
+                public_flag = meta.get("public")
+        except httpx.HTTPStatusError:
+            return False, None
+        if public_flag is False:
+            return True, False
+        try:
+            self.client.api_put(f"/playlists/{pid}", json_body={"public": False})
+        except httpx.HTTPStatusError:
+            return False, public_flag
+        try:
+            meta2 = self.client.api_get(f"/playlists/{pid}", params={"fields": "id,public"})
+            if isinstance(meta2, dict) and isinstance(meta2.get("public"), bool):
+                return meta2.get("public") is False, meta2.get("public")
+        except httpx.HTTPStatusError:
+            return False, public_flag
+        return False, public_flag
+
     def _playlist_builder_commit(self, arguments: dict[str, Any]) -> str:
         from spot_backend.spotify_tools import _coerce_str, _pick_arg
 
@@ -289,6 +570,7 @@ class SpotifyToolRunnerPr9Mixin:
             return json.dumps(
                 {
                     "error": "No pending playlist preview in this conversation.",
+                    "failure_reason": "validation_error",
                     "hint": "Call spotify_playlist_builder_preview first.",
                 }
             )
@@ -299,15 +581,13 @@ class SpotifyToolRunnerPr9Mixin:
             clear_playlist_preview(self.conversation_id)
             return json.dumps({"ok": False, "cancelled": True})
         name = _coerce_str(arguments.get("name") or preview.get("proposed_name"), _TEST_PLAYLIST_NAME)
-        if "test" in name.lower() or name == preview.get("proposed_name"):
-            pass
         tracks = preview.get("tracks")
         if not isinstance(tracks, list) or not tracks:
-            return json.dumps({"error": "Preview has no tracks"})
+            return json.dumps({"error": "Preview has no tracks", "failure_reason": "validation_error"})
         uris = [t.get("uri") for t in tracks if isinstance(t, dict) and t.get("uri")]
         uris = [u for u in uris if isinstance(u, str)]
         if not uris:
-            return json.dumps({"error": "Preview has no track URIs"})
+            return json.dumps({"error": "Preview has no track URIs", "failure_reason": "validation_error"})
         body = {"name": name, "public": False, "description": "Created by Spot-AI-fy"}
         created = self.client.api_post("/me/playlists", json_body=body)
         if not isinstance(created, dict) or not created.get("id"):
@@ -323,7 +603,7 @@ class SpotifyToolRunnerPr9Mixin:
                 add_error = None
                 break
             except httpx.HTTPStatusError as e:
-                add_error = f"HTTP {e.response.status_code}"
+                add_error = f"HTTP {e.response.status_code}: {_spotify_msg(e)}"
             except (OSError, RuntimeError, ValueError) as e:
                 add_error = str(e)
         clear_playlist_preview(self.conversation_id)
@@ -341,12 +621,16 @@ class SpotifyToolRunnerPr9Mixin:
                 },
                 ensure_ascii=False,
             )
+        verified_private, public_readback = self._ensure_playlist_private(pid)
+        if hasattr(self, "note_session_playlist_id"):
+            self.note_session_playlist_id(pid)
         return json.dumps(
             {
                 "ok": True,
                 "playlist_id": pid,
                 "name": name,
-                "public": False,
+                "public": False if verified_private else public_readback,
+                "verified_private": verified_private,
                 "track_count": len(uris),
             },
             ensure_ascii=False,
@@ -367,3 +651,15 @@ class SpotifyToolRunnerPr9Mixin:
                 ensure_ascii=False,
             )
         return None
+
+
+def _spotify_msg(exc: httpx.HTTPStatusError) -> str:
+    try:
+        payload = exc.response.json()
+        if isinstance(payload, dict):
+            err = payload.get("error")
+            if isinstance(err, dict) and isinstance(err.get("message"), str):
+                return err["message"]
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return (exc.response.text or "")[:200]

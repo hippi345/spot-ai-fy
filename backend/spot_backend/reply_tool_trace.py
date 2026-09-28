@@ -123,6 +123,19 @@ def tool_trace_failure_reason(raw_result: str) -> str | None:
         return "playback_not_verified"
     if data.get("playlist_not_owned_by_user"):
         return "not_owned"
+    err = data.get("error")
+    if isinstance(err, str):
+        low = err.lower()
+        if "uris is required" in low or "required" in low and "uri" in low:
+            return "empty_args"
+        if "unknown tool" in low:
+            return "validation_error"
+    status = data.get("spotify_http_status")
+    if isinstance(status, int):
+        from spot_backend.spotify_tools import _http_failure_reason
+
+        msg = data.get("spotify_api_message") if isinstance(data.get("spotify_api_message"), str) else None
+        return _http_failure_reason(status, msg)
     return None
 
 

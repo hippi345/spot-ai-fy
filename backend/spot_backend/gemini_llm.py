@@ -29,7 +29,7 @@ from spot_backend.chat_messages import (
     tool_result_is_rejected_or_invalid_id,
 )
 from spot_backend.deterministic_chat import gemini_deterministic_shortcut_reply
-from spot_backend.chat_tool_state import seed_runner_from_chat_history
+from spot_backend.chat_tool_state import format_runner_session_context, seed_runner_from_chat_history
 from spot_backend.gemini_nudge import should_send_gemini_tool_nudge
 from spot_backend.prompt_intent import (
     OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE,
@@ -186,6 +186,10 @@ Tool routing (high-level intent → tool):
 - "<user_id>'s playlists" → spotify_user_public_playlists. "Find a playlist about <topic>" → spotify_search_playlists → optional spotify_follow_playlist / spotify_play_playlist / spotify_duplicate_playlist.
 - "Copy someone's playlist so I can edit it" → spotify_duplicate_playlist (creates a new playlist you own); then edit with spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks on the new id.
 - "Repeat / loop" → spotify_set_repeat (context|track|off) AFTER playback starts. "Shuffle" → spotify_set_shuffle.
+
+Podcasts and library:
+- Find podcasts → spotify_search types=show. Latest episode → spotify_play_show_latest_episode. Saved shows → spotify_user_saved_shows.
+- "Is X saved/liked?" → spotify_library_contains. Themed playlist build → spotify_playlist_builder_preview then commit (not spotify_create_playlist before approval).
 
 KNOWN SPOTIFY API LIMITATIONS — the Web API does NOT expose: per-playlist or per-track play counts, "most listened playlist", listening history beyond ~50 recent items, your follower list (only spotify_me.followers.total count), users you follow (only artists, via spotify_followed_artists), another user's PRIVATE playlists, lookup of a user by display name (need user_id), or editing someone else's playlist (offer spotify_duplicate_playlist instead). When asked for any of these, respond in two parts: (1) one short sentence saying what is not exposed and why, (2) 2-3 specific tools you CAN call that are closest to the intent. Never just say "I can't" — always pair it with what you can do.
 
@@ -395,6 +399,26 @@ def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
         t,
     ):
         return ["spotify_recently_played"]
+    if re.search(r"\bfind\s+podcasts?\b|\bpodcasts?\s+about\b", t):
+        return ["spotify_search"]
+    if re.search(r"\bwhat podcasts?\s+do i follow\b|\bfollowed podcasts?\b", t):
+        return ["spotify_user_saved_shows"]
+    if re.search(r"\bplay\s+(?:the\s+)?latest\s+episode\b", t):
+        return ["spotify_play_show_latest_episode", "spotify_search"]
+    if re.search(r"\b(is|are)\s+this\s+(?:song|track)\b.*\b(?:likes?|saved)\b", t) or re.search(
+        r"\b(?:song|track).*\b(?:in my likes|liked)\b", t
+    ):
+        return ["spotify_library_contains", "spotify_playback_state"]
+    if re.search(r"\b(?:album).*\b(?:saved|library)\b", t) or re.search(
+        r"\bdo i already have this album\b", t
+    ):
+        return ["spotify_library_contains", "spotify_playback_state"]
+    if re.search(r"\bwhat albums?\s+do i have saved\b", t):
+        return ["spotify_saved_albums"]
+    if re.search(r"\bbuild\b.*\bplaylist\b|\bmake me a playlist\b", t):
+        return ["spotify_playlist_builder_preview"]
+    if re.search(r"\b(is|are)\s+this\s+show\b.*\bsaved\b", t):
+        return ["spotify_library_contains"]
     if re.search(r"\b(?:latest|newest|most recent)\s+(?:single|release)\b", t):
         return [
             "spotify_play_artist_latest_release",
@@ -525,6 +549,9 @@ def run_chat_turn_gemini(
         return shortcut_reply
     informational_turn = prompt_is_informational(user_text)
     full_system = _SYSTEM + shared_agent_system_suffix() + load_optional_agent_context_markdown(settings)
+    session_ctx = format_runner_session_context(runner)
+    if session_ctx:
+        full_system = full_system + session_ctx
     if informational_turn:
         full_system = full_system + informational_system_suffix(user_text)
 

@@ -696,6 +696,14 @@ def spotify_playlist_builder_commit(approve: bool = True, name: str = "") -> str
     return _runner.run("spotify_playlist_builder_commit", args)
 
 
+@mcp.tool()
+def spotify_play_show_latest_episode(show_id: str, device_id: str = "") -> str:
+    args: dict[str, Any] = {"show_id": show_id}
+    if device_id.strip():
+        args["device_id"] = device_id.strip()
+    return _runner.run("spotify_play_show_latest_episode", args)
+
+
 def main() -> None:
     mcp.run()
 
