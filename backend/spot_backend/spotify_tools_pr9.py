@@ -826,7 +826,27 @@ class SpotifyToolRunnerPr9Mixin:
             return None
         if _theme_requests_nineties(theme_blob) and "year:" not in q.lower():
             q = f"{q} year:1990-1999"
-        logger.info("playlist_builder_search q=%s", q)
+        import os
+
+        if os.environ.get("SPOT_DEBUG_BUILDER_Q", "").strip() in ("1", "true", "yes"):
+            logger.warning("playlist_builder_search q=%s", q)
+        else:
+            logger.info("playlist_builder_search q=%s", q)
+        if os.environ.get("SPOT_DEBUG_BUILDER_Q", "").strip() in ("1", "true", "yes"):
+            trace_dir = getattr(self.settings, "data_dir", None)
+            if trace_dir is not None:
+                from pathlib import Path
+
+                from spot_backend.reply_tool_trace import append_tool_trace_record
+
+                append_tool_trace_record(
+                    Path(trace_dir),
+                    conversation_id=self.conversation_id,
+                    tool_name="playlist_builder_search",
+                    args_summary="{}",
+                    outcome="ok",
+                    trace_fields={"q": q},
+                )
         data = self.client.api_get(
             "/search",
             params={

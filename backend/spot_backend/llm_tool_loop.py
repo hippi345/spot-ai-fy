@@ -33,7 +33,10 @@ from spot_backend.reply_tool_trace import (
     tool_trace_outcome,
 )
 from spot_backend.spotify_tools import SpotifyToolRunner, _sanitize_model_device_id
-from spot_backend.tool_server_enforcement import enforce_tool_arguments_for_turn
+from spot_backend.tool_server_enforcement import (
+    enforce_tool_arguments_for_turn,
+    rewrite_tool_call_for_turn,
+)
 
 EmitFn = Callable[[dict[str, Any]], None]
 
@@ -128,6 +131,9 @@ def run_tool_calls(
         else:
             import time as _time
 
+            name, args = rewrite_tool_call_for_turn(
+                name, args, user_text=user_text, runner=runner
+            )
             args = enforce_tool_arguments_for_turn(
                 name, args, user_text=user_text, runner=runner
             )

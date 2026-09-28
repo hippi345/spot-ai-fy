@@ -90,7 +90,14 @@ _PLAYLIST_ID_TOOLS = frozenset(
         "spotify_update_playlist",
         "spotify_replace_playlist_tracks",
         "spotify_reorder_playlist_tracks",
+        "spotify_get_playlist",
+        "spotify_playlist_tracks",
+        "spotify_add_tracks_to_playlist",
     }
+)
+_SHOW_SAVE_INTENT_RE = re.compile(
+    r"\bsave\b.+\b(?:this|that)\s+(?:show|podcast)\b|\bsave\s+(?:this|that)\s+(?:show|podcast)\b",
+    re.I,
 )
 _SEARCH_PLAYLIST_TOOLS = frozenset({"spotify_search_playlists"})
 _LIBRARY_ALBUM_TOOLS = frozenset(
@@ -258,6 +265,43 @@ def _apply_playback_overrides(
     return out
 
 
+def _resolved_show_id_for_save(runner: SpotifyToolRunner) -> str | None:
+    from spot_backend.show_session_resolve import resolve_show_id_for_turn
+
+    return resolve_show_id_for_turn(runner, "", None)
+
+
+def _uris_are_show_segment(uris: list[Any]) -> bool:
+    for raw in uris:
+        if not isinstance(raw, str):
+            continue
+        parsed = _parse_spotify_context_ref(raw.strip())
+        if parsed and parsed[0] == "show":
+            return True
+    return False
+
+
+def rewrite_tool_call_for_turn(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    user_text: str,
+    runner: SpotifyToolRunner,
+) -> tuple[str, dict[str, Any]]:
+    """Rewrite wrong tool/args before the first Spotify call on show-save and similar turns."""
+    if _SHOW_SAVE_INTENT_RE.search(user_text or ""):
+        if tool_name in ("spotify_save_tracks", "spotify_save_albums", "spotify_library_save"):
+            uris = arguments.get("uris")
+            if isinstance(uris, list) and uris and not _uris_are_show_segment(uris):
+                show_id = _resolved_show_id_for_save(runner)
+                if show_id:
+                    out = deepcopy(arguments) if isinstance(arguments, dict) else {}
+                    out["uris"] = [f"spotify:show:{show_id}"]
+                    out["_turn_user_text"] = user_text
+                    return "spotify_library_save", out
+    return tool_name, arguments if isinstance(arguments, dict) else {}
+
+
 def enforce_tool_arguments_for_turn(
     tool_name: str,
     arguments: dict[str, Any],
@@ -276,6 +320,17 @@ def enforce_tool_arguments_for_turn(
     args = _apply_playback_overrides(tool_name, args, user_text=user_text, runner=runner)
     if tool_name in _PLAYLIST_ID_TOOLS:
         args = _override_playlist_id_from_context(args, user_text=user_text, runner=runner)
+        from spot_backend.playlist_session_resolve import resolve_playlist_id_for_turn
+
+        raw_pid = args.get("playlist_id") or args.get("id")
+        resolved = resolve_playlist_id_for_turn(
+            runner,
+            user_text,
+            str(raw_pid) if raw_pid is not None else None,
+        )
+        if resolved:
+            args = deepcopy(args)
+            args["playlist_id"] = resolved
     if tool_name in _SHOW_PLAY_TOOLS:
         from spot_backend.show_session_resolve import resolve_show_id_for_turn
 

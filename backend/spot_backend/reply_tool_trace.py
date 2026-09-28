@@ -28,6 +28,25 @@ def tool_trace_log_path(data_dir: Path) -> Path:
     return data_dir / _TRACE_FILENAME
 
 
+def _truncate_unicode_safe(text: str, max_len: int) -> str:
+    """Truncate on Unicode code-point boundaries (never split UTF-8 multibyte sequences)."""
+    if max_len <= 0:
+        return ""
+    if len(text) <= max_len:
+        return text
+    ellipsis = "…"
+    if max_len <= len(ellipsis):
+        return ellipsis
+    cut = text[: max_len - len(ellipsis)]
+    while cut:
+        try:
+            cut.encode("utf-8")
+            return cut + ellipsis
+        except UnicodeEncodeError:
+            cut = cut[:-1]
+    return ellipsis
+
+
 def summarize_tool_args(arguments: dict[str, Any] | None, *, max_len: int = 160) -> str:
     if not isinstance(arguments, dict) or not arguments:
         return "{}"
@@ -44,12 +63,12 @@ def summarize_tool_args(arguments: dict[str, Any] | None, *, max_len: int = 160)
             safe[key] = "<redacted>"
             continue
         if isinstance(val, str) and len(val) > 80:
-            safe[key] = val[:77] + "…"
+            safe[key] = _truncate_unicode_safe(val, 80)
         else:
             safe[key] = val
-    text = json.dumps(safe, sort_keys=True, default=str)
+    text = json.dumps(safe, sort_keys=True, default=str, ensure_ascii=False)
     if len(text) > max_len:
-        return text[: max_len - 1] + "…"
+        return _truncate_unicode_safe(text, max_len)
     return text
 
 
@@ -189,6 +208,7 @@ def append_tool_trace_record(
     known_secrets: list[str] | None = None,
     raw_result: str | None = None,
     spotify_error_body_redacted: str | None = None,
+    trace_fields: dict[str, Any] | None = None,
 ) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     path = tool_trace_log_path(data_dir)
@@ -201,6 +221,10 @@ def append_tool_trace_record(
     }
     if duration_ms is not None:
         row["duration_ms"] = duration_ms
+    if isinstance(trace_fields, dict):
+        for key, val in trace_fields.items():
+            if key and not str(key).startswith("_"):
+                row[str(key)] = val
     err_body = spotify_error_body_redacted
     if not err_body and raw_result:
         err_body = tool_trace_spotify_error_body(raw_result)

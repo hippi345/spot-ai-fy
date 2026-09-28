@@ -149,6 +149,39 @@ def _best_artist_name_for_track_search(*candidates: str | None) -> str:
     return max(pool, key=len)
 
 
+def _track_has_primary_artist(
+    track: dict[str, Any],
+    *,
+    artist_id: str,
+    artist_name: str,
+    name_hints: tuple[str, ...] = (),
+) -> bool:
+    """True when artists[0] is the requested artist (id or exact name), not a featured credit."""
+    artists = track.get("artists") if isinstance(track.get("artists"), list) else []
+    if not artists or not isinstance(artists[0], dict):
+        return False
+    primary = artists[0]
+    aid = (artist_id or "").strip()
+    if aid and str(primary.get("id") or "").strip() == aid:
+        return True
+    an = str(primary.get("name") or "").strip()
+    if not an:
+        return False
+    name_pool = tuple(
+        n.strip()
+        for n in (artist_name,) + name_hints
+        if isinstance(n, str) and n.strip() and not _looks_like_spotify_catalog_id(n.strip())
+    )
+    for hint in name_pool:
+        if an.casefold() == hint.casefold():
+            return True
+        if artist_query_matches_candidate_name(hint, an):
+            return True
+        if artist_names_match(hint, an):
+            return True
+    return False
+
+
 def _track_matches_artist(
     track: dict[str, Any],
     *,
@@ -549,6 +582,10 @@ def _http_failure_reason(status: int, spot_msg: str | None = None) -> str:
     if status == 400:
         if "scope" in msg or "missing scope" in msg:
             return "missing_scope"
+        if "audiobook" in msg and ("market" in msg or "not available" in msg):
+            return "audiobooks_unavailable_in_market"
+        if "invalid market" in msg:
+            return "invalid_market"
         return "http_400_bad_request"
     if status == 401:
         return "http_401_unauthorized"
@@ -1113,6 +1150,7 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         self.settings = self.client.settings
         self.conversation_id = (conversation_id or "").strip() or None
         self._session_known_ids: set[str] = set()
+        self._session_playlist_ids: set[str] = set()
         self._last_library_mutation: dict[str, Any] | None = None
         self._last_session_playlist_id: str | None = None
         self._last_primary_artist_id: str | None = None
@@ -1164,6 +1202,7 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         if _looks_like_spotify_catalog_id(pid):
             self._last_session_playlist_id = pid
             self._session_known_ids.add(pid)
+            self._session_playlist_ids.add(pid)
             from spot_backend.library_mutation_store import record_last_playlist_id
 
             record_last_playlist_id(self.conversation_id, pid)
@@ -1922,7 +1961,11 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             default_search_limit,
             pick_search_types_argument,
         )
-        from spot_backend.spotify_search_slim import attach_show_search_summary, strip_null_search_items
+        from spot_backend.spotify_search_slim import (
+            attach_audiobook_search_summary,
+            attach_show_search_summary,
+            strip_null_search_items,
+        )
 
         q = _pick_arg(arguments, "query", "q", "search_query")
         types_raw = pick_search_types_argument(arguments)
@@ -1944,22 +1987,36 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         try:
             data = self.client.api_get("/search", params=params)
         except httpx.HTTPStatusError as e:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": _spotify_http_message(e),
-                    "failure_reason": _http_failure_reason(e.response.status_code, _spotify_http_message(e)),
-                    "search_params_sent": {
-                        k: params[k]
-                        for k in ("q", "type", "market", "limit", "include_external")
-                        if k in params
-                    },
-                    **_spotify_http_error_fields(e),
+            spot_msg = _spotify_http_message(e)
+            reason = _http_failure_reason(e.response.status_code, spot_msg)
+            types_sent = str(params.get("type") or "")
+            if "audiobook" in types_sent and e.response.status_code == 400:
+                if reason == "http_400_bad_request":
+                    reason = "audiobooks_unavailable_in_market"
+            payload: dict[str, Any] = {
+                "ok": False,
+                "error": spot_msg,
+                "failure_reason": reason,
+                "user_message": (
+                    "I couldn't search Spotify audiobooks for your account or market right now."
+                    if "audiobook" in types_sent
+                    else spot_msg
+                ),
+                "search_params_sent": {
+                    k: params[k]
+                    for k in ("q", "type", "market", "limit", "include_external")
+                    if k in params
                 },
-                ensure_ascii=False,
-            )
+                **_spotify_http_error_fields(e),
+            }
+            return json.dumps(payload, ensure_ascii=False)
         if isinstance(data, dict):
             strip_null_search_items(data)
+            books = data.get("audiobooks")
+            if isinstance(books, dict):
+                clean = books.get("items") if isinstance(books.get("items"), list) else []
+                if clean:
+                    attach_audiobook_search_summary(data)
             shows = data.get("shows")
             if isinstance(shows, dict):
                 clean = shows.get("items") if isinstance(shows.get("items"), list) else []
@@ -2515,6 +2572,7 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         market: str,
         max_pages: int = 3,
         name_hints: tuple[str, ...] = (),
+        primary_only: bool = True,
     ) -> list[dict[str, Any]]:
         search_name = artist_name.strip() or _best_artist_name_for_track_search(*name_hints)
         query = f'artist:"{search_name}"' if search_name else artist_id
@@ -2535,12 +2593,23 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             if not isinstance(items, list) or not items:
                 break
             for tr in items:
-                if isinstance(tr, dict) and _track_matches_artist(
-                    tr,
-                    artist_id=artist_id,
-                    artist_name=search_name or artist_name,
-                    name_hints=name_hints,
-                ):
+                if not isinstance(tr, dict):
+                    continue
+                if primary_only:
+                    matched = _track_has_primary_artist(
+                        tr,
+                        artist_id=artist_id,
+                        artist_name=search_name or artist_name,
+                        name_hints=name_hints,
+                    )
+                else:
+                    matched = _track_matches_artist(
+                        tr,
+                        artist_id=artist_id,
+                        artist_name=search_name or artist_name,
+                        name_hints=name_hints,
+                    )
+                if matched:
                     collected.append(tr)
             if not isinstance(tracks_obj, dict) or not tracks_obj.get("next"):
                 break
@@ -2568,11 +2637,32 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             return []
         out: list[dict[str, Any]] = []
         for tr in items:
-            if isinstance(tr, dict) and _track_matches_artist(
+            if not isinstance(tr, dict):
+                continue
+            if _track_has_primary_artist(
                 tr, artist_id=aid, artist_name="", name_hints=name_hints
             ):
                 out.append(tr)
         return out
+
+    def _still_playing_user_message(self, player: dict[str, Any] | None) -> str | None:
+        if not isinstance(player, dict):
+            return None
+        item = player.get("item")
+        if not isinstance(item, dict):
+            return None
+        if item.get("type") not in ("track", "episode"):
+            return None
+        name = item.get("name") if isinstance(item.get("name"), str) else None
+        artists = item.get("artists") if isinstance(item.get("artists"), list) else []
+        artist = ""
+        if artists and isinstance(artists[0], dict):
+            artist = str(artists[0].get("name") or "").strip()
+        if name and artist:
+            return f"Spotify didn't switch; it's still playing {name} by {artist}."
+        if name:
+            return f"Spotify didn't switch; it's still playing {name}."
+        return None
 
     def _play_artist_via_context_uri(
         self,
@@ -2614,7 +2704,11 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         }
         if not play_ok and not verified:
             user_msg = play_result.get("user_message") if isinstance(play_result, dict) else None
-            if isinstance(user_msg, str) and user_msg.strip():
+            still = self._still_playing_user_message(player)
+            if still:
+                summary["user_message"] = still
+                summary["error"] = still
+            elif isinstance(user_msg, str) and user_msg.strip():
                 summary["user_message"] = user_msg.strip()
                 summary["error"] = user_msg.strip()
             else:
@@ -2675,7 +2769,16 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             artist_name=track_search_name,
             market=market,
             name_hints=name_hints,
+            primary_only=True,
         )
+        if not tracks:
+            tracks = self._search_artist_tracks_for_popularity(
+                artist_id=cid,
+                artist_name=track_search_name,
+                market=market,
+                name_hints=name_hints,
+                primary_only=False,
+            )
         if not tracks:
             tracks = self._search_tracks_by_artist_id(
                 artist_id=cid,
@@ -2816,14 +2919,6 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         if reject:
             return reject
         pid = validated or pid
-        if "name" in arguments and arguments.get("name") is not None:
-            owned_block = self._owned_playlist_destructive_guard(
-                pid,
-                arguments,
-                action="Renaming it",
-            )
-            if owned_block:
-                return owned_block
         body: dict[str, Any] = {}
         if "name" in arguments and arguments.get("name") is not None:
             n = str(arguments.get("name", "")).strip()
@@ -2877,13 +2972,6 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         )
         if not pid:
             return json.dumps({"error": "playlist_id is required"})
-        owned_block = self._owned_playlist_destructive_guard(
-            pid,
-            arguments,
-            action="Removing tracks from it",
-        )
-        if owned_block:
-            return owned_block
         uri_list = _coerce_track_uri_list(_combined_track_inputs(arguments))
         if not uri_list:
             return json.dumps({"error": "track_uris / track_ids / tracks (non-empty list) is required"})
@@ -3086,8 +3174,8 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                 "playlist_id": playlist_id,
                 "playlist_name": playlist_name,
                 "error": (
-                    f'That\'s your own playlist "{playlist_name}". {action} would take it out of your '
-                    f'library. Say "remove {playlist_name}" to confirm.'
+                    f'That\'s your own playlist "{playlist_name}". To remove it from your library, '
+                    f"repeat the request using that exact playlist name."
                 ),
             },
             ensure_ascii=False,
@@ -6221,8 +6309,18 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             artist_name=track_search_name,
             market=market,
             name_hints=name_hints,
+            primary_only=True,
         )
         track_dicts = [tr for tr in track_dicts if isinstance(tr, dict) and tr.get("uri")]
+        if not track_dicts:
+            track_dicts = self._search_artist_tracks_for_popularity(
+                artist_id=cid,
+                artist_name=track_search_name,
+                market=market,
+                name_hints=name_hints,
+                primary_only=False,
+            )
+            track_dicts = [tr for tr in track_dicts if isinstance(tr, dict) and tr.get("uri")]
         if not track_dicts:
             track_dicts = self._search_tracks_by_artist_id(
                 artist_id=cid,
@@ -6289,7 +6387,11 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         }
         if not play_ok and not verified:
             user_msg = play_result.get("user_message") if isinstance(play_result, dict) else None
-            if isinstance(user_msg, str) and user_msg.strip():
+            still = self._still_playing_user_message(player)
+            if still:
+                summary["user_message"] = still
+                summary["error"] = still
+            elif isinstance(user_msg, str) and user_msg.strip():
                 summary["user_message"] = user_msg.strip()
                 summary["error"] = user_msg.strip()
             else:

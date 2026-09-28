@@ -27,6 +27,7 @@ _TYPE_ALIASES: dict[str, str] = {
 }
 
 _SHOW_OR_EPISODE = frozenset({"show", "episode"})
+_MARKET_SENSITIVE = frozenset({"show", "episode", "audiobook"})
 
 
 def normalize_search_type_tokens(raw: str) -> str:
@@ -49,7 +50,7 @@ def normalize_search_type_tokens(raw: str) -> str:
 
 def search_types_need_market(types_csv: str) -> bool:
     tokens = {t.strip() for t in types_csv.split(",") if t.strip()}
-    return bool(tokens & _SHOW_OR_EPISODE)
+    return bool(tokens & _MARKET_SENSITIVE)
 
 
 def build_spotify_search_params(
@@ -70,7 +71,7 @@ def build_spotify_search_params(
     ):
         market_norm = "from_token"
     if search_types_need_market(types_norm) and market_norm.lower() != "from_token":
-        # Show/episode catalog is tied to the user's market; avoid bogus ISO codes from the model.
+        # Show/episode/audiobook catalog is tied to the user's market; avoid bogus ISO codes.
         market_norm = "from_token"
     params: dict[str, Any] = {
         "q": query,
@@ -79,7 +80,8 @@ def build_spotify_search_params(
         "limit": lim,
         "offset": off,
     }
-    if search_types_need_market(types_norm):
+    tokens = {t.strip() for t in types_norm.split(",") if t.strip()}
+    if tokens & _SHOW_OR_EPISODE:
         params["include_external"] = "audio"
     return params
 
