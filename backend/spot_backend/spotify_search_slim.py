@@ -53,8 +53,15 @@ def attach_show_search_summary(data: dict[str, Any]) -> None:
         return
     slim = slim_show_search_items(items)
     bucket["items"] = slim
+    from spot_backend.list_format import format_indexed_name_detail
+
     lines = [
-        f"{i + 1}. {r.get('name') or 'Show'} — {r.get('publisher') or ''}".strip()
+        format_indexed_name_detail(
+            i + 1,
+            str(r.get("name") or ""),
+            str(r.get("publisher") or "") if r.get("publisher") else None,
+            default_name="Show",
+        )
         for i, r in enumerate(slim)
     ]
     if lines:

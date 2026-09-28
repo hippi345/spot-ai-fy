@@ -171,6 +171,8 @@ _FAILURE_REASON_HUMAN: dict[str, str] = {
     "owned_playlist_protected": (
         "That's one of your own playlists. Say its exact name if you want me to remove or change it."
     ),
+    "show_not_found": "I couldn't find that show's latest episode.",
+    "no_episodes_for_show": "I couldn't find that show's latest episode.",
 }
 
 
@@ -221,6 +223,45 @@ def reply_hallucinates_after_tool_failure(text: str, tool_results: list[str] | N
     if re.search(r"\b(?:startalk|podcast|episode)\b", low) and "failed" not in low:
         return True
     return False
+
+
+_BRAND_ONLY_REPLY_RE = re.compile(r"^(?:spotify|done\.?|ok\.?)$", re.I)
+
+
+def reply_is_too_short_or_brand_only(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _BRAND_ONLY_REPLY_RE.match(t):
+        return True
+    words = re.findall(r"[A-Za-z0-9']+", t)
+    if len(words) <= 2 and t.lower() in ("spotify", "done", "ok"):
+        return True
+    if len(t) <= 16 and t.lower().replace(".", "") == "spotify":
+        return True
+    return False
+
+
+def ensure_substantive_user_reply(
+    text: str,
+    tool_results: list[str] | None,
+    *,
+    tool_names: list[str] | None = None,
+    user_text: str = "",
+) -> str:
+    if not reply_is_too_short_or_brand_only(text):
+        return text
+    fallback = best_tool_summary_fallback(
+        tool_results,
+        user_text=user_text,
+        tool_names=tool_names or [],
+    )
+    if fallback:
+        return fallback
+    err = last_tool_error_user_message(tool_results)
+    if err:
+        return err
+    return "Something went wrong talking to Spotify just now. Please try again."
 
 
 def apply_tool_grounded_reply(

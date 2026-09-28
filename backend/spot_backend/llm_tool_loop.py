@@ -166,7 +166,9 @@ def run_tool_calls(
         )
     from spot_backend.turn_reply_intent import (
         intent_needs_library_contains_fallback,
+        intent_needs_library_save_fallback,
         library_contains_fallback_args,
+        library_save_fallback_args,
     )
 
     if intent_needs_library_contains_fallback(user_text, [n for n, _ in state.turn_tool_calls]):
@@ -204,7 +206,75 @@ def run_tool_calls(
                 "content": fb_raw[:tool_result_cap] if tool_result_cap > 0 else fb_raw,
             }
         )
+    run_library_save_fallback_if_needed(
+        runner,
+        state,
+        user_text=user_text,
+        emit=emit,
+        trace_data_dir=trace_data_dir,
+        trace_conversation_id=trace_conversation_id,
+        trace_secrets=trace_secrets,
+        tool_result_cap=tool_result_cap,
+        tool_messages=tool_messages,
+    )
     return tool_messages
+
+
+def run_library_save_fallback_if_needed(
+    runner: SpotifyToolRunner,
+    state: ToolLoopState,
+    *,
+    user_text: str,
+    emit: EmitFn | None = None,
+    trace_data_dir: Any | None = None,
+    trace_conversation_id: str | None = None,
+    trace_secrets: list[str] | None = None,
+    tool_result_cap: int = 12_000,
+    tool_messages: list[dict[str, Any]] | None = None,
+) -> str | None:
+    from spot_backend.turn_reply_intent import (
+        intent_needs_library_save_fallback,
+        library_save_fallback_args,
+    )
+
+    if not intent_needs_library_save_fallback(user_text, [n for n, _ in state.turn_tool_calls]):
+        return None
+    save_args = enforce_tool_arguments_for_turn(
+        "spotify_library_save",
+        library_save_fallback_args(user_text),
+        user_text=user_text,
+        runner=runner,
+    )
+    save_raw = runner.run("spotify_library_save", save_args)
+    state.turn_tool_calls.append(("spotify_library_save", save_raw))
+    state.tool_results.append(save_raw)
+    record_successful_tool(state.successful_tools, "spotify_library_save", save_raw)
+    if emit:
+        emit({"type": "tool_start", "name": "spotify_library_save"})
+        preview = save_raw[:240] + ("…" if len(save_raw) > 240 else "")
+        emit({"type": "tool_done", "name": "spotify_library_save", "preview": preview})
+    if trace_data_dir is not None:
+        from pathlib import Path
+
+        append_tool_trace_record(
+            Path(trace_data_dir),
+            conversation_id=trace_conversation_id,
+            tool_name="spotify_library_save",
+            args_summary=summarize_tool_args(save_args),
+            outcome=tool_trace_outcome(save_raw),
+            known_secrets=trace_secrets,
+            raw_result=save_raw,
+        )
+    if tool_messages is not None:
+        tool_messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": "spotify_library_save_fallback",
+                "name": "spotify_library_save",
+                "content": save_raw[:tool_result_cap] if tool_result_cap > 0 else save_raw,
+            }
+        )
+    return save_raw
 
 
 @dataclass
@@ -302,5 +372,10 @@ def finalize_assistant_text(
     )
     return TextFinalizeAction(
         kind="return",
-        text=prepare_user_visible_reply(grounded, state.tool_results),
+        text=prepare_user_visible_reply(
+            grounded,
+            state.tool_results,
+            tool_names=tool_names,
+            user_text=user_text,
+        ),
     )

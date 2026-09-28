@@ -398,6 +398,26 @@ class SpotifyToolRunnerPr9Mixin:
         uris = self._normalize_library_uris(arguments)
         if not uris:
             return _empty_library_args_error("spotify_library_remove")
+        try:
+            pre_check = self.client.api_get(
+                "/me/library/contains",
+                params={"uris": ",".join(uris[: _LIBRARY_URI_CHUNK])},
+            )
+        except httpx.HTTPStatusError:
+            pre_check = None
+        if isinstance(pre_check, list) and pre_check and not any(bool(x) for x in pre_check):
+            label = self._library_label_for_uri(uris[0]) if uris else None
+            name = label or "That item"
+            return json.dumps(
+                {
+                    "ok": True,
+                    "not_in_library": True,
+                    "removed_uris": uris,
+                    "item_name": label,
+                    "user_message": f"{name} wasn't in your library.",
+                },
+                ensure_ascii=False,
+            )
         for offset in range(0, len(uris), _LIBRARY_URI_CHUNK):
             chunk = uris[offset : offset + _LIBRARY_URI_CHUNK]
             self.client.api_delete("/me/library", params={"uris": ",".join(chunk)})
@@ -507,10 +527,33 @@ class SpotifyToolRunnerPr9Mixin:
 
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
         ep_market = market if market and len(market) == 2 else "from_token"
-        page = self.client.api_get(
-            f"/shows/{sid}/episodes",
-            params={"limit": 1, "offset": 0, "market": ep_market},
-        )
+        try:
+            page = self.client.api_get(
+                f"/shows/{sid}/episodes",
+                params={"limit": 1, "offset": 0, "market": ep_market},
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "failure_reason": "show_not_found",
+                        "error": "Spotify could not find that podcast show.",
+                        "user_message": "I couldn't find that show's latest episode.",
+                        "show_id": sid,
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": "no_episodes_for_show",
+                    "error": _spotify_msg(e),
+                    "user_message": "I couldn't find that show's latest episode.",
+                    "show_id": sid,
+                },
+                ensure_ascii=False,
+            )
         items = page.get("items") if isinstance(page, dict) else None
         if isinstance(items, list):
             items = [it for it in items if isinstance(it, dict)]
@@ -520,6 +563,7 @@ class SpotifyToolRunnerPr9Mixin:
                     "ok": False,
                     "failure_reason": "no_episodes_for_show",
                     "error": "No episodes returned for that show.",
+                    "user_message": "I couldn't find that show's latest episode.",
                     "show_id": sid,
                 },
                 ensure_ascii=False,
@@ -616,8 +660,15 @@ class SpotifyToolRunnerPr9Mixin:
                         "publisher": show.get("publisher"),
                     }
                 )
+        from spot_backend.list_format import format_indexed_name_detail
+
         lines = [
-            f"{offset + i + 1}. {r.get('name') or 'Show'} — {r.get('publisher') or ''}".strip()
+            format_indexed_name_detail(
+                offset + i + 1,
+                str(r.get("name") or ""),
+                str(r.get("publisher") or "") if r.get("publisher") else None,
+                default_name="Show",
+            )
             for i, r in enumerate(items_out)
         ]
         total = data.get("total")
@@ -657,10 +708,49 @@ class SpotifyToolRunnerPr9Mixin:
     def _builder_theme_blob(self, arguments: dict[str, Any]) -> str:
         from spot_backend.spotify_tools import _coerce_str, _pick_arg
 
-        return _coerce_str(
+        parts: list[str] = []
+        theme = _coerce_str(
             _pick_arg(arguments, "theme", "description", "vibe", "name", "playlist_name"),
             "",
-        ).strip().lower()
+        ).strip()
+        if theme:
+            parts.append(theme)
+        raw_queries = arguments.get("track_queries") or arguments.get("tracks") or []
+        if isinstance(raw_queries, str):
+            raw_queries = [raw_queries]
+        if isinstance(raw_queries, list):
+            for item in raw_queries:
+                if isinstance(item, str) and item.strip():
+                    parts.append(item.strip())
+        return " ".join(parts).strip().lower()
+
+    def _preview_row_fits_theme(self, row: dict[str, Any], theme_blob: str) -> bool:
+        if not theme_blob:
+            return True
+        release = row.get("release_date")
+        if isinstance(release, str) and release.strip():
+            fake = {
+                "name": row.get("name") or "",
+                "album": {"name": "", "release_date": release},
+            }
+            return self._track_fits_builder_theme(fake, theme_blob)
+        uri = row.get("uri")
+        if isinstance(uri, str) and uri.startswith("spotify:track:"):
+            bare = uri.split(":")[-1]
+            try:
+                track = self.client.api_get_cached(f"/tracks/{bare}")
+            except Exception:
+                return True
+            if isinstance(track, dict):
+                return self._track_fits_builder_theme(track, theme_blob)
+        return True
+
+    def _filter_preview_tracks_for_theme(
+        self, tracks: list[dict[str, Any]], theme_blob: str
+    ) -> list[dict[str, Any]]:
+        if not theme_blob:
+            return tracks
+        return [row for row in tracks if isinstance(row, dict) and self._preview_row_fits_theme(row, theme_blob)]
 
     def _track_fits_builder_theme(self, track: dict[str, Any], theme_blob: str) -> bool:
         if not theme_blob:
@@ -857,6 +947,8 @@ class SpotifyToolRunnerPr9Mixin:
                 artist_name = ""
                 if artists and isinstance(artists[0], dict):
                     artist_name = str(artists[0].get("name") or "")
+                album = track.get("album") if isinstance(track.get("album"), dict) else {}
+                release_date = album.get("release_date") if isinstance(album.get("release_date"), str) else ""
                 resolved.append(
                     {
                         "n": len(resolved) + 1,
@@ -864,6 +956,7 @@ class SpotifyToolRunnerPr9Mixin:
                         "name": track.get("name"),
                         "artist": artist_name,
                         "query": q,
+                        "release_date": release_date,
                     }
                 )
                 break
@@ -884,6 +977,7 @@ class SpotifyToolRunnerPr9Mixin:
             "proposed_name": name,
             "tracks": resolved,
             "awaiting_approval": True,
+            "theme_blob": theme_blob,
         }
         save_playlist_preview(self.conversation_id, preview)
         return json.dumps(self._preview_payload_from_tracks(name, resolved), ensure_ascii=False)
@@ -923,7 +1017,11 @@ class SpotifyToolRunnerPr9Mixin:
         if isinstance(add_queries, str):
             add_queries = [add_queries]
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
-        theme_blob = self._builder_theme_blob(arguments) or name.lower()
+        theme_blob = (
+            self._builder_theme_blob(arguments)
+            or str(preview.get("theme_blob") or "").strip()
+            or name.lower()
+        )
         seen_uris = {str(r.get("uri")) for r in working if r.get("uri")}
         if isinstance(add_queries, list):
             for raw_q in add_queries:
@@ -971,6 +1069,7 @@ class SpotifyToolRunnerPr9Mixin:
                             "query": replace_query,
                         }
 
+        working = self._filter_preview_tracks_for_theme(working, theme_blob)
         working = self._renumber_preview_tracks(working)
         if not working:
             return json.dumps(
@@ -1038,9 +1137,23 @@ class SpotifyToolRunnerPr9Mixin:
             clear_playlist_preview(self.conversation_id)
             return json.dumps({"ok": False, "cancelled": True})
         name = _coerce_str(arguments.get("name") or preview.get("proposed_name"), _TEST_PLAYLIST_NAME)
+        theme_blob = str(preview.get("theme_blob") or name).strip().lower()
         tracks = preview.get("tracks")
         if not isinstance(tracks, list) or not tracks:
             return json.dumps({"error": "Preview has no tracks", "failure_reason": "validation_error"})
+        tracks = self._filter_preview_tracks_for_theme(
+            [t for t in tracks if isinstance(t, dict)],
+            theme_blob,
+        )
+        if not tracks:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "failure_reason": "playlist_preview_insufficient",
+                    "error": "No tracks left in the preview after applying the theme filter.",
+                },
+                ensure_ascii=False,
+            )
         uris = [t.get("uri") for t in tracks if isinstance(t, dict) and t.get("uri")]
         uris = [u for u in uris if isinstance(u, str)]
         if not uris:

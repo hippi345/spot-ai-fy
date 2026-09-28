@@ -220,6 +220,10 @@ def _play_failure_user_message(data: dict[str, Any]) -> str:
 
 
 def _library_mutation_confirmation(data: dict[str, Any], *, removed: bool) -> str | None:
+    if removed and data.get("not_in_library"):
+        custom = data.get("user_message")
+        if isinstance(custom, str) and custom.strip():
+            return custom.strip()
     uris = data.get("removed_uris") if removed else data.get("saved_uris")
     if not isinstance(uris, list) or not uris:
         return None
@@ -385,6 +389,30 @@ def try_deterministic_reply_after_tools(
         reply = primary_tool_user_reply(name, raw, user_text=user_text, intent=intent)
         return reply
     return None
+
+
+_SAVE_THIS_SHOW_RE = re.compile(
+    r"\b(?:save|follow|add)\s+(?:this|that)\s+(?:show|podcast)\b",
+    re.I,
+)
+
+
+def intent_needs_library_save_fallback(user_text: str, tool_names: list[str]) -> bool:
+    if classify_turn_primary_intent(user_text) != TurnPrimaryIntent.ACTION_SAVE:
+        return False
+    if any(n == "spotify_library_save" for n in tool_names):
+        return False
+    t = user_text or ""
+    if _SAVE_THIS_SHOW_RE.search(t):
+        return True
+    return bool(re.search(r"\bthis\s+(?:show|podcast)\b", t, re.I) and "save" in t.lower())
+
+
+def library_save_fallback_args(user_text: str) -> dict[str, Any]:
+    low = (user_text or "").lower()
+    if "episode" in low:
+        return {"uris": ["this episode"]}
+    return {"uris": ["this show"]}
 
 
 def library_contains_fallback_args(user_text: str) -> dict[str, Any]:

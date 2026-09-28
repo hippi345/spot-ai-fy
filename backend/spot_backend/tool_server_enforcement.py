@@ -82,6 +82,7 @@ _PLAYLIST_NAMED_RE = re.compile(
 )
 
 _FOLLOW_TOOLS = frozenset({"spotify_follow_playlist"})
+_SHOW_PLAY_TOOLS = frozenset({"spotify_play_show_latest_episode", "spotify_get_show", "spotify_get_show_episodes"})
 _PLAYLIST_ID_TOOLS = frozenset(
     {
         "spotify_unfollow_playlist",
@@ -275,6 +276,18 @@ def enforce_tool_arguments_for_turn(
     args = _apply_playback_overrides(tool_name, args, user_text=user_text, runner=runner)
     if tool_name in _PLAYLIST_ID_TOOLS:
         args = _override_playlist_id_from_context(args, user_text=user_text, runner=runner)
+    if tool_name in _SHOW_PLAY_TOOLS:
+        from spot_backend.show_session_resolve import resolve_show_id_for_turn
+
+        raw_sid = args.get("show_id") or args.get("id")
+        resolved = resolve_show_id_for_turn(
+            runner,
+            user_text,
+            str(raw_sid) if raw_sid is not None else None,
+        )
+        if resolved:
+            args = deepcopy(args)
+            args["show_id"] = resolved
     if tool_name in _FOLLOW_TOOLS:
         requested = extract_requested_playlist_name(user_text) or runner.last_playlist_search_query()
         pid = args.get("playlist_id") or args.get("id")

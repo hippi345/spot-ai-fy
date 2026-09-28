@@ -389,7 +389,7 @@ def test_t26c_owned_playlist_unfollow_refused_no_delete(data_dir, signed_in_toke
 
 @respx.mock
 def test_t23_save_this_show_uses_last_show_not_track_playback(data_dir, signed_in_tokens) -> None:
-    show_id = "1mNsuXxxxxxxxxxxxxxxx"
+    show_id = "1mNsuXbbbbbbbbbbbbbbbb"
     respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
         return_value=httpx.Response(
             200,
@@ -495,6 +495,230 @@ def test_t15_privacy_warning_once_in_finalize() -> None:
     )
     assert reply.count("still shows") == 1 or reply.lower().count("public") <= 2
     assert reply.count(note) <= 1
+
+
+def test_reply_spotify_only_replaced_by_tool_user_message() -> None:
+    play_fail = json.dumps(
+        {
+            "ok": False,
+            "failure_reason": "show_not_found",
+            "user_message": "I couldn't find that show's latest episode.",
+        }
+    )
+    reply = prepare_user_visible_reply(
+        "spotify_play_show_latest_episode",
+        [play_fail],
+        tool_names=["spotify_play_show_latest_episode"],
+        user_text="Play the latest episode of StarTalk",
+    )
+    assert reply == "I couldn't find that show's latest episode."
+    assert reply.lower() != "spotify"
+
+
+@respx.mock
+def test_t21_invented_show_id_overridden_to_session_startalk(data_dir, signed_in_tokens) -> None:
+    real_show = "1mNsuXbbbbbbbbbbbbbbbb"
+    invented = "2rD20sDja2xP5t890C36gL"
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id="t21")
+    runner.note_session_show(real_show, "StarTalk with Neil deGrasse Tyson")
+    args = enforce_tool_arguments_for_turn(
+        "spotify_play_show_latest_episode",
+        {"show_id": invented},
+        user_text="Play the latest episode of StarTalk",
+        runner=runner,
+    )
+    assert args["show_id"] == real_show
+    runner.close()
+
+
+@respx.mock
+def test_t25_remove_unsaved_show_skips_delete(data_dir, signed_in_tokens) -> None:
+    show_id = "1mNsuXbbbbbbbbbbbbbbbb"
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/library/contains.*").mock(
+        return_value=httpx.Response(200, json=[False])
+    )
+    respx.get(f"https://api.spotify.com/v1/shows/{show_id}").mock(
+        return_value=httpx.Response(200, json={"id": show_id, "name": "StarTalk"})
+    )
+    delete_calls = 0
+
+    def _delete(_request: httpx.Request) -> httpx.Response:
+        nonlocal delete_calls
+        delete_calls += 1
+        return httpx.Response(200, json={})
+
+    respx.delete(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(side_effect=_delete)
+    runner = SpotifyToolRunner(settings=Settings())
+    raw = runner.run("spotify_library_remove", {"uris": [f"spotify:show:{show_id}"]})
+    runner.close()
+    data = json.loads(raw)
+    assert delete_calls == 0
+    assert "wasn't in your library" in data.get("user_message", "")
+
+
+@respx.mock
+def test_saved_shows_list_no_dangling_em_dash(data_dir, signed_in_tokens) -> None:
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/shows.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {"show": {"id": "s" * 22, "name": "StarTalk", "publisher": ""}},
+                ],
+                "total": 1,
+            },
+        )
+    )
+    runner = SpotifyToolRunner(settings=Settings())
+    raw = runner.run("spotify_user_saved_shows", {})
+    runner.close()
+    data = json.loads(raw)
+    line = data.get("summary_lines", [""])[0]
+    assert line == "1. StarTalk"
+    assert not line.endswith("—")
+
+
+@respx.mock
+def test_chill_90s_music_theme_search_and_filter(data_dir, signed_in_tokens) -> None:
+    captured_q: list[str] = []
+    call_n = 0
+
+    def search_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_n
+        captured_q.append(str(request.url.params.get("q")))
+        call_n += 1
+        good_id = f"{call_n:022d}"
+        bad_id = f"{100 + call_n:022d}"
+        return httpx.Response(
+            200,
+            json={
+                "tracks": {
+                    "items": [
+                        {
+                            "id": good_id,
+                            "uri": f"spotify:track:{good_id}",
+                            "name": f"Chill {call_n}",
+                            "artists": [{"name": "Band"}],
+                            "album": {"name": "Album", "release_date": "1994-03-01"},
+                        },
+                        {
+                            "id": bad_id,
+                            "uri": f"spotify:track:{bad_id}",
+                            "name": f"Modern {call_n}",
+                            "artists": [{"name": "Band"}],
+                            "album": {"name": "Later", "release_date": "2008-03-01"},
+                        },
+                    ]
+                }
+            },
+        )
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(side_effect=search_handler)
+    runner = SpotifyToolRunner(settings=Settings(), conversation_id="chill-90s")
+    raw = runner.run(
+        "spotify_playlist_builder_preview",
+        {"name": "mix", "theme": "chill 90s music", "track_queries": ["chill 90s music"]},
+    )
+    runner.close()
+    data = json.loads(raw)
+    assert any("year:1990-1999" in q for q in captured_q)
+    preview = data.get("preview", {}).get("tracks", [])
+    assert preview
+    assert all(
+        (t.get("release_date") or "")[:4].isdigit() and 1990 <= int((t.get("release_date") or "1990")[:4]) <= 1999
+        for t in preview
+        if isinstance(t, dict) and t.get("release_date")
+    )
+
+
+def test_trace_args_strip_turn_user_text(tmp_path) -> None:
+    from spot_backend.reply_tool_trace import append_tool_trace_record, summarize_tool_args
+
+    summary = summarize_tool_args(
+        {"show_id": "abc", "_turn_user_text": "Save this show please with secret details"}
+    )
+    parsed = json.loads(summary)
+    assert "_turn_user_text" not in parsed
+    assert parsed.get("_turn_user_text_len") == len("Save this show please with secret details")
+    assert "secret" not in summary
+    append_tool_trace_record(
+        tmp_path,
+        conversation_id="c",
+        tool_name="spotify_library_save",
+        args_summary=summary,
+        outcome="ok",
+        raw_result='{"ok": true}',
+    )
+    row = json.loads((tmp_path / "chat_tool_traces.jsonl").read_text(encoding="utf-8").strip())
+    traced_args = json.loads(row["args"])
+    assert "_turn_user_text" not in traced_args
+
+
+def test_numbered_list_breaks_after_scrub_glued_model_echo() -> None:
+    glued = "Proposed playlist \"x\" (11 tracks):\n" + " ".join(
+        f"{i}. Track{i} — Artist" for i in range(1, 12)
+    )
+    reply = prepare_user_visible_reply(glued)
+    for i in range(1, 12):
+        assert f"\n{i}. Track{i}" in reply or reply.strip().startswith(f"{i}. Track{i}")
+
+
+@respx.mock
+def test_gemini_t23_save_this_show_after_list(data_dir, signed_in_tokens) -> None:
+    show_id = "1mNsuXbbbbbbbbbbbbbbbb"
+    settings = Settings(gemini_api_key="gemini-test-t23", agent_max_steps=3)
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={"is_playing": True, "item": {"type": "track", "name": "Song", "artists": [{"name": "A"}]}},
+        )
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/library.*").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.get(f"https://api.spotify.com/v1/shows/{show_id}").mock(
+        return_value=httpx.Response(200, json={"id": show_id, "name": "StarTalk"})
+    )
+
+    def gemini_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "finishReason": "STOP",
+                        "content": {
+                            "parts": [
+                                {
+                                    "functionCall": {
+                                        "name": "spotify_playback_state",
+                                        "args": {},
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+        )
+
+    respx.post(url__regex=r"https://generativelanguage\.googleapis\.com/.*").mock(
+        side_effect=gemini_handler
+    )
+    record_library_mutation("t23-seq", "show", [show_id])
+    with patch(
+        "spot_backend.gemini_llm.gemini_deterministic_shortcut_reply",
+        return_value=None,
+    ), patch(
+        "spot_backend.gemini_llm.should_send_gemini_tool_nudge",
+        return_value=False,
+    ):
+        reply = run_chat_turn_gemini(
+            "Save this show",
+            settings,
+            conversation_id="t23-seq",
+        )
+    assert "Saved StarTalk" in reply
 
 
 def test_builder_preview_newlines_through_finalize() -> None:
