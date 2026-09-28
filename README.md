@@ -167,7 +167,7 @@ pylint $(git ls-files '*.py')
 
 ## Bring your own LLM
 
-Spot-AI-fy routes every chat turn through a pluggable LLM provider. Two are supported out of the box; picking one is a two-step process (drop creds/endpoint in `.env`, optionally pick a specific model in the UI).
+Spot-AI-fy routes every chat turn through a pluggable LLM provider. Supported backends: **Ollama** (local), **Gemini**, **OpenAI**, **Anthropic (Claude)**, and **xAI (Grok)**. Pick a provider in **Settings → Backend**, enter API keys in Settings (cloud providers) or point Ollama at your host, then choose a model from the dropdown (lists come from the provider when reachable, with curated fallbacks in [`backend/spot_backend/llm_catalog.py`](backend/spot_backend/llm_catalog.py)).
 
 ### Ollama (local, default)
 
@@ -190,7 +190,7 @@ Best for privacy, offline use, and "I already have a GPU / spare laptop running 
    ```ini
    LLM_PROVIDER=ollama
    OLLAMA_HOST=http://127.0.0.1:11434
-   OLLAMA_MODEL=qwen2.5:3b-instruct
+   OLLAMA_MODEL=qwen2.5:3b
    ```
 
 3. Restart the backend, then either pick the model from the **Model** dropdown in the UI (it's populated from `ollama list`) or click **Reset to .env** to use the `.env` default.
@@ -207,35 +207,39 @@ OLLAMA_MAX_STEPS=8             # bail out of runaway tool loops faster than AGEN
 
 The first line of the progress panel ("Connecting to Ollama (…)") echoes whichever of these are in effect, so you can confirm at a glance. Watch `%LOCALAPPDATA%\Ollama\server.log` on Windows (or `~/.ollama/logs/` on macOS/Linux) for `truncating input prompt` warnings — if you still see them, raise `OLLAMA_NUM_CTX`.
 
-### Gemini (cloud)
+### Cloud providers (Gemini, OpenAI, Anthropic, xAI)
 
-Best when you want fast answers and don't mind sending each chat turn (plus relevant Spotify tool-result JSON) to Google per their [Gemini API terms](https://ai.google.dev/gemini-api/terms).
+Each cloud backend uses the same Spotify tool loop (summarize reprompt, tool dedupe, device-id sanitizing). API keys can be set in **Settings** (masked input, stored locally) or in `backend/.env`. Keys are kept in the OS keychain when available, otherwise `DATA_DIR/secrets.json` (mode `0600`). They are never logged or echoed in chat errors.
 
-1. Grab a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
-2. Set in `backend/.env`:
+| Provider | `.env` key vars | Default model | Edit picker defaults |
+| --- | --- | --- | --- |
+| Gemini | `GEMINI_API_KEY`, `GEMINI_MODEL` | `gemini-3.5-flash-lite` | [`llm_catalog.py`](backend/spot_backend/llm_catalog.py) |
+| OpenAI | `OPENAI_API_KEY`, `OPENAI_MODEL` | `gpt-6-luna` | same file |
+| Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | same file |
+| xAI | `XAI_API_KEY`, `XAI_MODEL` | `grok-4.3` | same file |
 
-   ```ini
-   LLM_PROVIDER=gemini
-   GEMINI_API_KEY=AIza...
-   GEMINI_MODEL=gemini-2.5-flash
-   ```
+Example `.env` fragment:
 
-3. Restart the backend. Like the Ollama path, the UI dropdown is populated from the provider's own list-models endpoint (filtered to ones that support `generateContent`), so you can try `gemini-2.5-pro`, `gemini-2.0-flash`, etc. at runtime without editing `.env`.
+```ini
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-6-luna
+```
 
-Spot-AI-fy retries `429` / `503` Gemini responses with exponential backoff (1.5 s → 3 s → 6 s → 12 s, honoring `Retry-After`) and surfaces quota / high-demand errors in plain English rather than raw HTTP.
+Use **Settings → Backend** to switch providers without editing `.env` (stored in `DATA_DIR/llm_provider.json`). **Reset to .env** clears the UI override.
+
+Gemini list-models is queried live; OpenAI / Anthropic / xAI use the curated lists in `llm_catalog.py` plus any custom model name. Spot-AI-fy retries Gemini `429` / `503` with exponential backoff.
 
 ### What a new LLM backend would need to support
 
-The agent loop depends on tool calling — it needs a model that will either emit native tool/function-call messages (Ollama's `tools`, OpenAI's `tools`, Anthropic's `tools`) or reliably produce well-formed JSON blocks when asked. For Ollama, Spot-AI-fy has a fallback that coaxes tool calls out of non-native models via fenced JSON, but quality drops quickly on small non-instruction-tuned tags. If you substitute a provider, pick a model that's tool-use-capable.
-
-> **Heads up** — OpenAI (GPT-*), Anthropic (Claude), and OpenAI-compatible proxies like OpenRouter / Groq / Together are not wired up yet. See [Roadmap](#roadmap) below.
+The agent loop depends on tool calling — native function/tool messages (Ollama, OpenAI-shaped APIs, Anthropic `tool_use`) or Ollama's fenced-JSON fallback. Pick tool-capable models for reliable Spotify control.
 
 ## Configuration precedence
 
 Settings can come from the in-app setup wizard (stored under `DATA_DIR`) or from `backend/.env`. When both exist, **environment variables / `.env` always win**:
 
 1. **Environment variables** and `backend/.env` (highest — keeps existing deployments working)
-2. **OS keychain** (`keyring`) for secrets such as `GEMINI_API_KEY` when the wizard saves them
+2. **OS keychain** (`keyring`) for secrets such as `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `XAI_API_KEY` when Settings or the wizard saves them
 3. **`secrets.json`** in `DATA_DIR` (mode `0600`) when no keychain backend is available
 4. **`setup.json`** in `DATA_DIR` for non-secret fields (Spotify Client ID, Ollama host)
 
@@ -252,7 +256,7 @@ All variables live in `backend/.env` (see [`backend/.env.example`](backend/.env.
 | `SPOTIFY_REDIRECT_URI` | Defaults to `http://127.0.0.1:8765/callback`. Must match the one registered on the Spotify dashboard. |
 | `API_HOST` / `API_PORT` | Where the FastAPI backend binds (defaults `127.0.0.1:8765`). |
 | `FRONTEND_ORIGIN` | CORS origin for the Vite dev server (default `http://localhost:5173`). |
-| `LLM_PROVIDER` | `ollama` (default, local) or `gemini` (cloud). Runtime overridable from the UI. |
+| `LLM_PROVIDER` | `ollama` (default), `gemini`, `openai`, `anthropic`, or `xai`. Runtime overridable from Settings. |
 | `OLLAMA_HOST` / `OLLAMA_MODEL` | Ollama endpoint and default model tag. Model tag is overridable from the UI (dropdown is populated from `ollama list`). |
 | `OLLAMA_NUM_CTX` | Ollama context window in tokens. Default `16384` (full tool list is ~10k+ tokens). Set `0` to use the model's built-in default. |
 | `OLLAMA_THINK` | When `false` (default), sends `"think": false` to Ollama; retries once without the field if the model rejects it. |
@@ -261,7 +265,10 @@ All variables live in `backend/.env` (see [`backend/.env.example`](backend/.env.
 | `OLLAMA_HISTORY_MESSAGES` | Number of previous chat messages replayed to Ollama each round. `0` = send everything the UI passed (currently up to 40). Recommended `10` for CPU. |
 | `OLLAMA_TOOL_RESULT_MAX` | Character cap on each tool result fed back into the Ollama prompt. `0` = use the built-in 12 000-char default. Recommended `5000` for CPU. |
 | `OLLAMA_MAX_STEPS` | Ollama-specific agent step cap. `0` = use `AGENT_MAX_STEPS`. Recommended `6`–`8` for CPU so runaway tool loops bail out sooner. |
-| `GEMINI_API_KEY` / `GEMINI_MODEL` | Required only when using Gemini. Get a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). Default model `gemini-2.5-flash`. Model is overridable from the UI (dropdown is populated from Google's list-models endpoint, filtered to `generateContent` support). |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | Gemini only. Default `gemini-3.5-flash-lite`. |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | OpenAI only. Default `gpt-6-luna`. |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | Anthropic only. Default `claude-haiku-4-5-20251001`. |
+| `XAI_API_KEY` / `XAI_MODEL` | xAI only. Default `grok-4.3`. |
 | `AGENT_MAX_STEPS` | Overall cap on tool-call rounds per chat turn (default `16`). |
 | `AGENT_CONTEXT_FILE` | Optional path to a markdown file appended to the system prompt for both LLMs. |
 | `DATA_DIR` | Optional override for where tokens / device / LLM prefs are stored (defaults to `%USERPROFILE%\.spot_ai_fy`). |
@@ -368,7 +375,7 @@ If you'd like to contribute a new provider, the shape to match is the existing `
 
 - **Backend**: Python 3.12, FastAPI, Uvicorn, httpx, pydantic / pydantic-settings, [mcp](https://pypi.org/project/mcp/) for the MCP server.
 - **Frontend**: React 19, Vite 6, TypeScript.
-- **LLMs**: Pluggable. Ollama (local, default) or Gemini (`gemini-2.5-flash` by default) via Google Generative Language API. See [Bring your own LLM](#bring-your-own-llm) for model and tuning guidance; see [Roadmap](#roadmap) for planned provider support.
+- **LLMs**: Pluggable. Ollama (local, default) or Gemini (`gemini-3.5-flash-lite` by default) via Google Generative Language API. See [Bring your own LLM](#bring-your-own-llm) for model and tuning guidance; see [Roadmap](#roadmap) for planned provider support.
 - **Spotify**: Web API, PKCE OAuth, scopes include `playlist-modify-public`/`-private`, `playlist-read-private`/`-collaborative`, `user-read-playback-state`, `user-modify-playback-state`, `user-library-read`, `user-top-read`, `user-follow-read`, `user-read-private`.
 
 ## License

@@ -1669,6 +1669,7 @@ details[open] > .settings-summary::before {
   padding: 0;
   display: flex;
   flex-direction: column;
+  border-radius: var(--shell-edge);
 }
 
 .settings-sheet-head {
@@ -1680,8 +1681,15 @@ details[open] > .settings-summary::before {
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
-  background: inherit;
+  background: rgba(12, 12, 18, var(--glass-panel-alpha-backdrop));
   z-index: 1;
+}
+
+@supports ((backdrop-filter: blur(12px)) or (-webkit-backdrop-filter: blur(12px))) {
+  .settings-sheet-head {
+    backdrop-filter: blur(22px) saturate(1.5);
+    -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  }
 }
 
 .settings-sheet-title {
@@ -1705,6 +1713,53 @@ details[open] > .settings-summary::before {
 .settings-body--sheet {
   border-top: none;
   padding: 0;
+  gap: 14px;
+}
+
+.settings-block--glass {
+  padding: 14px 14px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  border-top-color: var(--border-top);
+  background: rgba(10, 10, 14, calc(var(--glass-panel-alpha) * 0.55));
+}
+
+@supports ((backdrop-filter: blur(12px)) or (-webkit-backdrop-filter: blur(12px))) {
+  .settings-block--glass {
+    background: rgba(12, 12, 18, calc(var(--glass-panel-alpha-backdrop) * 0.55));
+    backdrop-filter: blur(18px) saturate(1.45);
+    -webkit-backdrop-filter: blur(18px) saturate(1.45);
+  }
+}
+
+.settings-block--glass .badge.accent {
+  color: var(--accent);
+  border-color: rgba(29, 185, 84, 0.35);
+}
+
+.badge.warn {
+  border-color: rgba(232, 201, 106, 0.45);
+  color: #e8c96a;
+}
+
+.glass-input,
+.settings-body--sheet select.glass-input,
+.settings-body--sheet input.glass-input {
+  background: rgba(8, 8, 12, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+@supports ((backdrop-filter: blur(12px)) or (-webkit-backdrop-filter: blur(12px))) {
+  .glass-input {
+    backdrop-filter: blur(14px) saturate(1.35);
+    -webkit-backdrop-filter: blur(14px) saturate(1.35);
+  }
+}
+
+.settings-api-key-row input.glass-input {
+  flex: 1 1 220px;
+  min-width: 0;
 }
 
 .desktop-titlebar {

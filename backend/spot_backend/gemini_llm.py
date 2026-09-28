@@ -38,6 +38,7 @@ from spot_backend.prompt_intent import (
     spotify_tool_is_mutating,
 )
 from spot_backend.context_loader import load_optional_agent_context_markdown
+from spot_backend.llm_catalog import DEFAULT_MODEL_BY_PROVIDER
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,7 @@ def _gemini_post_with_retry(
     return last
 
 _GEMINI_REST = "https://generativelanguage.googleapis.com/v1beta"
-_DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+_DEFAULT_GEMINI_MODEL = DEFAULT_MODEL_BY_PROVIDER["gemini"]
 
 # Gemini 2.5-flash silently emits empty content (finishReason=STOP, parts=[])
 # in `AUTO` function-calling mode when the systemInstruction is large. We
@@ -600,7 +601,7 @@ def run_chat_turn_gemini(
                     return (
                         f"Gemini ({model}) ran out of response budget while reasoning, before it "
                         "produced a visible reply. This is a known quirk of the 2.5 'thinking' "
-                        "models on long prompts. Please try again, switch to gemini-2.5-flash-lite "
+                        "models on long prompts. Please try again, switch to gemini-3.5-flash-lite "
                         "or gemini-1.5-flash in Settings, or switch to Ollama in Settings."
                     )
 
@@ -800,7 +801,7 @@ def run_chat_turn_gemini(
         return (
             f"Gemini took too long to respond just now. This is usually a temporary network or "
             f"capacity hiccup. Please try again in a moment, pick a lighter model from the "
-            f"Settings dropdown (e.g. gemini-2.5-flash-lite or gemini-1.5-flash instead of "
+            f"Settings dropdown (e.g. gemini-3.5-flash-lite or gemini-3.5-flash instead of "
             f"{model}), or switch to Ollama in Settings."
         )
     except httpx.HTTPError:
@@ -823,13 +824,13 @@ def _gemini_friendly_error_message(exc: httpx.HTTPStatusError, model: str) -> st
         return (
             f"Gemini is overloaded right now — Google has been returning 'service unavailable' "
             f"for {model} even after a few automatic retries. Please try again in a minute, "
-            f"pick a lighter model from the Settings dropdown (e.g. gemini-2.5-flash-lite or "
+            f"pick a lighter model from the Settings dropdown (e.g. gemini-3.5-flash-lite or "
             f"gemini-1.5-flash), or switch to Ollama in Settings to keep going."
         )
     if code == 429:
         return (
             f"Gemini hit its rate limit / quota for {model}. On the free tier, this typically "
-            f"resets daily. Try a lighter model from the Settings dropdown (e.g. gemini-2.5-flash-lite), "
+            f"resets daily. Try a lighter model from the Settings dropdown (e.g. gemini-3.5-flash-lite), "
             f"switch to Ollama in Settings, or enable billing on your Google AI key if you need more headroom."
         )
     if code == 404:

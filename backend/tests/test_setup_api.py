@@ -83,7 +83,7 @@ def test_setup_llm_gemini_keyring_path(
             json={
                 "models": [
                     {
-                        "name": "models/gemini-2.5-flash",
+                        "name": "models/gemini-3.5-flash-lite",
                         "supportedGenerationMethods": ["generateContent"],
                     }
                 ]
@@ -120,7 +120,7 @@ def test_setup_llm_gemini_file_fallback_0600(
             json={
                 "models": [
                     {
-                        "name": "models/gemini-2.5-flash",
+                        "name": "models/gemini-3.5-flash-lite",
                         "supportedGenerationMethods": ["generateContent"],
                     }
                 ]

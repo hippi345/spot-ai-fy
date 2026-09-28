@@ -26,7 +26,14 @@ _SERVICE_NAME = "spot-ai-fy"
 _SETUP_FILE = "setup.json"
 _SECRETS_FILE = "secrets.json"
 
-_SECRET_KEYS = frozenset({"gemini_api_key"})
+_SECRET_KEYS = frozenset(
+    {
+        "gemini_api_key",
+        "openai_api_key",
+        "anthropic_api_key",
+        "xai_api_key",
+    }
+)
 
 _PRIVATE_FILE_MODE = stat.S_IRUSR | stat.S_IWUSR
 
@@ -199,10 +206,16 @@ def merge_settings_from_store(base: Settings) -> Settings:
         if cid:
             updates["spotify_client_id"] = cid
 
-    if not (base.gemini_api_key or "").strip():
-        key = read_secret(base.data_dir, "gemini_api_key")
-        if key:
-            updates["gemini_api_key"] = key
+    for secret_field in (
+        "gemini_api_key",
+        "openai_api_key",
+        "anthropic_api_key",
+        "xai_api_key",
+    ):
+        if not (getattr(base, secret_field) or "").strip():
+            key = read_secret(base.data_dir, secret_field)
+            if key:
+                updates[secret_field] = key
 
     if not (os.environ.get("OLLAMA_HOST") or "").strip():
         host = str(setup.get("ollama_host") or "").strip()
@@ -214,6 +227,12 @@ def merge_settings_from_store(base: Settings) -> Settings:
 
 def gemini_key_configured(data_dir: Path, env_key: str) -> bool:
     return bool((env_key or "").strip() or read_secret(data_dir, "gemini_api_key"))
+
+
+def provider_api_key_configured(data_dir: Path, secret_key: str, env_key: str) -> bool:
+    if secret_key not in _SECRET_KEYS:
+        return False
+    return bool((env_key or "").strip() or read_secret(data_dir, secret_key))
 
 
 def spotify_client_configured(data_dir: Path, env_client_id: str) -> bool:

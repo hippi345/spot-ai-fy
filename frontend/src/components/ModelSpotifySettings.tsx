@@ -1,52 +1,42 @@
 import type { ReactNode } from "react";
 
+import {
+  type LlmProviderId,
+  type LlmStatus,
+  normalizeLlmProvider,
+  providerLabel,
+  providerUsesApiKey,
+} from "../lib/llmTypes";
+
 type Session = {
   signed_in: boolean;
   spotify_playlist_write_ok?: boolean | null;
-};
-
-type LlmStatus = {
-  provider?: string;
-  env_provider?: string;
-  ui_override?: boolean;
-  configured_host?: string;
-  configured_model: string;
-  env_ollama_model?: string;
-  ollama_model_ui_override?: boolean;
-  env_gemini_model?: string;
-  gemini_model_ui_override?: boolean;
-  reachable: boolean;
-  models: string[] | null;
-  model_installed?: boolean;
-  error: string | null;
 };
 
 type DeviceOption = { value: string; label: string };
 
 export type ModelSpotifySettingsProps = {
   llm: LlmStatus | null;
-  llmPick: "ollama" | "gemini";
+  llmPick: LlmProviderId;
   llmSaving: boolean;
-  ollamaModelSelect: string;
-  ollamaCustomModel: string;
-  geminiModelSelect: string;
-  geminiCustomModel: string;
-  ollamaModelApplyDisabled: boolean;
-  geminiModelApplyDisabled: boolean;
+  modelSelect: string;
+  modelCustom: string;
+  modelApplyDisabled: boolean;
+  apiKeyDraft: string;
+  apiKeySaving: boolean;
   session: Session | null;
   deviceId: string;
   deviceOptions: DeviceOption[];
   loadingDevices: boolean;
-  onLlmPickChange: (v: "ollama" | "gemini") => void;
+  onLlmPickChange: (v: LlmProviderId) => void;
   onApplyLlmProvider: () => void;
   onResetLlmProvider: () => void;
   onRefreshLlm: () => void;
-  onOllamaModelSelectChange: (v: string) => void;
-  onOllamaCustomModelChange: (v: string) => void;
-  onApplyOllamaModel: () => void;
-  onGeminiModelSelectChange: (v: string) => void;
-  onGeminiCustomModelChange: (v: string) => void;
-  onApplyGeminiModel: () => void;
+  onModelSelectChange: (v: string) => void;
+  onModelCustomChange: (v: string) => void;
+  onApplyModel: () => void;
+  onApiKeyDraftChange: (v: string) => void;
+  onSaveApiKey: () => void;
   onOpenSetupWizard: () => void;
   onLogout: () => void;
   onDeviceIdChange: (v: string) => void;
@@ -54,23 +44,50 @@ export type ModelSpotifySettingsProps = {
   onSaveDevice: () => void;
 };
 
+function envModelLabel(llm: LlmStatus, provider: LlmProviderId): string {
+  switch (provider) {
+    case "gemini":
+      return llm.env_gemini_model?.trim() || "GEMINI_MODEL";
+    case "openai":
+      return llm.env_openai_model?.trim() || "OPENAI_MODEL";
+    case "anthropic":
+      return llm.env_anthropic_model?.trim() || "ANTHROPIC_MODEL";
+    case "xai":
+      return llm.env_xai_model?.trim() || "XAI_MODEL";
+    default:
+      return llm.env_ollama_model?.trim() || "OLLAMA_MODEL";
+  }
+}
+
+function modelOverrideActive(llm: LlmStatus, provider: LlmProviderId): boolean {
+  switch (provider) {
+    case "gemini":
+      return Boolean(llm.gemini_model_ui_override);
+    case "openai":
+      return Boolean(llm.openai_model_ui_override);
+    case "anthropic":
+      return Boolean(llm.anthropic_model_ui_override);
+    case "xai":
+      return Boolean(llm.xai_model_ui_override);
+    default:
+      return Boolean(llm.ollama_model_ui_override);
+  }
+}
+
 function llmModelSummary(llm: LlmStatus): { label: string; details: string } {
+  const provider = normalizeLlmProvider(llm.provider);
   const model = (llm.configured_model || "").trim() || "—";
-  const provider = llm.provider === "gemini" ? "Gemini" : "Ollama";
-  const details: string[] = [`Backend: ${provider}`, `Model: ${model}`];
-  if (llm.provider === "ollama" && llm.configured_host) {
+  const details: string[] = [`Backend: ${providerLabel(provider)}`, `Model: ${model}`];
+  if (provider === "ollama" && llm.configured_host) {
     details.push(`Host: ${llm.configured_host}`);
   }
   if (llm.ui_override) {
     details.push(`UI provider override (env default: ${llm.env_provider ?? "ollama"})`);
   }
-  if (llm.provider === "gemini" && llm.gemini_model_ui_override) {
-    details.push(`Model override (env default: ${llm.env_gemini_model || "—"})`);
+  if (modelOverrideActive(llm, provider)) {
+    details.push(`Model override (env default: ${envModelLabel(llm, provider)})`);
   }
-  if (llm.provider === "ollama" && llm.ollama_model_ui_override) {
-    details.push(`Model override (env default: ${llm.env_ollama_model || "—"})`);
-  }
-  return { label: `Using ${model}`, details: details.join(" · ") };
+  return { label: `Using ${providerLabel(provider)} · ${model}`, details: details.join(" · ") };
 }
 
 export function ModelSpotifySettings(props: ModelSpotifySettingsProps): ReactNode {
@@ -78,12 +95,11 @@ export function ModelSpotifySettings(props: ModelSpotifySettingsProps): ReactNod
     llm,
     llmPick,
     llmSaving,
-    ollamaModelSelect,
-    ollamaCustomModel,
-    geminiModelSelect,
-    geminiCustomModel,
-    ollamaModelApplyDisabled,
-    geminiModelApplyDisabled,
+    modelSelect,
+    modelCustom,
+    modelApplyDisabled,
+    apiKeyDraft,
+    apiKeySaving,
     session,
     deviceId,
     deviceOptions,
@@ -92,12 +108,11 @@ export function ModelSpotifySettings(props: ModelSpotifySettingsProps): ReactNod
     onApplyLlmProvider,
     onResetLlmProvider,
     onRefreshLlm,
-    onOllamaModelSelectChange,
-    onOllamaCustomModelChange,
-    onApplyOllamaModel,
-    onGeminiModelSelectChange,
-    onGeminiCustomModelChange,
-    onApplyGeminiModel,
+    onModelSelectChange,
+    onModelCustomChange,
+    onApplyModel,
+    onApiKeyDraftChange,
+    onSaveApiKey,
     onOpenSetupWizard,
     onLogout,
     onDeviceIdChange,
@@ -105,114 +120,91 @@ export function ModelSpotifySettings(props: ModelSpotifySettingsProps): ReactNod
     onSaveDevice,
   } = props;
 
+  const activeProvider = llm ? normalizeLlmProvider(llm.provider) : llmPick;
+
   return (
     <div className="settings-body settings-body--sheet">
       {llm ? (
-        <div className="settings-block">
+        <div className="settings-block settings-block--glass">
           <div className="settings-block-head">
-            <span className="badge">{llm.provider === "gemini" ? "Gemini" : "Ollama"}</span>
-            <span className={llm.reachable ? "badge ok" : "badge"}>{llm.reachable ? "OK" : "Issue"}</span>
+            <span className="badge accent">{providerLabel(activeProvider)}</span>
+            <span className={llm.reachable ? "badge ok" : "badge warn"}>{llm.reachable ? "OK" : "Issue"}</span>
           </div>
           <div className="control-row">
             <label htmlFor="llm-backend" className="control-label">Backend</label>
             <select
               id="llm-backend"
+              className="glass-input"
               value={llmPick}
-              onChange={(e) => onLlmPickChange(e.target.value === "gemini" ? "gemini" : "ollama")}
+              onChange={(e) => onLlmPickChange(normalizeLlmProvider(e.target.value))}
               disabled={llmSaving}
             >
               <option value="ollama">Ollama (local)</option>
-              <option value="gemini">Gemini (API key)</option>
+              <option value="gemini">Gemini</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="xai">xAI (Grok)</option>
             </select>
-            <button
-              type="button"
-              onClick={() => void onApplyLlmProvider()}
-              disabled={llmSaving || llmPick === (llm.provider === "gemini" ? "gemini" : "ollama")}
-            >
+            <button type="button" onClick={() => void onApplyLlmProvider()} disabled={llmSaving || llmPick === activeProvider}>
               Apply
             </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => void onResetLlmProvider()}
-              disabled={llmSaving || !llm.ui_override}
-            >
+            <button type="button" className="secondary" onClick={() => void onResetLlmProvider()} disabled={llmSaving || !llm.ui_override}>
               Reset to .env
             </button>
             <button type="button" className="secondary" onClick={() => void onRefreshLlm()}>
               Refresh status
             </button>
           </div>
-          {llm.provider === "ollama" ? (
-            <div className="control-row wrap">
-              <label htmlFor="ollama-model" className="control-label">Model</label>
-              <select
-                id="ollama-model"
-                value={ollamaModelSelect}
-                onChange={(e) => onOllamaModelSelectChange(e.target.value)}
+
+          {providerUsesApiKey(activeProvider) ? (
+            <div className="control-row wrap settings-api-key-row">
+              <label htmlFor="llm-api-key" className="control-label">API key</label>
+              <input
+                id="llm-api-key"
+                type="password"
+                className="control-input glass-input"
+                value={apiKeyDraft}
+                onChange={(e) => onApiKeyDraftChange(e.target.value)}
+                placeholder={llm.api_key_masked ? `Saved (${llm.api_key_masked})` : "Paste API key"}
+                autoComplete="off"
+                disabled={apiKeySaving || llmSaving}
+              />
+              <button type="button" onClick={() => void onSaveApiKey()} disabled={apiKeySaving || llmSaving || !apiKeyDraft.trim()}>
+                Save key
+              </button>
+            </div>
+          ) : null}
+
+          <div className="control-row wrap">
+            <label htmlFor="llm-model" className="control-label">Model</label>
+            <select
+              id="llm-model"
+              className="glass-input"
+              value={modelSelect}
+              onChange={(e) => onModelSelectChange(e.target.value)}
+              disabled={llmSaving || (providerUsesApiKey(activeProvider) && !llm.reachable && !llm.api_key_configured)}
+            >
+              <option value="__env__">From .env ({envModelLabel(llm, activeProvider)})</option>
+              {(llm.models ?? []).map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+              <option value="__custom__">Custom…</option>
+            </select>
+            {modelSelect === "__custom__" ? (
+              <input
+                type="text"
+                value={modelCustom}
+                onChange={(e) => onModelCustomChange(e.target.value)}
                 disabled={llmSaving}
-              >
-                <option value="__env__">From .env ({llm.env_ollama_model?.trim() || "OLLAMA_MODEL"})</option>
-                {(llm.models ?? []).map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-                <option value="__custom__">Custom…</option>
-              </select>
-              {ollamaModelSelect === "__custom__" ? (
-                <input
-                  type="text"
-                  value={ollamaCustomModel}
-                  onChange={(e) => onOllamaCustomModelChange(e.target.value)}
-                  placeholder="e.g. mistral:7b"
-                  disabled={llmSaving}
-                  className="control-input"
-                  aria-label="Custom Ollama model tag"
-                />
-              ) : null}
-              <button
-                type="button"
-                onClick={() => void onApplyOllamaModel()}
-                disabled={llmSaving || ollamaModelApplyDisabled}
-              >
-                Apply model
-              </button>
-            </div>
-          ) : null}
-          {llm.provider === "gemini" ? (
-            <div className="control-row wrap">
-              <label htmlFor="gemini-model" className="control-label">Model</label>
-              <select
-                id="gemini-model"
-                value={geminiModelSelect}
-                onChange={(e) => onGeminiModelSelectChange(e.target.value)}
-                disabled={llmSaving || !llm.reachable}
-              >
-                <option value="__env__">From .env ({llm.env_gemini_model?.trim() || "GEMINI_MODEL"})</option>
-                {(llm.models ?? []).map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-                <option value="__custom__">Custom…</option>
-              </select>
-              {geminiModelSelect === "__custom__" ? (
-                <input
-                  type="text"
-                  value={geminiCustomModel}
-                  onChange={(e) => onGeminiCustomModelChange(e.target.value)}
-                  placeholder="e.g. gemini-2.5-pro"
-                  disabled={llmSaving}
-                  className="control-input"
-                  aria-label="Custom Gemini model name"
-                />
-              ) : null}
-              <button
-                type="button"
-                onClick={() => void onApplyGeminiModel()}
-                disabled={llmSaving || geminiModelApplyDisabled}
-              >
-                Apply model
-              </button>
-            </div>
-          ) : null}
+                className="control-input glass-input"
+                aria-label="Custom model name"
+              />
+            ) : null}
+            <button type="button" onClick={() => void onApplyModel()} disabled={llmSaving || modelApplyDisabled}>
+              Apply model
+            </button>
+          </div>
+
           <p className="meta-line">
             <span className="meta-line-short" title={llmModelSummary(llm).details}>
               {llmModelSummary(llm).label}
@@ -220,27 +212,29 @@ export function ModelSpotifySettings(props: ModelSpotifySettingsProps): ReactNod
             {llm.reachable && llm.model_installed === false ? (
               <span className="meta-warn">
                 {" "}
-                — {llm.provider === "gemini" ? "Check GEMINI_MODEL." : `Try: ollama pull ${llm.configured_model || "qwen3:4b-instruct"}`}
+                — Check the model name or pull/install the model for {providerLabel(activeProvider)}.
               </span>
             ) : null}
           </p>
           {!llm.reachable ? (
             <p className="error tight">
               {llm.error ?? "Unreachable"}
-              {llm.provider === "gemini" ? " Set GEMINI_API_KEY / LLM_PROVIDER in backend/.env." : " Start Ollama or set OLLAMA_HOST."}
+              {activeProvider === "ollama"
+                ? " Start Ollama or set OLLAMA_HOST."
+                : " Set the API key in Settings or backend/.env."}
             </p>
           ) : null}
         </div>
       ) : null}
 
-      <div className="settings-block">
+      <div className="settings-block settings-block--glass">
         <div className="settings-block-head">
           <span className="badge">Setup</span>
         </div>
         <button type="button" onClick={onOpenSetupWizard}>Open setup wizard</button>
       </div>
 
-      <div className="settings-block">
+      <div className="settings-block settings-block--glass">
         <div className="settings-block-head">
           <span className="badge">Account</span>
           <span className={session?.signed_in ? "badge ok" : "badge"}>
@@ -271,7 +265,7 @@ export function ModelSpotifySettings(props: ModelSpotifySettingsProps): ReactNod
         ) : null}
       </div>
 
-      <div className="settings-block">
+      <div className="settings-block settings-block--glass">
         <div className="settings-block-head">
           <span className="badge">Device</span>
         </div>
@@ -279,6 +273,7 @@ export function ModelSpotifySettings(props: ModelSpotifySettingsProps): ReactNod
           <label htmlFor="device" className="control-label">Playback</label>
           <select
             id="device"
+            className="glass-input"
             value={deviceId}
             onChange={(e) => onDeviceIdChange(e.target.value)}
             disabled={!session?.signed_in || loadingDevices}
