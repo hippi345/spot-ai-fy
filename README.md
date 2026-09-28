@@ -213,17 +213,17 @@ Each cloud backend uses the same Spotify tool loop (summarize reprompt, tool ded
 
 | Provider | `.env` key vars | Default model | Edit picker defaults |
 | --- | --- | --- | --- |
-| Gemini | `GEMINI_API_KEY`, `GEMINI_MODEL` | `gemini-2.5-flash` | [`llm_catalog.py`](backend/spot_backend/llm_catalog.py) |
-| OpenAI | `OPENAI_API_KEY`, `OPENAI_MODEL` | `gpt-4o-mini` | same file |
-| Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | `claude-sonnet-4-20250514` | same file |
-| xAI | `XAI_API_KEY`, `XAI_MODEL` | `grok-3-mini` | same file |
+| Gemini | `GEMINI_API_KEY`, `GEMINI_MODEL` | `gemini-3.5-flash-lite` | [`llm_catalog.py`](backend/spot_backend/llm_catalog.py) |
+| OpenAI | `OPENAI_API_KEY`, `OPENAI_MODEL` | `gpt-6-luna` | same file |
+| Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | same file |
+| xAI | `XAI_API_KEY`, `XAI_MODEL` | `grok-4.3` | same file |
 
 Example `.env` fragment:
 
 ```ini
 LLM_PROVIDER=openai
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-6-luna
 ```
 
 Use **Settings → Backend** to switch providers without editing `.env` (stored in `DATA_DIR/llm_provider.json`). **Reset to .env** clears the UI override.
@@ -265,10 +265,10 @@ All variables live in `backend/.env` (see [`backend/.env.example`](backend/.env.
 | `OLLAMA_HISTORY_MESSAGES` | Number of previous chat messages replayed to Ollama each round. `0` = send everything the UI passed (currently up to 40). Recommended `10` for CPU. |
 | `OLLAMA_TOOL_RESULT_MAX` | Character cap on each tool result fed back into the Ollama prompt. `0` = use the built-in 12 000-char default. Recommended `5000` for CPU. |
 | `OLLAMA_MAX_STEPS` | Ollama-specific agent step cap. `0` = use `AGENT_MAX_STEPS`. Recommended `6`–`8` for CPU so runaway tool loops bail out sooner. |
-| `GEMINI_API_KEY` / `GEMINI_MODEL` | Gemini only. Default `gemini-2.5-flash`. |
-| `OPENAI_API_KEY` / `OPENAI_MODEL` | OpenAI only. Default `gpt-4o-mini`. |
-| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | Anthropic only. Default `claude-sonnet-4-20250514`. |
-| `XAI_API_KEY` / `XAI_MODEL` | xAI only. Default `grok-3-mini`. |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | Gemini only. Default `gemini-3.5-flash-lite`. |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | OpenAI only. Default `gpt-6-luna`. |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | Anthropic only. Default `claude-haiku-4-5-20251001`. |
+| `XAI_API_KEY` / `XAI_MODEL` | xAI only. Default `grok-4.3`. |
 | `AGENT_MAX_STEPS` | Overall cap on tool-call rounds per chat turn (default `16`). |
 | `AGENT_CONTEXT_FILE` | Optional path to a markdown file appended to the system prompt for both LLMs. |
 | `DATA_DIR` | Optional override for where tokens / device / LLM prefs are stored (defaults to `%USERPROFILE%\.spot_ai_fy`). |
@@ -375,7 +375,7 @@ If you'd like to contribute a new provider, the shape to match is the existing `
 
 - **Backend**: Python 3.12, FastAPI, Uvicorn, httpx, pydantic / pydantic-settings, [mcp](https://pypi.org/project/mcp/) for the MCP server.
 - **Frontend**: React 19, Vite 6, TypeScript.
-- **LLMs**: Pluggable. Ollama (local, default) or Gemini (`gemini-2.5-flash` by default) via Google Generative Language API. See [Bring your own LLM](#bring-your-own-llm) for model and tuning guidance; see [Roadmap](#roadmap) for planned provider support.
+- **LLMs**: Pluggable. Ollama (local, default) or Gemini (`gemini-3.5-flash-lite` by default) via Google Generative Language API. See [Bring your own LLM](#bring-your-own-llm) for model and tuning guidance; see [Roadmap](#roadmap) for planned provider support.
 - **Spotify**: Web API, PKCE OAuth, scopes include `playlist-modify-public`/`-private`, `playlist-read-private`/`-collaborative`, `user-read-playback-state`, `user-modify-playback-state`, `user-library-read`, `user-top-read`, `user-follow-read`, `user-read-private`.
 
 ## License

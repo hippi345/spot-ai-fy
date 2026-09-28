@@ -31,7 +31,7 @@ export function SetupWizard({
   const [ollamaHost, setOllamaHost] = useState("http://127.0.0.1:11434");
   const [ollamaModel, setOllamaModel] = useState("");
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
-  const [geminiModel, setGeminiModel] = useState("gemini-2.5-flash");
+  const [geminiModel, setGeminiModel] = useState("gemini-3.5-flash-lite");
   const [geminiModels, setGeminiModels] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

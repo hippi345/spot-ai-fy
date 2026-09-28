@@ -21,10 +21,10 @@ CLOUD_API_KEY_PROVIDERS: frozenset[LlmProviderId] = frozenset(
 # Default model when env + UI override are unset (also used in docs / tests).
 DEFAULT_MODEL_BY_PROVIDER: dict[str, str] = {
     "ollama": "qwen2.5:3b",
-    "gemini": "gemini-2.5-flash",
-    "openai": "gpt-4o-mini",
-    "anthropic": "claude-sonnet-4-20250514",
-    "xai": "grok-3-mini",
+    "gemini": "gemini-3.5-flash-lite",
+    "openai": "gpt-6-luna",
+    "anthropic": "claude-haiku-4-5-20251001",
+    "xai": "grok-4.3",
 }
 
 # Curated lists for settings dropdowns (live APIs may return more; these are fallbacks).
@@ -36,25 +36,24 @@ PICKER_MODELS_BY_PROVIDER: dict[str, list[str]] = {
         "gemma2:2b",
     ],
     "gemini": [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-3.5-flash",
     ],
     "openai": [
-        "gpt-4o-mini",
-        "gpt-4o",
-        "gpt-4.1-mini",
-        "gpt-4.1",
+        "gpt-6-luna",
+        "gpt-6-astra",
+        "gpt-6-sol",
     ],
     "anthropic": [
-        "claude-sonnet-4-20250514",
-        "claude-3-5-haiku-20241022",
-        "claude-3-5-sonnet-20241022",
+        "claude-haiku-4-5-20251001",
+        "claude-opus-5-5",
+        "claude-sonnet-5",
     ],
     "xai": [
-        "grok-3-mini",
-        "grok-3",
-        "grok-2-1212",
+        "grok-4.3",
+        "grok-4.7",
+        "grok-4.6",
     ],
 }
 

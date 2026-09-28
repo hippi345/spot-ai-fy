@@ -62,16 +62,16 @@ class Settings(BaseSettings):
     ollama_max_steps: int = 0
 
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.5-flash-lite"
 
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-6-luna"
 
     anthropic_api_key: str = ""
-    anthropic_model: str = "claude-sonnet-4-20250514"
+    anthropic_model: str = "claude-haiku-4-5-20251001"
 
     xai_api_key: str = ""
-    xai_model: str = "grok-3-mini"
+    xai_model: str = "grok-4.3"
 
     agent_max_steps: int = 16
 

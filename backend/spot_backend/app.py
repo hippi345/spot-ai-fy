@@ -376,7 +376,7 @@ def chat(body: ChatBody) -> dict[str, str]:
                     status_code=429,
                     detail=(
                         f"Gemini hit its rate limit / quota for {gemini_model}. On the free tier this typically "
-                        "resets daily. Try a lighter model from the Settings dropdown (e.g. gemini-2.5-flash-lite), "
+                        "resets daily. Try a lighter model from the Settings dropdown (e.g. gemini-3.5-flash-lite), "
                         "switch to Ollama in Settings, or enable billing on your Google AI key if you need more headroom."
                     ),
                 ) from e
@@ -386,7 +386,7 @@ def chat(body: ChatBody) -> dict[str, str]:
                     detail=(
                         f"Gemini is overloaded right now — Google has been returning 'service unavailable' for "
                         f"{gemini_model}. Please try again in a minute, pick a lighter model from the Settings "
-                        "dropdown (e.g. gemini-2.5-flash-lite or gemini-1.5-flash), or switch to Ollama in Settings."
+                        "dropdown (e.g. gemini-3.5-flash-lite or gemini-3.5-flash), or switch to Ollama in Settings."
                     ),
                 ) from e
             if code == 404:
