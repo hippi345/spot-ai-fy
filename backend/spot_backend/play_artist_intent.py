@@ -2,48 +2,18 @@
 
 from __future__ import annotations
 
-import re
-
-_PLAY_ARTIST_RE = re.compile(
-    r"^\s*(?:(?:can|could|will|would)\s+you\s+)?(?:please\s+)?play\s+(.+?)\s*[.!?]*\s*$",
-    re.I,
-)
-
-_EXCLUDE_PLAY_TARGET_RE = re.compile(
-    r"\b(?:playlist|album|song|track|episode|podcast|music|my\s+\w+\s+playlist)\b",
-    re.I,
-)
-
-_GENERIC_PLAY_TARGETS = frozenset(
-    {
-        "something",
-        "anything",
-        "that",
-        "this",
-        "it",
-        "stuff",
-        "some music",
-        "a song",
-        "a track",
-    }
+from spot_backend.play_bare_intent import (
+    extract_bare_play_target,
+    extract_play_music_by_artist,
 )
 
 
 def extract_play_artist_name(user_text: str) -> str | None:
-    """Return artist name for 'play Radiohead' / 'can you play Radiohead?' or None."""
-    t = (user_text or "").strip()
-    if not t:
+    """Return artist name for 'play Radiohead' or 'play songs by X' — not bare track titles."""
+    by_artist = extract_play_music_by_artist(user_text)
+    if by_artist:
+        return by_artist
+    target = extract_bare_play_target(user_text)
+    if not target:
         return None
-    m = _PLAY_ARTIST_RE.match(t)
-    if not m:
-        return None
-    name = m.group(1).strip()
-    if not name or _EXCLUDE_PLAY_TARGET_RE.search(name):
-        return None
-    if re.search(r"\s+by\s+", name, re.I):
-        return None
-    if re.match(r"^artist\s+", name, re.I):
-        return None
-    if name.lower() in _GENERIC_PLAY_TARGETS:
-        return None
-    return name
+    return target

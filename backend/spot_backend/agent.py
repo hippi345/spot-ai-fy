@@ -13,8 +13,10 @@ from spot_backend.action_claim_guard import (
     action_claim_honest_fallback,
     action_claim_reprompt,
     is_failure_boilerplate,
+    numeric_factual_claim_honest_fallback,
     record_successful_tool,
     reply_claims_unbacked_action,
+    reply_contains_unbacked_numeric_factual_claim,
     tool_summarize_reprompt,
     turn_tool_calls_all_succeeded,
 )
@@ -29,14 +31,23 @@ from spot_backend.chat_messages import (
 from spot_backend.deterministic_chat import ollama_deterministic_shortcut_events
 from spot_backend.chat_tool_state import seed_runner_from_chat_history
 from spot_backend.prompt_intent import (
+    OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE,
     filter_ollama_tools_for_prompt,
     informational_system_suffix,
     prompt_is_informational,
+    prompt_is_vague_playlist_play_request,
     refused_mutating_tool_result,
     spotify_tool_is_mutating,
+    turn_needs_vague_playlist_play_nudge,
+)
+from spot_backend.reply_tool_trace import (
+    append_tool_trace_record,
+    summarize_tool_args,
+    tool_trace_outcome,
 )
 from spot_backend.config import Settings, get_settings
 from spot_backend.context_loader import load_optional_agent_context_markdown
+from spot_backend.agent_system_extras import shared_agent_system_suffix
 from spot_backend.llm_prefs import read_effective_llm_provider, read_effective_ollama_model
 from spot_backend.ollama_agent_profile import (
     SMALL_MODEL_SYSTEM_PROMPT,
@@ -88,7 +99,7 @@ Rules:
   * "Who follows me" / "my followers" / "people who follow me" — Spotify's Web API does NOT expose your follower list, only a count (visible via spotify_me.followers.total). Say so plainly. Offer to: (a) report the count, (b) fetch artists you follow with spotify_followed_artists, or (c) fetch your top artists/tracks.
   * "People I follow" / "users I follow" — Spotify's Web API does NOT expose users you follow, only ARTISTS you follow (via spotify_followed_artists). Say so and call spotify_followed_artists. Do NOT pretend you fetched users.
   * "What playlists does <user> have" — GET /users/{user_id}/playlists is gated behind Spotify's Extended Quota Mode as of their Feb-2026 migration and this app runs in dev mode. spotify_user_public_playlists will return HTTP 403 for EVERY user_id (even the signed-in user themselves and well-known accounts like 'spotify'), with `endpoint_gated_in_dev_mode: true` in the JSON. Do NOT suggest sign-out/reconnect for this error; do NOT retry with a different user_id. Say one sentence that listing another user's playlists needs Extended Quota Mode and offer: (a) spotify_search_playlists by topic, (b) spotify_user_playlists for the signed-in user's own playlists. Also: display-name lookup is never supported, ids only.
-  * spotify_artist_albums dev-mode cap — Spotify's dev mode caps `/artists/{id}/albums` `limit` at 10 (higher values return HTTP 400 "Invalid limit"). If the user wants a total count, read `response.total` from a single call (limit=10), do NOT paginate to 50.
+  * spotify_artist_albums dev-mode cap — Spotify's dev mode caps `/artists/{id}/albums` `limit` at 10 (higher values return HTTP 400 "Invalid limit"). For "how many albums", call spotify_artist_albums with include_groups=album; the tool paginates and returns studio_album_count_deduped (Spotify catalog, deduped). If the tool errors, do not state a number.
   * spotify_duplicate_playlist — "duplicate" is NOT a Spotify endpoint; it's a composite tool that reads the source's tracks, creates a new playlist the signed-in user owns, and adds those tracks to it (the same thing the Spotify mobile UI's "Add to other playlist" action does). It works fully for playlists the current user OWNS — when the user says "copy RNB2025" or "duplicate my playlist X", just call spotify_duplicate_playlist with that source id. Dev-mode limit: Spotify blocks reads of the TRACKS of any playlist the signed-in user does NOT own (GET /playlists/{id}/items returns 403 for followed/foreign playlists), so duplicating someone ELSE's playlist returns `source_not_owned_by_user: true` with `endpoint_gated_in_dev_mode: true`. Only in that non-owned case: do NOT retry, do NOT suggest sign-out, and do NOT imply owned-playlist duplication is blocked. Explain in one sentence that Spotify blocks reading another user's playlist contents in dev mode and offer: (a) play it in place with spotify_play_playlist, or (b) rebuild a similar list with spotify_search + spotify_create_playlist + spotify_add_tracks_to_playlist (or spotify_add_tracks_by_query).
   * Editing a playlist owned by someone else — NOT supported by the Web API. Offer spotify_duplicate_playlist to copy it into a new playlist the user owns; the new playlist is fully writable (returned id works with spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks / spotify_replace_playlist_tracks / spotify_reorder_playlist_tracks).
 - The user selects an active device in the UI; omit device_id unless you must override it.
@@ -110,7 +121,7 @@ High-level phrasing (you resolve intent → concrete tools; do not ask the user 
 - "Follow / save / add to my library this playlist" → spotify_follow_playlist (works on any playlist_id, including ones owned by other users; does NOT make you the owner).
 - "Copy / clone / duplicate <someone else's playlist> so I can edit it" / "turn <playlist> into mine" → spotify_duplicate_playlist with source_playlist_id. Returned new_playlist_id (also exposed as playlist_id_for_add_tracks) is fully writable; subsequent edits go through spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks / etc. with that id.
 - DO NOT attempt to add or remove tracks on a playlist owned by another user — explain that the Web API blocks it and propose spotify_duplicate_playlist as the workaround.
-- "Most popular / best / compare" (albums or tracks) → combine spotify_search, spotify_get_album, spotify_artist_top_tracks, or popularity fields from catalog tools — infer reasonable metrics, say what you used.
+- "Most popular song / biggest hit / play their best-known track" → spotify_play_artist_popular_track (never spotify_artist_top_tracks — removed). Other "most popular album" questions → spotify_search + spotify_get_album and popularity fields.
 - Ambiguous artist, album, or playlist names → disambiguate with spotify_search or spotify_user_playlists before playback or edits.
 - If a tool fails, read error JSON (detail, hint), adjust the plan (e.g. different playlist id, smaller batch), and continue when possible instead of giving up after one call."""
 
@@ -127,7 +138,7 @@ CRITICAL — Ollama JSON tool mode (this model has no native tool API):
 - If the user asks anything about Spotify (library, search, play, albums, playlists), your FIRST step is almost always `spotify_search` or `spotify_me` / `spotify_user_playlists` — pick the one that best resolves a vague request (e.g. playlist name → user_playlists; artist → search).
 - AFTER tool results are pasted into the conversation as user messages, answer in short plain text, or emit another ```json block if you need more tools.
 
-Tool names: spotify_search, spotify_search_playlists, spotify_me, spotify_user_playlists, spotify_user_public_playlists, spotify_followed_artists, spotify_get_playlist, spotify_playlist_tracks, spotify_user_saved_tracks, spotify_recently_played, spotify_save_tracks, spotify_unsave_tracks, spotify_save_albums, spotify_unsave_albums, spotify_saved_albums, spotify_follow_artist, spotify_unfollow_artist, spotify_get_queue, spotify_playlists_containing_track, spotify_top_artists, spotify_top_tracks, spotify_get_album, spotify_get_track, spotify_get_artist, spotify_artist_albums, spotify_artist_top_tracks, spotify_create_playlist, spotify_duplicate_playlist, spotify_follow_playlist, spotify_update_playlist, spotify_add_tracks_to_playlist, spotify_add_tracks_by_query, spotify_remove_playlist_tracks, spotify_reorder_playlist_tracks, spotify_replace_playlist_tracks, spotify_unfollow_playlist, spotify_devices, spotify_playback_state, spotify_transfer_playback, spotify_start_resume_playback, spotify_play_playlist, spotify_pause, spotify_skip_next, spotify_skip_previous, spotify_add_to_queue, spotify_play_next, spotify_set_repeat, spotify_set_shuffle, spotify_seek, spotify_set_volume.
+Tool names: spotify_search, spotify_search_playlists, spotify_me, spotify_user_playlists, spotify_user_public_playlists, spotify_followed_artists, spotify_get_playlist, spotify_playlist_tracks, spotify_user_saved_tracks, spotify_recently_played, spotify_save_tracks, spotify_unsave_tracks, spotify_save_albums, spotify_unsave_albums, spotify_saved_albums, spotify_follow_artist, spotify_unfollow_artist, spotify_get_queue, spotify_playlists_containing_track, spotify_top_artists, spotify_top_tracks, spotify_get_album, spotify_get_track, spotify_get_artist, spotify_artist_albums, spotify_play_artist_popular_track, spotify_create_playlist, spotify_duplicate_playlist, spotify_follow_playlist, spotify_update_playlist, spotify_add_tracks_to_playlist, spotify_add_tracks_by_query, spotify_remove_playlist_tracks, spotify_reorder_playlist_tracks, spotify_replace_playlist_tracks, spotify_unfollow_playlist, spotify_devices, spotify_playback_state, spotify_transfer_playback, spotify_start_resume_playback, spotify_play_playlist, spotify_pause, spotify_skip_next, spotify_skip_previous, spotify_add_to_queue, spotify_play_next, spotify_set_repeat, spotify_set_shuffle, spotify_seek, spotify_set_volume.
 """
 
 _JSON_MODE_EMPTY_NUDGE = (
@@ -465,6 +476,28 @@ def _synthetic_assistant_json_content(tool_calls: list[dict[str, Any]]) -> str:
     return "```json\n" + json.dumps(arr, ensure_ascii=False) + "\n```"
 
 
+def _persist_ollama_tool_trace(
+    settings: Settings,
+    *,
+    conversation_id: str | None,
+    tool_name: str,
+    args: dict[str, Any],
+    result: str,
+    duration_ms: int | None = None,
+) -> None:
+    """Append one Ollama tool row to DATA_DIR/chat_tool_traces.jsonl (secrets redacted)."""
+    append_tool_trace_record(
+        settings.data_dir,
+        conversation_id=conversation_id,
+        tool_name=tool_name,
+        args_summary=summarize_tool_args(args),
+        outcome=tool_trace_outcome(result),
+        duration_ms=duration_ms,
+        known_secrets=None,
+        raw_result=result,
+    )
+
+
 def _coerce_chat_history(history: Any) -> list[dict[str, str]]:
     """Normalize optional client history to user/assistant turns with string content."""
     out: list[dict[str, str]] = []
@@ -498,6 +531,7 @@ def iter_ollama_chat_events(
         user_text,
         runner,
         conversation_id=conversation_id,
+        settings=settings,
     )
     if shortcut_events is not None:
         yield from shortcut_events
@@ -510,12 +544,13 @@ def iter_ollama_chat_events(
     promise_nudge_used = False
     action_claim_reprompted = False
     tool_summarize_reprompted = False
+    vague_playlist_nudge_used = False
     try:
         ollama_model = read_effective_ollama_model(settings.data_dir, settings.ollama_model)
         small_model = use_small_model_mode(settings, ollama_model)
         base_system = (
             SMALL_MODEL_SYSTEM_PROMPT if small_model else _SYSTEM
-        ) + load_optional_agent_context_markdown(settings)
+        ) + shared_agent_system_suffix() + load_optional_agent_context_markdown(settings)
         active_tools = filter_ollama_tools(OLLAMA_TOOLS, small=small_model)
         informational_turn = prompt_is_informational(user_text)
         if informational_turn:
@@ -523,6 +558,7 @@ def iter_ollama_chat_events(
         active_tools = filter_ollama_tools_for_prompt(
             active_tools,
             informational=informational_turn,
+            user_text=user_text,
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": base_system}]
         hist_cap = int(getattr(settings, "ollama_history_messages", 0) or 0)
@@ -629,12 +665,12 @@ def iter_ollama_chat_events(
                                             "message": "Using JSON tool mode (this model does not support native Ollama tools).",
                                         }
                                     continue
-                            try:
-                                r.raise_for_status()
-                            except httpx.HTTPStatusError as e:
+                            if r.status_code >= 400:
+                                if not err_body:
+                                    err_body = r.read().decode("utf-8", errors="replace")
                                 yield {
                                     "type": "error",
-                                    "message": f"Ollama HTTP {e.response.status_code}: {(e.response.text or '')[:600]}",
+                                    "message": f"Ollama HTTP {r.status_code}: {err_body[:600]}",
                                 }
                                 return
 
@@ -779,7 +815,7 @@ def iter_ollama_chat_events(
                             reprompt_action_claim = True
                             break
                     if reply_claims_unbacked_action(
-                        final_text, successful_tools, user_text=user_text
+                        final_text, successful_tools, user_text=user_text, turn_tool_calls=turn_tool_calls
                     ):
                         if not action_claim_reprompted:
                             action_claim_reprompted = True
@@ -802,6 +838,10 @@ def iter_ollama_chat_events(
                             reprompt_action_claim = True
                             break
                         final_text = action_claim_honest_fallback()
+                    if reply_contains_unbacked_numeric_factual_claim(
+                        final_text, turn_tool_calls
+                    ):
+                        final_text = numeric_factual_claim_honest_fallback()
                     if (
                         assistant_reply_is_promise_only(final_text)
                         and tool_results
@@ -835,8 +875,16 @@ def iter_ollama_chat_events(
                     if informational_turn and spotify_tool_is_mutating(name):
                         yield {"type": "tool_start", "name": name}
                         result = refused_mutating_tool_result(name)
+                        _persist_ollama_tool_trace(
+                            settings,
+                            conversation_id=conversation_id,
+                            tool_name=name,
+                            args=args,
+                            result=result,
+                        )
                         preview = result[:240] + ("…" if len(result) > 240 else "")
                         yield {"type": "tool_done", "name": name, "preview": preview}
+                        turn_tool_calls.append((name, result))
                         tool_results.append(result)
                         if native_tools:
                             messages.append({"role": "tool", "name": name, "content": result})
@@ -866,7 +914,19 @@ def iter_ollama_chat_events(
                             )
                         continue
                     yield {"type": "tool_start", "name": name}
+                    import time as _time
+
+                    t0 = _time.perf_counter()
                     result = runner.run(name, args)
+                    duration_ms = int((_time.perf_counter() - t0) * 1000)
+                    _persist_ollama_tool_trace(
+                        settings,
+                        conversation_id=conversation_id,
+                        tool_name=name,
+                        args=args,
+                        result=result,
+                        duration_ms=duration_ms,
+                    )
                     deduped_tool_results[dedupe_key] = result
                     turn_tool_calls.append((name, result))
                     record_successful_tool(successful_tools, name, result)
@@ -880,6 +940,19 @@ def iter_ollama_chat_events(
                         messages.append(
                             {"role": "user", "content": f"Tool `{name}` result:\n{result_chat}"},
                         )
+
+                if (
+                    not vague_playlist_nudge_used
+                    and prompt_is_vague_playlist_play_request(user_text)
+                    and turn_needs_vague_playlist_play_nudge(turn_tool_calls)
+                ):
+                    vague_playlist_nudge_used = True
+                    messages.append({"role": "user", "content": OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE})
+                    yield {
+                        "type": "status",
+                        "message": "Listed playlists — nudging the model to start playback…",
+                    }
+                    continue
 
                 if json_mode_patched:
                     messages.append({"role": "user", "content": _JSON_PLAIN_ANSWER_FOLLOWUP})

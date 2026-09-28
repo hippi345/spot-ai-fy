@@ -48,6 +48,8 @@ class SpotifyPlaybackState:
         self.playlists = [
             {"id": "plist000000000000000001", "name": "Evening Acoustic"},
             {"id": "plist000000000000000002", "name": "Road Trip Mix"},
+            {"id": "plist000000000000000003", "name": "Jamz"},
+            {"id": "plist000000000000000004", "name": "Jamz (Classic)"},
         ]
         self._started = False
 
@@ -87,6 +89,15 @@ def install_stateful_spotify_mock(state: SpotifyPlaybackState) -> None:
         path = request.url.path
         if path.endswith("/search"):
             q = request.url.params.get("q", "")
+            stype = request.url.params.get("type") or ""
+            if "playlist" in stype:
+                q_low = q.lower()
+                items = [
+                    p
+                    for p in state.playlists
+                    if q_low in (p.get("name") or "").lower() or (p.get("name") or "").lower() in q_low
+                ]
+                return httpx.Response(200, json={"playlists": {"items": items or state.playlists[:1]}})
             if request.url.params.get("type") == "track" or "Gravity" in q:
                 items = [state.gravity] if "Gravity" in q else state.tracks
                 return httpx.Response(200, json={"tracks": {"items": items}})
@@ -151,6 +162,23 @@ def install_stateful_spotify_mock(state: SpotifyPlaybackState) -> None:
             return httpx.Response(200, json=payload)
         if path.endswith("/me/playlists"):
             return httpx.Response(200, json={"items": state.playlists})
+        for pl in state.playlists:
+            pid = pl["id"]
+            if path.endswith(f"/playlists/{pid}") and not path.endswith("/items"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": pid,
+                        "name": pl["name"],
+                        "uri": f"spotify:playlist:{pid}",
+                        "owner": {"id": "smoke-user"},
+                    },
+                )
+            if path.endswith(f"/playlists/{pid}/items"):
+                return httpx.Response(
+                    200,
+                    json={"items": [{"track": state.tracks[0]}]},
+                )
         return httpx.Response(200, json={})
 
     respx.route(url__regex=r"https://api\.spotify\.com/.*").mock(side_effect=handler)

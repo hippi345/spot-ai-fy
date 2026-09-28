@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -113,6 +114,59 @@ def format_play_track_reply(
     )
 
 
+def format_verified_playback_line(
+    player: dict[str, Any] | None,
+    *,
+    verified: bool,
+) -> str | None:
+    """Single-line 'Playing …' from verified player state."""
+    if not verified:
+        return None
+    if not player or not isinstance(player, dict):
+        return None
+    item = player.get("item") if isinstance(player.get("item"), dict) else None
+    if not item:
+        return None
+    title, credit = describe_playing_item(item)
+    if credit:
+        return f"Playing {title} by {credit}."
+    return f"Playing {title}."
+
+
+def format_playlist_play_chat_reply(
+    playlist_name: str,
+    raw: str,
+    *,
+    offer_alternate: bool = False,
+) -> str:
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return f"I could not start {playlist_name} just now."
+    if not isinstance(data, dict):
+        return f"I could not start {playlist_name} just now."
+    playback = data.get("playback") if isinstance(data.get("playback"), dict) else {}
+    verified = bool(
+        data.get("playback_verified") is True or playback.get("playback_verified") is True
+    )
+    player = data.get("player_after")
+    if not isinstance(player, dict):
+        player = playback.get("player_after") if isinstance(playback.get("player_after"), dict) else None
+    if verified:
+        pl_label = (playlist_name or "").strip() or "your playlist"
+        if pl_label.lower().endswith(" playlist"):
+            line = f"Playing {pl_label}."
+        else:
+            line = f"Playing your {pl_label} playlist."
+        if offer_alternate:
+            return f"{line.rstrip('.')} — want a different one?"
+        return line
+    err = str(data.get("user_message") or data.get("error") or "").strip()
+    if err:
+        return err
+    return f"I could not start {playlist_name} just now."
+
+
 def format_skip_reply(
     player: dict[str, Any] | None,
     *,
@@ -125,14 +179,36 @@ def format_skip_reply(
             "Try skipping once in the Spotify app, then ask again."
         )
     if not player or not isinstance(player, dict):
+        if direction == "previous":
+            return "Went back to the previous track."
         return f"Skipped to the {direction} track."
     item = player.get("item") if isinstance(player.get("item"), dict) else None
     if not item:
+        if direction == "previous":
+            return "Went back to the previous track."
         return f"Skipped to the {direction} track."
     title, credit = describe_playing_item(item)
+    if direction == "previous":
+        if credit:
+            return f"Going back to {title} by {credit}."
+        return f"Going back to {title}."
     if credit:
         return f"Skipped — now playing {title} by {credit}."
     return f"Skipped — now playing {title}."
+
+
+def prompt_asks_previous(user_text: str) -> bool:
+    t = (user_text or "").strip().lower()
+    if not t:
+        return False
+    if "playlist" in t:
+        return False
+    return bool(
+        re.fullmatch(
+            r"(?:please\s+)?(?:go\s+back(?:\s+one)?|back\s+one(?:\s+track)?|previous(?:\s+(?:song|track))?)",
+            t,
+        )
+    )
 
 
 def prompt_asks_skip(user_text: str) -> bool:

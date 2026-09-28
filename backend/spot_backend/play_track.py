@@ -27,7 +27,7 @@ def format_play_track_chat_reply(track_title: str, artist_name: str, raw: str) -
         return f"I could not start playback for {track_title} by {artist_name} just now."
     player = data.get("player_after")
     verified = bool(data.get("playback_verified"))
-    if data.get("ok") is True or verified:
+    if verified:
         return format_play_track_reply(
             track_title,
             artist_name,

@@ -1,6 +1,11 @@
 /** Per-chat conversation id + optional message persistence for undo across turns. */
 
+import { isUnpersistedAssistantFallback } from "./chatMessages";
+
 export const CHAT_SESSION_STORAGE_KEY = "spotaify.chatSession";
+
+/** Must match backend spot_backend.chat_request.CHAT_HISTORY_MAX_TURNS */
+export const CHAT_HISTORY_MAX_TURNS = 40;
 
 export type PersistedChatMessage = {
   role: "user" | "assistant";
@@ -61,14 +66,42 @@ export function startNewChatSession(): ChatSessionState {
 
 export type ChatHistoryTurn = { role: "user" | "assistant"; content: string };
 
+type LegacyHistoryTurn = {
+  role?: string;
+  content?: string;
+  text?: string;
+};
+
+/** Normalize UI/history rows to canonical `{ role, content }` for the API. */
+export function coerceChatHistoryTurns(
+  turns: Array<ChatHistoryTurn | LegacyHistoryTurn>,
+): ChatHistoryTurn[] {
+  const out: ChatHistoryTurn[] = [];
+  for (const row of turns) {
+    if (!row || typeof row !== "object") continue;
+    const role = row.role;
+    const legacyText = "text" in row && typeof row.text === "string" ? row.text : "";
+    const raw = (row.content ?? legacyText).trim();
+    if (role !== "user" && role !== "assistant") continue;
+    if (!raw) continue;
+    if (role === "assistant" && isUnpersistedAssistantFallback(raw)) continue;
+    out.push({ role, content: raw });
+  }
+  if (out.length > CHAT_HISTORY_MAX_TURNS) {
+    return out.slice(-CHAT_HISTORY_MAX_TURNS);
+  }
+  return out;
+}
+
 export function buildChatStreamRequestBody(
   message: string,
-  history: ChatHistoryTurn[],
+  history: Array<ChatHistoryTurn | LegacyHistoryTurn>,
   conversationId: string,
 ): { message: string; history: ChatHistoryTurn[]; conversation_id: string } {
+  const trimmedMessage = message.trim();
   return {
-    message,
-    history,
-    conversation_id: conversationId,
+    message: trimmedMessage,
+    history: coerceChatHistoryTurns(history),
+    conversation_id: conversationId.trim(),
   };
 }

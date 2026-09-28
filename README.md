@@ -278,7 +278,7 @@ All variables live in `backend/.env` (see [`backend/.env.example`](backend/.env.
 
 The backend exposes ~35 tools to the LLM (and via MCP). A few highlights:
 
-- **Search / catalog**: `spotify_search`, `spotify_search_playlists` (find playlists by free-text description), `spotify_get_track`, `spotify_get_album`, `spotify_get_artist`, `spotify_artist_albums`, `spotify_artist_top_tracks`.
+- **Search / catalog**: `spotify_search`, `spotify_search_playlists` (find playlists by free-text description), `spotify_get_track`, `spotify_get_album`, `spotify_get_artist`, `spotify_artist_albums`, `spotify_play_artist_popular_track`.
 - **Library**: `spotify_me`, `spotify_user_playlists`, `spotify_user_saved_tracks`, `spotify_get_playlist`, `spotify_playlist_tracks`.
 - **User stats**: `spotify_top_artists`, `spotify_top_tracks` (`time_range` = `short_term` ~last 4 weeks, `medium_term` ~last 6 months, `long_term` ~all-time; capped at 50). Requires the `user-top-read` scope.
 - **Following**: `spotify_followed_artists` (artists you follow — Spotify's API does **not** expose followed users), `spotify_user_public_playlists` (any user's *public* playlists, by their `user_id`), `spotify_follow_playlist`, `spotify_unfollow_playlist`. Returning users may need to **Sign out → Connect** once to re-consent for the new `user-follow-read` scope.
@@ -339,6 +339,7 @@ Default data directory: `~/.spot_ai_fy` on macOS/Linux and `%USERPROFILE%\.spot_
 | Secrets fallback | `{DATA_DIR}/secrets.json` (mode `0600`) | JSON when OS keychain is unavailable |
 | Gemini API key (wizard) | OS keychain service **`spot-ai-fy`** (preferred) or `secrets.json` | Not returned from API responses |
 | LLM UI overrides | `{DATA_DIR}/llm_provider.json` | JSON: `provider`, optional `ollama_model` / `gemini_model` / `ollama_small_model` |
+| Chat tool traces (debug) | `{DATA_DIR}/chat_tool_traces.jsonl` | Append-only JSONL per tool call: tool name, short args summary, ok/error/refused, optional duration — no tokens or API keys |
 | Setup / secrets write lock | `{DATA_DIR}/.spot_ai_fy_setup.lock` | `filelock` sidecar while merging setup files |
 | Optional agent context | `AGENT_CONTEXT_FILE` from `.env`, else `backend/AGENT_CONTEXT.md`, else `{DATA_DIR}/Spot-AI-fy-agent-context.md` | Markdown read into the system prompt |
 | PKCE `state` → `code_verifier` | Backend process memory only | Cleared after OAuth callback |

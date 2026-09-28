@@ -22,7 +22,6 @@ SPOTIFY_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
         "spotify_get_artist",
         "spotify_artist_albums",
         "spotify_artist_latest_album",
-        "spotify_artist_top_tracks",
         "spotify_user_saved_tracks",
         "spotify_recently_played",
         "spotify_saved_albums",
@@ -119,15 +118,15 @@ _MULTI_STEP_RE = re.compile(
     re.I,
 )
 
-
-def _prompt_has_action_request(text: str) -> bool:
-    """True when the user is asking the agent to perform a Spotify action now."""
-    t = text.strip()
-    if not t:
-        return False
-    if _LEADING_ACTION_REQUEST_RE.match(t):
-        return True
-    return bool(_POLITE_ACTION_REQUEST_RE.search(t))
+_CAPABILITY_INTERFACE_RE = re.compile(
+    r"(?:"
+    r"\b(?:via|through|using|with)\s+(?:this\s+)?(?:interface|app|chat|spot-?ai-?fy|here)\b"
+    r"|(?:does|can)\s+(?:this|the)\s+(?:app|interface|chat)\b"
+    r"|(?:are\s+you\s+able|is\s+it\s+possible)\s+to\b"
+    r"|(?:what\s+can\s+you|what\s+do\s+you)\s+(?:do|support)\b"
+    r")",
+    re.I,
+)
 
 
 def _prompt_is_question_form(text: str) -> bool:
@@ -137,6 +136,56 @@ def _prompt_is_question_form(text: str) -> bool:
     if t.endswith("?"):
         return True
     return bool(_QUESTION_START_RE.match(t))
+
+
+def prompt_is_capability_question(user_text: str) -> bool:
+    """Whether the user asks what the app can do (not a command to act now)."""
+    t = (user_text or "").strip()
+    if not t or not _prompt_is_question_form(t):
+        return False
+    low = t.lower()
+    if re.search(r"\bwhat\s+can\s+you\s+do\b", low):
+        return True
+    if (
+        re.search(r"\bcan\s+(?:you|this)\b", t, re.I)
+        and re.search(r"\b(?:make|create)\b", low)
+        and "playlist" in low
+    ):
+        if re.search(r"\bplaylist\s+\S", t) and not re.search(
+            r"\b(?:make|create)\s+(?:me\s+)?(?:a\s+)?playlists?\s*\??\s*$",
+            t,
+            re.I,
+        ):
+            return False
+        if re.search(r"\b(?:make|create)\s+(?:me\s+)?(?:a\s+)?playlists?\s*\??\s*$", t, re.I):
+            return True
+        if re.search(r"\bmake\s+me\s+a\s+playlists?\s*\??\s*$", t, re.I):
+            return True
+    if _CAPABILITY_INTERFACE_RE.search(t):
+        return True
+    low = t.lower()
+    if re.search(r"\bcan\s+(?:you|this)\b", t, re.I) and re.search(
+        r"\b(?:podcasts?|episodes?)\b", low
+    ):
+        if not re.search(
+            r"\bplay\s+(?:the\s+)?(?:episode|podcast)\s+[\"']?\w",
+            t,
+            re.I,
+        ):
+            return True
+    return False
+
+
+def _prompt_has_action_request(text: str) -> bool:
+    """True when the user is asking the agent to perform a Spotify action now."""
+    t = text.strip()
+    if not t:
+        return False
+    if prompt_is_capability_question(t):
+        return False
+    if _LEADING_ACTION_REQUEST_RE.match(t):
+        return True
+    return bool(_POLITE_ACTION_REQUEST_RE.search(t))
 
 
 def _prompt_is_advice_or_explanation(text: str) -> bool:
@@ -196,6 +245,29 @@ def prompt_requests_recent_listening_history(user_text: str) -> bool:
     return bool(_RECENT_LISTENING_TIME_RE.search(t))
 
 
+_CURRENT_TRACK_REF_RE = re.compile(
+    r"\b(?:"
+    r"this\s+song|this\s+track|this\b|"
+    r"current\s+song|current\s+track|"
+    r"what(?:'s|\s+is)\s+playing|now\s+playing"
+    r")\b",
+    re.I,
+)
+_RELEASE_DATE_QUESTION_RE = re.compile(
+    r"\b(?:when\s+did|release\s+date|come\s+out|came\s+out|what\s+year)\b",
+    re.I,
+)
+
+
+def prompt_requests_current_track_release(user_text: str) -> bool:
+    t = (user_text or "").strip()
+    if not t:
+        return False
+    if not _RELEASE_DATE_QUESTION_RE.search(t):
+        return False
+    return bool(_CURRENT_TRACK_REF_RE.search(t))
+
+
 def prompt_is_informational(user_text: str) -> bool:
     """Questions and advice without an action request → read-only tools only, no mutations."""
     t = (user_text or "").strip()
@@ -238,7 +310,10 @@ def filter_ollama_tools_for_prompt(
     tools: list[dict[str, Any]],
     *,
     informational: bool,
+    user_text: str = "",
 ) -> list[dict[str, Any]]:
+    if informational and prompt_is_capability_question(user_text):
+        return []
     if not informational:
         return tools
     allowed = SPOTIFY_READ_ONLY_TOOL_NAMES
@@ -254,7 +329,10 @@ def gemini_declarations_for_prompt(
     declarations: list[dict[str, Any]],
     *,
     informational: bool,
+    user_text: str = "",
 ) -> list[dict[str, Any]]:
+    if informational and prompt_is_capability_question(user_text):
+        return []
     if not informational:
         return declarations
     allowed = SPOTIFY_READ_ONLY_TOOL_NAMES
@@ -278,6 +356,13 @@ def refused_mutating_tool_result(tool_name: str) -> str:
     )
 
 
+CAPABILITY_QUESTION_SUFFIX = """
+
+APP CAPABILITY QUESTION:
+- Answer whether the feature is supported in plain language (yes/no). Do NOT call playback, queue, or library-mutation tools on this turn.
+- Podcast episodes are not supported through these Spotify Web API tools — only music (tracks, albums, artists) and the user's playlists/library controls.
+"""
+
 INFORMATIONAL_REPLY_SYSTEM_SUFFIX = """
 
 INFORMATIONAL TURN (read-only Spotify data allowed; no mutations):
@@ -300,9 +385,73 @@ PURE HOW-TO (app instructions only):
 
 def informational_system_suffix(user_text: str) -> str:
     base = INFORMATIONAL_REPLY_SYSTEM_SUFFIX
+    if prompt_is_capability_question(user_text):
+        return base + CAPABILITY_QUESTION_SUFFIX
     if prompt_is_pure_how_to(user_text):
         return base + PURE_HOW_TO_NO_LOOKUP_SUFFIX
     return base
+
+
+_VAGUE_PLAYLIST_PLAY_RE = re.compile(
+    r"\bplay\s+(?:one\s+of\s+)?(?:my|a)\s+playlists?\b",
+    re.I,
+)
+
+_ALTERNATE_OWNED_PLAYLIST_RE = re.compile(
+    r"(?:"
+    r"\b(?:actually,?\s+)?play\s+(?:a\s+)?different\s+playlist\b"
+    r"|"
+    r"\banother\s+playlist\b"
+    r"|"
+    r"\ba\s+different\s+one\b"
+    r"|"
+    r"\bsomething\s+else\s+from\s+my\s+playlists?\b"
+    r")",
+    re.I,
+)
+
+_OLLAMA_PLAYBACK_AFTER_LIST_TOOLS = frozenset(
+    {
+        "spotify_play_playlist",
+        "spotify_start_resume_playback",
+        "spotify_play_track",
+        "spotify_play_artist",
+        "spotify_play_artist_latest_release",
+        "spotify_play_artist_popular_track",
+    }
+)
+
+OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE = (
+    "You listed the user's playlists but did not start playback. Pick one playlist id from "
+    "the spotify_user_playlists result and call spotify_play_playlist now. Then reply in one "
+    "short sentence (e.g. which playlist you started)."
+)
+
+
+def prompt_is_vague_playlist_play_request(user_text: str) -> bool:
+    """True for requests like 'play one of my playlists' without naming a specific list."""
+    t = (user_text or "").strip()
+    if not t:
+        return False
+    if prompt_is_alternate_owned_playlist_play_request(t):
+        return False
+    return bool(_VAGUE_PLAYLIST_PLAY_RE.search(t))
+
+
+def prompt_is_alternate_owned_playlist_play_request(user_text: str) -> bool:
+    """True when the user wants another owned playlist (not the one now playing)."""
+    t = (user_text or "").strip()
+    if not t:
+        return False
+    return bool(_ALTERNATE_OWNED_PLAYLIST_RE.search(t))
+
+
+def turn_needs_vague_playlist_play_nudge(turn_tool_calls: list[tuple[str, str]]) -> bool:
+    """True when user_playlists ran this turn but no playback tool did."""
+    names = [name for name, _ in turn_tool_calls]
+    if "spotify_user_playlists" not in names:
+        return False
+    return not any(name in _OLLAMA_PLAYBACK_AFTER_LIST_TOOLS for name in names)
 
 
 def gemini_should_use_any_first_round(

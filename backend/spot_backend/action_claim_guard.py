@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 from spot_backend.playback_reply import prompt_asks_whats_playing
 
@@ -13,6 +14,10 @@ _PLAYBACK_TOOLS = frozenset(
     {
         "spotify_start_resume_playback",
         "spotify_play_playlist",
+        "spotify_play_artist",
+        "spotify_play_artist_popular_track",
+        "spotify_play_artist_latest_release",
+        "spotify_play_track",
         "spotify_play_next",
         "spotify_add_to_queue",
         "spotify_transfer_playback",
@@ -48,6 +53,8 @@ _CLAIM_RULES: list[tuple[re.Pattern[str], frozenset[str]]] = [
     (re.compile(r"\bnow playing\b", re.I), _PLAYBACK_TOOLS),
     (re.compile(r"\bplaying\b.+\b(?:top tracks|radio)\b", re.I), _PLAYBACK_TOOLS),
     (re.compile(r"^playing\b", re.I), _PLAYBACK_TOOLS),
+    (re.compile(r"\bplaying\s+['\"]", re.I), _PLAYBACK_TOOLS),
+    (re.compile(r"\b(?:I(?:'m| am)\s+)playing\s+[^.?!\n]{2,}", re.I), _PLAYBACK_TOOLS),
     (re.compile(r"\b(?:I(?:'ve| have)?\s+)?(?:started|starting) (?:playing|playback)\b", re.I), _PLAYBACK_TOOLS),
     (re.compile(r"\b(?:I(?:'m| am)\s+)?playing\b.+\b(?:on|in) your\b", re.I), _PLAYBACK_TOOLS),
     (re.compile(r"\b(?:I(?:'ve| have)?\s+)?paused(?: playback)?\b", re.I), _PAUSE_TOOLS),
@@ -93,6 +100,27 @@ _ACTION_CLAIM_REPROMPT = (
 _HONEST_FALLBACK = (
     "I wasn't able to run the Spotify action that turn, so I can't confirm anything changed. "
     "Please try again or rephrase the request."
+)
+
+_NUMERIC_FACTUAL_CLAIM_RE = re.compile(
+    r"(?:"
+    r"\b\d{1,4}\s+(?:studio\s+)?albums?\b"
+    r"|"
+    r"\bhas\s+\d{1,4}\s+albums?\b"
+    r"|"
+    r"\b\d{1,4}\s+studio\s+albums?\b"
+    r")",
+    re.I,
+)
+
+_CATALOG_COUNT_TOOLS = frozenset(
+    {
+        "spotify_artist_albums",
+    }
+)
+
+_NUMERIC_FACTUAL_FALLBACK = (
+    "I couldn't get that count from Spotify right now, so I don't have a reliable number."
 )
 
 _TOOL_SUMMARIZE_REPROMPT_PREFIX = (
@@ -164,6 +192,60 @@ def _playlist_list_backs_reply(user_text: str, successful_tools: set[str]) -> bo
         return False
     return _prompt_requests_user_playlists(user_text)
 
+
+def _reply_claims_playback_started(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    for pattern, required_any in _CLAIM_RULES:
+        if required_any is not _PLAYBACK_TOOLS:
+            continue
+        if pattern.search(stripped):
+            return True
+    return False
+
+
+def _catalog_count_backed_in_tool_result(tool_name: str, data: dict[str, Any]) -> bool:
+    if tool_name != "spotify_artist_albums":
+        return False
+    if isinstance(data.get("studio_album_count_deduped"), int):
+        return True
+    counts = data.get("discography_counts")
+    if isinstance(counts, dict) and isinstance(counts.get("albums"), int):
+        return True
+    return False
+
+
+def reply_contains_unbacked_numeric_factual_claim(
+    text: str,
+    turn_tool_calls: list[tuple[str, str]] | None,
+) -> bool:
+    stripped = (text or "").strip()
+    if not stripped or not turn_tool_calls:
+        return False
+    if not _NUMERIC_FACTUAL_CLAIM_RE.search(stripped):
+        return False
+    for name, raw in turn_tool_calls:
+        if name not in _CATALOG_COUNT_TOOLS:
+            continue
+        if not tool_result_succeeded(name, raw):
+            continue
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if isinstance(data, dict) and _catalog_count_backed_in_tool_result(name, data):
+            return False
+    attempted_catalog = [name for name, _ in turn_tool_calls if name in _CATALOG_COUNT_TOOLS]
+    if not attempted_catalog:
+        return False
+    return True
+
+
+def numeric_factual_claim_honest_fallback() -> str:
+    return _NUMERIC_FACTUAL_FALLBACK
+
+
 def tool_result_succeeded(tool_name: str, raw_result: str) -> bool:
     try:
         data = json.loads(raw_result)
@@ -185,19 +267,28 @@ def reply_claims_unbacked_action(
     successful_tools: set[str],
     *,
     user_text: str = "",
+    turn_tool_calls: list[tuple[str, str]] | None = None,
 ) -> bool:
     stripped = (text or "").strip()
     if not stripped:
         return False
     if prompt_asks_whats_playing(user_text) and successful_tools.intersection(_PLAYBACK_STATE_TOOLS):
         return False
-    if _prompt_requests_user_playlists(user_text) and successful_tools.intersection(_PLAYLIST_LIST_TOOLS):
+    if (
+        _prompt_requests_user_playlists(user_text)
+        and successful_tools.intersection(_PLAYLIST_LIST_TOOLS)
+        and not _reply_claims_playback_started(stripped)
+    ):
         return False
     for pattern, required_any in _CLAIM_RULES:
         if not pattern.search(stripped):
             continue
         if successful_tools.intersection(required_any):
             continue
+        if turn_tool_calls:
+            attempted = [name for name, raw in turn_tool_calls if name in required_any]
+            if attempted and all(not tool_result_succeeded(name, raw) for name, raw in turn_tool_calls if name in required_any):
+                return True
         if required_any is _PLAYBACK_TOOLS and _playback_state_backs_reply(
             user_text, successful_tools, stripped
         ):

@@ -309,7 +309,10 @@ def test_r11_item3_create_then_private_via_stream_conversation_id(
         runner = SpotifyToolRunner(settings=settings, conversation_id=conversation_id)
         if "create" in user_text.lower():
             name = "spotify_create_playlist"
-            args = {"name": "Mix"}
+            args = {
+                "name": "Mix",
+                "tracks": [{"uri": "spotify:track:aaaaaaaaaaaaaaaaaaaaaa"}],
+            }
             raw = runner.run(name, args)
             created = json.loads(raw)
             pid = created.get("id")

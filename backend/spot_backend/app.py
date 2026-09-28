@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import logging
 import urllib.parse
 from typing import Any, Literal
 
 import httpx
-from fastapi import FastAPI, HTTPException
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from spot_backend.agent import iter_chat_events, run_chat_turn
+from spot_backend.chat_request import ChatBody, dump_chat_history, format_validation_errors
 from spot_backend.chat_sse import sse_data
 from spot_backend.config import get_settings
 from spot_backend.llm_catalog import SECRET_KEY_BY_PROVIDER, catalog_for_api
@@ -32,7 +36,10 @@ from spot_backend.spotify_client import DEFAULT_SCOPES, SpotifyAuthError, Spotif
 from spot_backend.setup_service import probe_ollama, save_llm_setup, save_spotify_app, setup_status
 from spot_backend.token_store import DeviceSelection, clear_device, load_device, load_tokens, save_device
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Spot-AI-fy API")
+logger = logging.getLogger(__name__)
 
 SSE_KEEPALIVE_SECONDS = 12.0
 
@@ -49,25 +56,33 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(RequestValidationError)
+async def chat_request_validation_handler(
+    request: Request, exc: RequestValidationError
+) -> StreamingResponse | JSONResponse:
+    """Never leave chat clients with an empty failure — stream or JSON with a plain message."""
+    path = request.url.path
+    msg = format_validation_errors(list(exc.errors()))
+    if path == "/api/chat/stream":
+        logger.warning("chat_stream_request_validation_failed errors=%s", exc.errors()[:8])
+
+        async def error_stream():
+            yield sse_data({"type": "error", "message": msg})
+            yield sse_data({"type": "done"})
+
+        return StreamingResponse(
+            error_stream(),
+            media_type="text/event-stream; charset=utf-8",
+            status_code=200,
+        )
+    if path == "/api/chat":
+        logger.warning("chat_request_validation_failed errors=%s", exc.errors()[:8])
+        return JSONResponse(status_code=400, content={"detail": msg})
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
 class DeviceBody(BaseModel):
     device_id: str = Field(..., min_length=1)
-
-
-class ChatHistoryTurn(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str = Field(..., min_length=1, max_length=48_000)
-
-
-class ChatBody(BaseModel):
-    message: str = Field(..., min_length=1, max_length=48_000)
-    history: list[ChatHistoryTurn] | None = Field(default=None, max_length=48)
-    conversation_id: str | None = Field(default=None, max_length=128)
-
-
-def _dump_chat_history(body: ChatBody) -> list[dict[str, str]] | None:
-    if not body.history:
-        return None
-    return [{"role": t.role, "content": t.content} for t in body.history]
 
 
 LlmProviderLiteral = Literal["ollama", "gemini", "openai", "anthropic", "xai"]
@@ -364,7 +379,7 @@ def chat(body: ChatBody) -> dict[str, str]:
     active = read_effective_llm_provider(s.data_dir, s.llm_provider)
     ollama_model = read_effective_ollama_model(s.data_dir, s.ollama_model)
     gemini_model = read_effective_gemini_model(s.data_dir, s.gemini_model)
-    hist = _dump_chat_history(body)
+    hist = dump_chat_history(body)
     try:
         text = run_chat_turn(body.message, s, history=hist, conversation_id=body.conversation_id)
     except httpx.HTTPStatusError as e:
@@ -449,7 +464,7 @@ def chat_stream(body: ChatBody) -> StreamingResponse:
     import threading
 
     s = get_settings()
-    hist = _dump_chat_history(body)
+    hist = dump_chat_history(body)
 
     def event_gen():
         out_q: queue.Queue[dict[str, Any] | None] = queue.Queue()
@@ -463,6 +478,21 @@ def chat_stream(body: ChatBody) -> StreamingResponse:
                     conversation_id=body.conversation_id,
                 ):
                     out_q.put(ev)
+            except Exception as e:
+                logger.warning(
+                    "chat_stream_producer_error conversation_id=%s err=%s",
+                    body.conversation_id,
+                    e,
+                )
+                out_q.put(
+                    {
+                        "type": "error",
+                        "message": (
+                            "Something went wrong while handling that message. "
+                            "Please try again or start a new chat."
+                        ),
+                    }
+                )
             finally:
                 out_q.put(None)
 
@@ -480,7 +510,11 @@ def chat_stream(body: ChatBody) -> StreamingResponse:
         yield sse_data({"type": "done"})
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-    return StreamingResponse(event_gen(), media_type="text/event-stream", headers=headers)
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream; charset=utf-8",
+        headers=headers,
+    )
 
 
 @app.post("/api/llm/provider")

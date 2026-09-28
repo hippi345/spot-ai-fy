@@ -14,8 +14,10 @@ from spot_backend.action_claim_guard import (
     action_claim_honest_fallback,
     action_claim_reprompt,
     is_failure_boilerplate,
+    numeric_factual_claim_honest_fallback,
     record_successful_tool,
     reply_claims_unbacked_action,
+    reply_contains_unbacked_numeric_factual_claim,
     tool_summarize_reprompt,
     turn_tool_calls_all_succeeded,
 )
@@ -30,14 +32,25 @@ from spot_backend.deterministic_chat import gemini_deterministic_shortcut_reply
 from spot_backend.chat_tool_state import seed_runner_from_chat_history
 from spot_backend.gemini_nudge import should_send_gemini_tool_nudge
 from spot_backend.prompt_intent import (
+    OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE,
     gemini_declarations_for_prompt,
     gemini_should_use_any_first_round,
     informational_system_suffix,
+    prompt_is_capability_question,
     prompt_is_informational,
+    prompt_is_vague_playlist_play_request,
     refused_mutating_tool_result,
     spotify_tool_is_mutating,
+    turn_needs_vague_playlist_play_nudge,
 )
 from spot_backend.context_loader import load_optional_agent_context_markdown
+from spot_backend.agent_system_extras import shared_agent_system_suffix
+from spot_backend.gemini_history import (
+    gemini_part_for_history,
+    repair_gemini_contents,
+    validate_gemini_contents,
+)
+from spot_backend.llm_secret_safety import redact_known_api_keys
 from spot_backend.llm_catalog import DEFAULT_MODEL_BY_PROVIDER
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
 
@@ -71,6 +84,11 @@ def _gemini_post_with_retry(
         resp = client.post(url, params=params, json=json_body)
         last = resp
         if resp.status_code not in _GEMINI_RETRY_STATUSES:
+            if resp.status_code == 400:
+                logger.warning(
+                    "gemini_http_400 body=%s",
+                    redact_known_api_keys((resp.text or "")[:2000], [params.get("key", "")]),
+                )
             resp.raise_for_status()
             return resp
         # Honor an explicit Retry-After header when present; otherwise
@@ -104,7 +122,7 @@ _DEFAULT_GEMINI_MODEL = DEFAULT_MODEL_BY_PROVIDER["gemini"]
 _SYSTEM_FULL = """You are a Spotify assistant with tools to read the user's library and control playback.
 Rules:
 - Prefer tools over guessing Spotify IDs. Do not refuse or say you "cannot access" Spotify — call the tools.
-- For "how many albums does X have": call spotify_search (types including artist), then spotify_artist_albums with artists.items[0].id — or pass the artist's name as artist_id (the tool resolves names). Report totals from the API (paginate if next is set).
+- For "how many albums does X have": call spotify_search then spotify_artist_albums (include_groups=album). Quote studio_album_count_deduped as Spotify's studio-album count. If the tool errors, do not state a number.
 - For requests like "play John Mayer", search (artist/track), pick sensible results, then start playback with spotify:track: URIs or context_uri (spotify:album:…, spotify:playlist:…, spotify:artist:…).
 - Playlist edits: spotify_get_playlist / spotify_playlist_tracks to read; spotify_create_playlist + spotify_add_tracks_to_playlist to build; spotify_update_playlist, spotify_remove_playlist_tracks, spotify_reorder_playlist_tracks, spotify_replace_playlist_tracks, spotify_unfollow_playlist to change or remove from library. spotify_add_tracks_to_playlist needs playlist_id from spotify_user_playlists or spotify_create_playlist (not search/catalog). On 403, read hint and spotify_api_message; if explain_playlist_id_before_reconnect: true, lead with wrong playlist_id — not reconnect or ownership stories unless spotify_api_message explicitly says so.
 - Never tell the user to "reconnect Spotify" when tool JSON includes reconnect_spotify_unnecessary: true — wrong playlist_id or track payload, not OAuth. On spotify_add_tracks_to_playlist: if `reauth_may_resolve` is true, Spotify's message matched scope/token heuristics — sign-out/reconnect may help; quote spotify_api_message. If `sign_out_not_recommended` is true, do not suggest sign-out (fix id/tracks first). HTTP 401 always means re-authenticate. If spotify_create_playlist already returned `id` in this chat, add failures are usually not fixed by signing out unless reauth_may_resolve. Do not claim collaborative mode or verified ownership without tool proof.
@@ -138,7 +156,7 @@ Rules:
 - After tools return, give a short natural language summary for the user.
 - Never mention internal tool or function names (spotify_* identifiers) to the user — describe actions in plain language only.
 
-High-level natural language: infer the user's goal and run the right tool sequence yourself (no need to ask for technical ids first). Examples: "add John Mayer to my Workout playlist" → spotify_user_playlists to find Workout's id, spotify_search for tracks, spotify_add_tracks_to_playlist. "Create a chill mix with …" → spotify_create_playlist then search then add. "What's on my running list?" → user_playlists / get_playlist / playlist_tracks. "My liked songs" → spotify_user_saved_tracks. "My top artists / favorite artists / who do I listen to most" → spotify_top_artists. "My top songs / most played tracks" → spotify_top_tracks. "Artists I follow" → spotify_followed_artists. "Show me <user_id>'s playlists" → spotify_user_public_playlists. "Find me a playlist about <description>" → spotify_search_playlists, then optionally spotify_follow_playlist or spotify_play_playlist. "Copy <someone else's playlist> so I can edit it" → spotify_duplicate_playlist, then edit with spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks on the new id. "Most popular album" → search + get_album / artist_top_tracks and explain the metric. On tool errors, read detail/hint and retry with a corrected plan when possible.
+High-level natural language: infer the user's goal and run the right tool sequence yourself (no need to ask for technical ids first). Examples: "add John Mayer to my Workout playlist" → spotify_user_playlists to find Workout's id, spotify_search for tracks, spotify_add_tracks_to_playlist. "Create a chill mix with …" → spotify_create_playlist then search then add. "What's on my running list?" → user_playlists / get_playlist / playlist_tracks. "My liked songs" → spotify_user_saved_tracks. "My top artists / favorite artists / who do I listen to most" → spotify_top_artists. "My top songs / most played tracks" → spotify_top_tracks. "Artists I follow" → spotify_followed_artists. "Show me <user_id>'s playlists" → spotify_user_public_playlists. "Find me a playlist about <description>" → spotify_search_playlists, then optionally spotify_follow_playlist or spotify_play_playlist. "Copy <someone else's playlist> so I can edit it" → spotify_duplicate_playlist, then edit with spotify_add_tracks_to_playlist / spotify_remove_playlist_tracks on the new id. "Play their most popular song" / "biggest hit by X" → spotify_play_artist_popular_track. "Most popular album" → search + get_album and popularity fields. On tool errors, read detail/hint and retry with a corrected plan when possible.
 For create-then-add-then-play: playlist_id = create response `id` or `playlist_id_for_add_tracks`. Pass search results as `tracks` (array of tracks.items objects), or the whole search `tracks` object `{items: [...]}` — the server unwraps `items`. Start playback with context_uri `spotify:playlist:<id>`. On add failure: obey suggest_sign_out_of_spotify; if false, retry tools — never sign-out advice. Do not say "usually permissions." """
 
 
@@ -171,7 +189,7 @@ Tool routing (high-level intent → tool):
 
 KNOWN SPOTIFY API LIMITATIONS — the Web API does NOT expose: per-playlist or per-track play counts, "most listened playlist", listening history beyond ~50 recent items, your follower list (only spotify_me.followers.total count), users you follow (only artists, via spotify_followed_artists), another user's PRIVATE playlists, lookup of a user by display name (need user_id), or editing someone else's playlist (offer spotify_duplicate_playlist instead). When asked for any of these, respond in two parts: (1) one short sentence saying what is not exposed and why, (2) 2-3 specific tools you CAN call that are closest to the intent. Never just say "I can't" — always pair it with what you can do.
 
-DEV-MODE ENDPOINT GATES (Feb-2026 Spotify migration) — the app is in dev/non-Extended-Quota mode, so some endpoints ALWAYS return an error regardless of input. When a tool response includes `endpoint_gated_in_dev_mode: true` or `extended_quota_mode_required: true`, DO NOT retry with different arguments and DO NOT suggest sign-out. Explain the gate in one sentence and pivot to the alternatives the tool listed under `try_instead`. Specifically: (a) `spotify_user_public_playlists` (GET /users/{id}/playlists) is fully gated for every user_id — always pivot to `spotify_search_playlists` (search playlists by topic) or `spotify_user_playlists` (the signed-in user's own playlists); (b) `spotify_duplicate_playlist` is a COMPOSITE tool (not a native Spotify endpoint) that reads the source playlist's tracks, creates a new playlist owned by the signed-in user, and adds the tracks — it works fully for playlists the user OWNS. When the user says "copy X" or "duplicate my playlist X" for one of THEIR playlists, just call this tool with that id. Only copying someone ELSE's playlist (including ones they follow or that came out of `spotify_search_playlists`) returns `source_not_owned_by_user: true` with `endpoint_gated_in_dev_mode: true` because Spotify blocks reading other users' playlist tracks in dev mode; in that non-owned case only, pivot to `spotify_play_playlist` to play it in place, or rebuild from `spotify_search` + `spotify_create_playlist` + `spotify_add_tracks_to_playlist`. Never imply owned-playlist duplication is blocked; (c) `spotify_artist_albums` has a hard Spotify `limit` cap of 10 per call in dev mode — for a total album count, read `response.total` rather than paginating.
+DEV-MODE ENDPOINT GATES (Feb-2026 Spotify migration) — the app is in dev/non-Extended-Quota mode, so some endpoints ALWAYS return an error regardless of input. When a tool response includes `endpoint_gated_in_dev_mode: true` or `extended_quota_mode_required: true`, DO NOT retry with different arguments and DO NOT suggest sign-out. Explain the gate in one sentence and pivot to the alternatives the tool listed under `try_instead`. Specifically: (a) `spotify_user_public_playlists` (GET /users/{id}/playlists) is fully gated for every user_id — always pivot to `spotify_search_playlists` (search playlists by topic) or `spotify_user_playlists` (the signed-in user's own playlists); (b) `spotify_duplicate_playlist` is a COMPOSITE tool (not a native Spotify endpoint) that reads the source playlist's tracks, creates a new playlist owned by the signed-in user, and adds the tracks — it works fully for playlists the user OWNS. When the user says "copy X" or "duplicate my playlist X" for one of THEIR playlists, just call this tool with that id. Only copying someone ELSE's playlist (including ones they follow or that came out of `spotify_search_playlists`) returns `source_not_owned_by_user: true` with `endpoint_gated_in_dev_mode: true` because Spotify blocks reading other users' playlist tracks in dev mode; in that non-owned case only, pivot to `spotify_play_playlist` to play it in place, or rebuild from `spotify_search` + `spotify_create_playlist` + `spotify_add_tracks_to_playlist`. Never imply owned-playlist duplication is blocked; (c) `spotify_artist_albums` has a hard Spotify `limit` cap of 10 per call in dev mode — the tool paginates and returns studio_album_count_deduped; never call spotify_artist_top_tracks (removed — use spotify_play_artist_popular_track).
 
 After tools return, give a short natural-language answer for the user."""
 
@@ -332,17 +350,27 @@ def gemini_candidate_is_effectively_empty(cand: dict[str, Any]) -> bool:
 
 def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
     """Restrict ANY-mode tool calls for obvious single-intent control commands."""
-    from spot_backend.play_artist_intent import extract_play_artist_name
+    from spot_backend.play_bare_intent import extract_bare_play_target, extract_play_music_by_artist
+    from spot_backend.play_artist_popular_intent import (
+        prompt_requests_play_artist_popular_track,
+    )
     from spot_backend.play_track_intent import extract_play_track_request
 
     t = (user_text or "").strip().lower()
     if not t:
         return None
+    if prompt_is_capability_question(user_text):
+        return None
     if extract_play_track_request(user_text):
         return ["spotify_play_track"]
-    artist = extract_play_artist_name(user_text)
-    if artist:
+    if extract_play_music_by_artist(user_text):
         return ["spotify_play_artist"]
+    if extract_bare_play_target(user_text):
+        return ["spotify_play_track", "spotify_play_artist"]
+    if prompt_requests_play_artist_popular_track(user_text):
+        return ["spotify_play_artist_popular_track", "spotify_search"]
+    if re.search(r"\bhow\s+many\s+albums?\b", t) and not re.search(r"\bmy\b", t):
+        return ["spotify_search", "spotify_artist_albums"]
     if re.fullmatch(r"play\s*", t) or t in ("play", "resume"):
         return ["spotify_start_resume_playback"]
     if re.search(r"\bshuffle\s+(?:on|off)\b", t) or re.fullmatch(r"shuffle(?:\s+on)?", t):
@@ -367,6 +395,18 @@ def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
         t,
     ):
         return ["spotify_recently_played"]
+    if re.search(r"\b(?:latest|newest|most recent)\s+(?:single|release)\b", t):
+        return [
+            "spotify_play_artist_latest_release",
+            "spotify_artist_latest_album",
+            "spotify_search",
+        ]
+    if re.search(r"\b(?:his|her|their)\s+(?:latest|newest)\s+(?:single|release)\b", t):
+        return [
+            "spotify_play_artist_latest_release",
+            "spotify_artist_latest_album",
+            "spotify_search",
+        ]
     if re.search(r"\b(like this|save this|add to (my )?library)\b", t):
         return [
             "spotify_playback_state",
@@ -477,12 +517,14 @@ def run_chat_turn_gemini(
         runner,
         conversation_id=conversation_id,
         emit=emit,
+        settings=settings,
+        known_secrets=[key],
     )
     if shortcut_reply is not None:
         runner.close()
         return shortcut_reply
     informational_turn = prompt_is_informational(user_text)
-    full_system = _SYSTEM + load_optional_agent_context_markdown(settings)
+    full_system = _SYSTEM + shared_agent_system_suffix() + load_optional_agent_context_markdown(settings)
     if informational_turn:
         full_system = full_system + informational_system_suffix(user_text)
 
@@ -507,8 +549,9 @@ def run_chat_turn_gemini(
     turn_tool_calls: list[tuple[str, str]] = []
     promise_nudge_used = False
     tool_nudge_used = False
+    vague_playlist_nudge_used = False
     first_text_answer: str | None = None
-    empty_turn_retries = 3
+    empty_turn_retries = 1
     # Gemini 2.5-flash with our 40-tool catalog is *unreliable* in AUTO function-
     # calling mode — measured empty-content rate is 12/15 (80%) even with a
     # short system prompt. ANY mode forces the model to emit a tool call, which
@@ -539,6 +582,7 @@ def run_chat_turn_gemini(
                 decls = gemini_declarations_for_prompt(
                     declarations,
                     informational=informational_turn,
+                    user_text=user_text,
                 )
                 body: dict[str, Any] = {
                     "systemInstruction": {"parts": [{"text": full_system}]},
@@ -546,6 +590,16 @@ def run_chat_turn_gemini(
                     "generationConfig": _gemini_generation_config_for_model(model),
                 }
                 apply_gemini_function_calling_tools(body, decls=decls, fc_cfg=fc_cfg)
+                repaired = repair_gemini_contents(contents)
+                contents.clear()
+                contents.extend(repaired)
+                body["contents"] = contents
+                history_errors = validate_gemini_contents(contents)
+                if history_errors:
+                    logger.warning(
+                        "gemini_history_validation issues=%s",
+                        history_errors[:8],
+                    )
 
                 resp = _gemini_post_with_retry(client, url, params=params, json_body=body)
                 data = resp.json()
@@ -631,17 +685,13 @@ def run_chat_turn_gemini(
                         continue
                     is_thought = bool(part.get("thought"))
                     text_val = part.get("text") if "text" in part else None
-                    if isinstance(text_val, str):
-                        # Gemini 2.5 thinking models echo their reasoning as parts with
-                        # thought=true. Keep them in the model turn so Gemini can chain
-                        # reasoning across rounds, but DON'T treat them as the user-visible
-                        # final answer (else we'd surface raw chain-of-thought to the user).
-                        model_parts_out.append({"text": text_val})
-                        if not is_thought and text_val.strip():
-                            visible_text_chunks.append(text_val)
+                    preserved = gemini_part_for_history(part)
+                    if preserved:
+                        model_parts_out.append(preserved)
+                    if isinstance(text_val, str) and not is_thought and text_val.strip():
+                        visible_text_chunks.append(text_val)
                     fc = part.get("functionCall")
                     if isinstance(fc, dict) and fc.get("name"):
-                        model_parts_out.append({"functionCall": fc})
                         name = str(fc["name"])
                         raw_args = fc.get("args")
                         args: dict[str, Any] = {}
@@ -660,8 +710,43 @@ def run_chat_turn_gemini(
                             emit({"type": "tool_start", "name": name})
                         if informational_turn and spotify_tool_is_mutating(name):
                             result = refused_mutating_tool_result(name)
+                            from spot_backend.reply_tool_trace import (
+                                append_tool_trace_record,
+                                summarize_tool_args,
+                                tool_trace_outcome,
+                            )
+
+                            append_tool_trace_record(
+                                settings.data_dir,
+                                conversation_id=conversation_id,
+                                tool_name=name,
+                                args_summary=summarize_tool_args(args),
+                                outcome=tool_trace_outcome(result),
+                                known_secrets=[key],
+                                raw_result=result,
+                            )
                         else:
+                            import time as _time
+
+                            t0 = _time.perf_counter()
                             result = runner.run(name, args)
+                            duration_ms = int((_time.perf_counter() - t0) * 1000)
+                            from spot_backend.reply_tool_trace import (
+                                append_tool_trace_record,
+                                summarize_tool_args,
+                                tool_trace_outcome,
+                            )
+
+                            append_tool_trace_record(
+                                settings.data_dir,
+                                conversation_id=conversation_id,
+                                tool_name=name,
+                                args_summary=summarize_tool_args(args),
+                                outcome=tool_trace_outcome(result),
+                                duration_ms=duration_ms,
+                                known_secrets=[key],
+                                raw_result=result,
+                            )
                         turn_tool_calls.append((name, result))
                         last_tool_signature = sig
                         last_tool_result = result
@@ -680,10 +765,29 @@ def run_chat_turn_gemini(
                             }
                         )
 
-                if model_parts_out:
-                    contents.append({"role": "model", "parts": model_parts_out})
-
                 if fr_parts:
+                    if not model_parts_out:
+                        model_parts_out = [
+                            gemini_part_for_history(p)
+                            for p in parts
+                            if isinstance(p, dict) and p.get("functionCall")
+                        ]
+                        model_parts_out = [p for p in model_parts_out if p]
+                    if model_parts_out:
+                        contents.append({"role": "model", "parts": model_parts_out})
+                    else:
+                        logger.warning(
+                            "gemini_tool_round_missing_model_parts user_text=%s tools=%s",
+                            user_text[:120],
+                            [name for name, _ in turn_tool_calls],
+                        )
+                    if (
+                        not vague_playlist_nudge_used
+                        and prompt_is_vague_playlist_play_request(user_text)
+                        and turn_needs_vague_playlist_play_nudge(turn_tool_calls)
+                    ):
+                        vague_playlist_nudge_used = True
+                        fr_parts.append({"text": OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE})
                     contents.append({"role": "user", "parts": fr_parts})
                     had_tool_results = True
                     continue
@@ -697,7 +801,7 @@ def run_chat_turn_gemini(
                         and not promise_nudge_used
                     ):
                         promise_nudge_used = True
-                        contents.append({"role": "model", "parts": [{"text": joined}]})
+                        contents.append({"role": "model", "parts": model_parts_out or [{"text": joined}]})
                         contents.append(
                             {"role": "user", "parts": [{"text": PROMISE_AFTER_ID_ERROR_NUDGE}]}
                         )
@@ -705,7 +809,9 @@ def run_chat_turn_gemini(
                     if is_failure_boilerplate(joined) and turn_tool_calls_all_succeeded(turn_tool_calls):
                         if not tool_summarize_reprompted:
                             tool_summarize_reprompted = True
-                            contents.append({"role": "model", "parts": [{"text": joined}]})
+                            contents.append(
+                                {"role": "model", "parts": model_parts_out or [{"text": joined}]}
+                            )
                             contents.append(
                                 {
                                     "role": "user",
@@ -713,10 +819,17 @@ def run_chat_turn_gemini(
                                 }
                             )
                             continue
-                    if reply_claims_unbacked_action(joined, successful_tools, user_text=user_text):
+                    if reply_claims_unbacked_action(
+                        joined,
+                        successful_tools,
+                        user_text=user_text,
+                        turn_tool_calls=turn_tool_calls,
+                    ):
                         if not action_claim_reprompted:
                             action_claim_reprompted = True
-                            contents.append({"role": "model", "parts": [{"text": joined}]})
+                            contents.append(
+                                {"role": "model", "parts": model_parts_out or [{"text": joined}]}
+                            )
                             contents.append(
                                 {"role": "user", "parts": [{"text": action_claim_reprompt()}]}
                             )
@@ -726,7 +839,9 @@ def run_chat_turn_gemini(
                             and turn_tool_calls_all_succeeded(turn_tool_calls)
                         ):
                             tool_summarize_reprompted = True
-                            contents.append({"role": "model", "parts": [{"text": joined}]})
+                            contents.append(
+                                {"role": "model", "parts": model_parts_out or [{"text": joined}]}
+                            )
                             contents.append(
                                 {
                                     "role": "user",
@@ -735,6 +850,10 @@ def run_chat_turn_gemini(
                             )
                             continue
                         return action_claim_honest_fallback()
+                    if reply_contains_unbacked_numeric_factual_claim(
+                        joined, turn_tool_calls
+                    ):
+                        return numeric_factual_claim_honest_fallback()
                     if should_send_gemini_tool_nudge(
                         user_text=user_text,
                         had_tool_results=had_tool_results,
@@ -745,11 +864,15 @@ def run_chat_turn_gemini(
                         if first_text_answer is None:
                             first_text_answer = joined
                         tool_nudge_used = True
-                        contents.append({"role": "model", "parts": [{"text": joined}]})
+                        contents.append(
+                            {"role": "model", "parts": model_parts_out or [{"text": joined}]}
+                        )
                         contents.append({"role": "user", "parts": [{"text": _GEMINI_TOOL_NUDGE}]})
                         continue
                     if tool_nudge_used and first_text_answer and not had_tool_results:
                         return prepare_user_visible_reply(first_text_answer, tool_results)
+                    if model_parts_out:
+                        contents.append({"role": "model", "parts": model_parts_out})
                     return prepare_user_visible_reply(joined, tool_results)
 
                 # No visible text and no tool calls. Log everything we have so we can
@@ -796,6 +919,11 @@ def run_chat_turn_gemini(
             "Try a simpler or more specific request, or break it into smaller steps."
         )
     except httpx.HTTPStatusError as e:
+        if e.response.status_code == 400:
+            logger.warning(
+                "gemini_http_400_turn body=%s",
+                redact_known_api_keys((e.response.text or "")[:2000], [key]),
+            )
         return _gemini_friendly_error_message(e, model)
     except httpx.TimeoutException:
         return (
@@ -845,6 +973,11 @@ def _gemini_friendly_error_message(exc: httpx.HTTPStatusError, model: str) -> st
             "to this model). Please double-check GEMINI_API_KEY in backend/.env and restart the "
             "backend, or switch to Ollama in Settings if you don't have a working key handy."
         )
+    if code == 400:
+        return (
+            "Gemini rejected the chat history for this turn (malformed tool-call sequence). "
+            "Please start a new chat or try again — if it keeps happening, switch models in Settings."
+        )
     if 500 <= code < 600:
         return (
             f"Gemini is having a server-side issue right now. Please try again in a minute, "
@@ -880,6 +1013,19 @@ def iter_gemini_chat_events(
         )
         for ev in events:
             yield ev
-        yield {"type": "final", "text": text}
+        visible = (text or "").strip()
+        if not visible:
+            logger.warning("gemini_sse_empty_final user_text=%s", user_text[:120])
+            visible = (
+                "Something went wrong on that turn and I couldn't produce a reply. "
+                "Please try again or start a new chat."
+            )
+        yield {"type": "final", "text": visible}
     except Exception as e:
-        yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+        logger.warning("gemini_sse_turn_error err=%s user_text=%s", e, user_text[:120])
+        yield {
+            "type": "error",
+            "message": (
+                "Something went wrong while talking to Gemini. Please try again or start a new chat."
+            ),
+        }

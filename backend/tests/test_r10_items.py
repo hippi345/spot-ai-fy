@@ -99,7 +99,7 @@ def test_r10_item1_play_artist_uses_top_track_uris_not_playlist(
     outcome = try_deterministic_chat_reply(phrase, runner)
     runner.close()
     assert outcome is not None
-    assert outcome.tool_names() == ["spotify_play_artist"]
+    assert outcome.tool_names() == ["spotify_play_bare"]
     assert "spotify_play_playlist" not in outcome.tool_names()
     assert play_calls
     body = json.loads(play_calls[0].decode() or "{}")
@@ -299,7 +299,7 @@ def test_r10_item3_shortcut_tools_appear_in_sse_trace(
     events = _collect_sse_events(resp)
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
     assert len(tool_starts) == 1
-    assert tool_starts[0].get("name") == "spotify_play_artist"
+    assert tool_starts[0].get("name") == "spotify_play_bare"
     final = next(e for e in events if e.get("type") == "final")
     assert final.get("text")
 

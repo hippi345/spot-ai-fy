@@ -308,6 +308,21 @@ def _scrub_inline_code_span(match: re.Match[str]) -> str:
     return inner
 
 
+_HTTP_STATUS_SCRUB = re.compile(r"\bHTTP\s+\d{3}\b", re.I)
+_SPOTIFY_ID_SCRUB = re.compile(r"\b[0-9A-Za-z]{22}\b")
+_SEARCH_QUERY_ECHO_SCRUB = re.compile(
+    r"No tracks found for\s+['\"].+?['\"]",
+    re.I,
+)
+
+
+def scrub_user_visible_spotify_errors(text: str) -> str:
+    out = _HTTP_STATUS_SCRUB.sub("", text or "")
+    out = _SEARCH_QUERY_ECHO_SCRUB.sub("I couldn't find that on Spotify", out)
+    out = re.sub(r"\s{2,}", " ", out).strip()
+    return out
+
+
 def scrub_internal_tool_references(text: str) -> str:
     """Remove internal spotify_* tool names and function-call syntax from user-visible replies."""
     out = _CODE_SPAN_RE.sub(_scrub_inline_code_span, text or "")
@@ -357,10 +372,38 @@ def sanitize_raw_tool_json_in_reply(text: str) -> str:
     return text
 
 
+def collapse_duplicate_reply_text(text: str) -> str:
+    """Drop exact duplicate sentences or paragraphs while preserving first occurrence."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", raw) if p.strip()]
+    if not paragraphs:
+        return ""
+    seen_paras: set[str] = set()
+    kept_paras: list[str] = []
+    for para in paragraphs:
+        if para in seen_paras:
+            continue
+        seen_paras.add(para)
+        seen_sent: set[str] = set()
+        sent_parts: list[str] = []
+        for sentence in _split_sentences(para):
+            if sentence in seen_sent:
+                continue
+            seen_sent.add(sentence)
+            sent_parts.append(sentence)
+        if sent_parts:
+            kept_paras.append(_join_sentences(sent_parts))
+    return "\n\n".join(kept_paras).strip()
+
+
 def prepare_user_visible_reply(text: str, tool_results: list[str] | None = None) -> str:
     from spot_backend.reply_grounding import ground_reply_artist_credits
 
-    cleaned = scrub_internal_tool_references(text)
+    cleaned = collapse_duplicate_reply_text(text)
+    cleaned = scrub_internal_tool_references(cleaned)
+    cleaned = scrub_user_visible_spotify_errors(cleaned)
     cleaned = strip_internal_correction_leaks(cleaned)
     cleaned = sanitize_raw_tool_json_in_reply(cleaned)
     if tool_results:

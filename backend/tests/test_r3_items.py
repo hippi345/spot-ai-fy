@@ -72,14 +72,31 @@ def test_r3_item02_top_tracks_then_play_without_catalog_get(data_dir, signed_in_
             200,
             json={
                 "tracks": {
-                    "items": [{"id": track_id, "uri": f"spotify:track:{track_id}", "name": "Hit"}],
+                    "items": [
+                        {
+                            "id": track_id,
+                            "uri": f"spotify:track:{track_id}",
+                            "name": "Hit",
+                            "album": {"id": "aaaaaaaaaaaaaaaaaaaaaa"},
+                            "artists": [{"id": artist_id, "name": "Artist"}],
+                        }
+                    ],
                 }
             },
         )
     )
     mock_player_track_playing(track_id)
     runner = SpotifyToolRunner(settings=Settings())
-    runner.run("spotify_artist_top_tracks", {"artist_id": artist_id})
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(204)
+    )
+    runner.run(
+        "spotify_play_artist_popular_track",
+        {"artist_id": artist_id},
+    )
     assert track_id in runner._session_known_ids
     raw = runner.run("spotify_start_resume_playback", {"uris": [f"spotify:track:{track_id}"]})
     runner.close()
@@ -181,7 +198,7 @@ def test_r3_item05_create_playlist_visibility_warning_when_explicit_private_stil
         return_value=httpx.Response(200, json={"id": pid, "public": True, "name": "x"})
     )
     runner = SpotifyToolRunner(settings=Settings())
-    raw = runner.run("spotify_create_playlist", {"name": "Secret", "public": False})
+    raw = runner.run("spotify_create_playlist", {"name": "Secret", "public": False, "tracks": ["spotify:track:aaaaaaaaaaaaaaaaaaaaaa"]})
     runner.close()
     data = json.loads(raw)
     assert data.get("visibility_warning")
@@ -299,10 +316,12 @@ def test_r3_item12_save_this_album_from_playback(data_dir, signed_in_tokens) -> 
 
 # r3_item13 — top-tracks endpoint never called
 @respx.mock
-def test_r3_item13_artist_top_tracks_never_calls_removed_endpoint(
+def test_r3_item13_play_popular_track_never_calls_removed_endpoint(
     data_dir, signed_in_tokens,
 ) -> None:
     artist_id = "aaaaaaaaaaaaaaaaaaaaaa"
+    track_id = "cccccccccccccccccccccc"
+    album_id = "dddddddddddddddddddddd"
     removed = respx.get(f"https://api.spotify.com/v1/artists/{artist_id}/top-tracks").mock(
         return_value=httpx.Response(200, json={"tracks": []})
     )
@@ -310,10 +329,32 @@ def test_r3_item13_artist_top_tracks_never_calls_removed_endpoint(
         return_value=httpx.Response(200, json={"id": artist_id, "name": "A"})
     )
     respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(
-        return_value=httpx.Response(200, json={"tracks": {"items": []}})
+        return_value=httpx.Response(
+            200,
+            json={
+                "tracks": {
+                    "items": [
+                        {
+                            "id": track_id,
+                            "uri": f"spotify:track:{track_id}",
+                            "name": "Hit",
+                            "popularity": 80,
+                            "album": {"id": album_id, "uri": f"spotify:album:{album_id}"},
+                            "artists": [{"id": artist_id, "name": "A"}],
+                        }
+                    ],
+                }
+            },
+        )
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player.*").mock(
+        return_value=httpx.Response(204)
     )
     runner = SpotifyToolRunner(settings=Settings())
-    runner.run("spotify_artist_top_tracks", {"artist_id": artist_id})
+    runner.run("spotify_play_artist_popular_track", {"artist_id": artist_id})
     runner.close()
     assert not removed.called
 

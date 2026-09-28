@@ -1,6 +1,6 @@
 # Ollama smoke test (opt-in)
 
-This document describes the **automated** counterpart to the manual steps in [SMOKE_TEST.md](SMOKE_TEST.md) (prompts 1–7). It exercises the same `/api/chat/stream` agent loop as production, but with Spotify HTTP mocked (see `backend/tests/smoke_spotify_state.py`) and a **real** local Ollama model performing tool calls.
+This document describes the **automated** counterpart to the manual steps in [SMOKE_TEST.md](SMOKE_TEST.md) (prompts 1–7, plus extended agent-behavior scenarios 8–11). It exercises the same `/api/chat/stream` agent loop as production, but with Spotify HTTP mocked (see `backend/tests/smoke_spotify_state.py`) and a **real** local Ollama model performing tool calls.
 
 Deterministic chat shortcuts are disabled (`SPOT_AI_FY_DISABLE_DETERMINISTIC_CHAT=1`) so every prompt goes through the LLM tool loop—not the shortcut path used by the default mocked Gemini smoke test.
 
@@ -14,7 +14,7 @@ Deterministic chat shortcuts are disabled (`SPOT_AI_FY_DISABLE_DETERMINISTIC_CHA
 
 | Model tag | Approx size | RAM hint | Notes |
 |-----------|-------------|----------|--------|
-| `qwen2.5:3b` or `qwen2.5:3b-instruct` | ~2 GB | 8 GB+ system RAM | **Recommended CPU default** — passed 7/7 smoke prompts; native tool calls |
+| `qwen2.5:3b` or `qwen2.5:3b-instruct` | ~2 GB | 8 GB+ system RAM | **Recommended CPU default** — core smoke prompts 1–7 plus extended scenarios 8–11 |
 | `llama3.2:3b` | ~2 GB | 8 GB+ | Fallback if Qwen tag unavailable (smoke: 4/7) |
 | `qwen2.5:7b-instruct` | ~4.5 GB | 16 GB+ | Slower on CPU but fewer tool mistakes |
 
@@ -49,6 +49,15 @@ pytest backend/tests/test_ollama_smoke.py -m ollama_smoke -v -s
 Without `RUN_OLLAMA_SMOKE=1`, the test is **skipped** so normal `pytest backend/tests` and PR CI stay unchanged.
 
 Set `OLLAMA_SMOKE_STRICT=1` to fail pytest when any prompt misses expected tools, reply quality, or Spotify side effects (default is report-only).
+
+### Extended scenarios (8–11)
+
+| Step | Prompt | What we check |
+|------|--------|----------------|
+| 8 | Chat history about The Weeknd → `play his latest single` | Full `history` on the request; pronoun follow-up uses catalog/play tools |
+| 9 | `Can you play podcasts via this interface?` | Direct capability answer; **no** playback tool calls |
+| 10 | `play one of my playlists` | Picks one of the user's playlists and plays without extra questions |
+| 11 | `play Jamz` | Resolves an ambiguous playlist name and acts |
 
 ## CI
 
