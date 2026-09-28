@@ -432,15 +432,20 @@ def sanitize_raw_tool_json_in_reply(text: str) -> str:
 _NUMBERED_LIST_GLUE_RE = re.compile(r"(\S)\s+(\d{1,2}\.\s)")
 
 
+def _split_glued_numbered_items(line: str) -> str:
+    prev = None
+    out = line
+    while prev != out:
+        prev = out
+        out = _NUMBERED_LIST_GLUE_RE.sub(r"\1\n\2", out)
+    return out
+
+
 def fix_numbered_list_line_breaks(text: str) -> str:
-    """Ensure glued builder preview lines like '…artist 9. Track' break before each number."""
-    if not text or "\n" not in text and not re.search(r"\d+\.\s", text):
+    """Ensure glued builder preview lines like '…artist 9. Track 10. Other' break before each number."""
+    if not text or not re.search(r"\d{1,2}\.\s", text):
         return text
-    lines = (text or "").split("\n")
-    fixed: list[str] = []
-    for line in lines:
-        fixed.append(_NUMBERED_LIST_GLUE_RE.sub(r"\1\n\2", line))
-    return "\n".join(fixed)
+    return "\n".join(_split_glued_numbered_items(ln) for ln in (text or "").split("\n"))
 
 
 def collapse_duplicate_reply_text(text: str) -> str:
@@ -469,11 +474,17 @@ def collapse_duplicate_reply_text(text: str) -> str:
     return "\n\n".join(kept_paras).strip()
 
 
-def prepare_user_visible_reply(text: str, tool_results: list[str] | None = None) -> str:
+def prepare_user_visible_reply(
+    text: str,
+    tool_results: list[str] | None = None,
+    *,
+    tool_names: list[str] | None = None,
+    user_text: str = "",
+) -> str:
     from spot_backend.reply_grounding import ground_reply_artist_credits
+    from spot_backend.reply_tool_fallback import ensure_substantive_user_reply
 
     cleaned = collapse_duplicate_reply_text(text)
-    cleaned = fix_numbered_list_line_breaks(cleaned)
     cleaned = scrub_internal_tool_references(cleaned)
     cleaned = scrub_user_visible_spotify_errors(cleaned)
     cleaned = strip_internal_pagination_hints(cleaned)
@@ -483,6 +494,13 @@ def prepare_user_visible_reply(text: str, tool_results: list[str] | None = None)
         cleaned = ground_reply_artist_credits(cleaned, tool_results)
         cleaned = fix_playlist_visibility_contradictions(cleaned, tool_results)
         cleaned = append_visibility_notes_to_reply(cleaned, tool_results)
+    cleaned = fix_numbered_list_line_breaks(cleaned)
+    cleaned = ensure_substantive_user_reply(
+        cleaned,
+        tool_results,
+        tool_names=tool_names,
+        user_text=user_text,
+    )
     return cleaned
 
 

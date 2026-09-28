@@ -1117,6 +1117,7 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         self._last_session_playlist_id: str | None = None
         self._last_primary_artist_id: str | None = None
         self._last_show_search_id: str | None = None
+        self._session_show_catalog: list[dict[str, str]] = []
         self._last_playlist_search_query: str | None = None
         from spot_backend.library_mutation_store import load_last_library_mutation
 
@@ -1143,6 +1144,20 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             if isinstance(ids, list):
                 return [str(i) for i in ids if str(i).strip()]
         return []
+
+    def note_session_show(self, show_id: str, name: str) -> None:
+        sid = (show_id or "").strip()
+        label = (name or "").strip()
+        if not _looks_like_spotify_catalog_id(sid):
+            return
+        self._last_show_search_id = sid
+        self._session_known_ids.add(sid)
+        if label:
+            for row in self._session_show_catalog:
+                if row.get("id") == sid:
+                    row["name"] = label
+                    return
+            self._session_show_catalog.append({"id": sid, "name": label})
 
     def note_session_playlist_id(self, playlist_id: str) -> None:
         pid = (playlist_id or "").strip()
@@ -1949,10 +1964,10 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             if isinstance(shows, dict):
                 clean = shows.get("items") if isinstance(shows.get("items"), list) else []
                 if clean:
-                    first = clean[0]
-                    if isinstance(first, dict) and isinstance(first.get("id"), str):
-                        self._last_show_search_id = first["id"]
-                        self._session_known_ids.add(first["id"])
+                    for row in clean:
+                        if isinstance(row, dict) and isinstance(row.get("id"), str):
+                            show_name = row.get("name") if isinstance(row.get("name"), str) else ""
+                            self.note_session_show(row["id"], show_name or row["id"])
                 attach_show_search_summary(data)
         return _compact(data if isinstance(data, dict) else data)
 

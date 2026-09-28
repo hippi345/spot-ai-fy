@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -32,8 +33,14 @@ def summarize_tool_args(arguments: dict[str, Any] | None, *, max_len: int = 160)
         return "{}"
     safe: dict[str, Any] = {}
     for key, val in arguments.items():
-        k = str(key).lower()
-        if k in _SENSITIVE_ARG_KEYS:
+        k = str(key)
+        if k.startswith("_"):
+            if k == "_turn_user_text" and isinstance(val, str):
+                safe["_turn_user_text_len"] = len(val.strip())
+                safe["_turn_user_text_sha"] = hashlib.sha256(val.encode("utf-8")).hexdigest()[:12]
+            continue
+        k_low = k.lower()
+        if k_low in _SENSITIVE_ARG_KEYS:
             safe[key] = "<redacted>"
             continue
         if isinstance(val, str) and len(val) > 80:

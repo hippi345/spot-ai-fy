@@ -37,7 +37,11 @@ from spot_backend.gemini_history import (
 )
 from spot_backend.llm_secret_safety import redact_known_api_keys
 from spot_backend.llm_catalog import DEFAULT_MODEL_BY_PROVIDER
-from spot_backend.llm_tool_loop import ToolLoopState, finalize_assistant_text
+from spot_backend.llm_tool_loop import (
+    ToolLoopState,
+    finalize_assistant_text,
+    run_library_save_fallback_if_needed,
+)
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
 from spot_backend.tool_server_enforcement import enforce_tool_arguments_for_turn
 
@@ -808,6 +812,15 @@ def run_chat_turn_gemini(
                         fr_parts.append({"text": OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE})
                     contents.append({"role": "user", "parts": fr_parts})
                     had_tool_results = True
+                    run_library_save_fallback_if_needed(
+                        runner,
+                        loop_state,
+                        user_text=user_text,
+                        emit=emit,
+                        trace_data_dir=settings.data_dir,
+                        trace_conversation_id=conversation_id,
+                        trace_secrets=[key],
+                    )
                     from spot_backend.turn_reply_intent import try_deterministic_reply_after_tools
 
                     early = try_deterministic_reply_after_tools(
@@ -816,7 +829,12 @@ def run_chat_turn_gemini(
                         tool_results,
                     )
                     if early is not None:
-                        return prepare_user_visible_reply(early, tool_results)
+                        return prepare_user_visible_reply(
+                            early,
+                            tool_results,
+                            tool_names=[n for n, _ in turn_tool_calls],
+                            user_text=user_text,
+                        )
                     continue
 
                 joined = "\n".join(t for t in visible_text_chunks if isinstance(t, str) and t.strip()).strip()
