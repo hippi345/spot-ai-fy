@@ -35,6 +35,8 @@ The desktop app wraps the same React UI and FastAPI backend in an Electron shell
 
 3. **Spotify OAuth** opens in the **system browser** via the Connect link; the callback hits the loopback backend URL, then redirects back into the app.
 
+4. **Model & Spotify** settings (LLM, account, playback device) live in the **⚙ gear** button in the header (slide-over sheet), not on the main chat screen.
+
 Environment overrides:
 
 | Variable | Purpose |

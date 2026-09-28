@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -43,6 +47,21 @@ describe("NowPlayingBar", () => {
     await waitFor(() => {
       expect(screen.getByText("Nothing playing")).toBeInTheDocument();
     });
+  });
+
+  it("queue list is scroll-capped when expanded", async () => {
+    vi.mocked(np.fetchNowPlaying).mockResolvedValue({
+      ...np.MOCK_NOW_PLAYING_PLAYING,
+      fetched_at: Date.now() / 1000,
+    });
+    const { container } = render(<NowPlayingBar signedIn={true} />);
+    await waitFor(() => screen.getByText("Neon Harbor Lights"));
+    fireEvent.click(screen.getByRole("button", { name: /now playing/i }));
+    expect(container.querySelector(".np-bar-wrap--expanded .np-queue")).toBeTruthy();
+    const cssPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "../styles.css");
+    const css = readFileSync(cssPath, "utf8");
+    expect(css).toMatch(/\.np-queue[\s\S]*?max-height:\s*40vh/);
+    expect(css).toMatch(/\.np-queue[\s\S]*?overflow-y:\s*auto/);
   });
 
   it("expand/collapse queue on click and keyboard", async () => {

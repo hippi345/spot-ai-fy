@@ -2,6 +2,7 @@ import { apiFetch, readJson } from "./api";
 
 export type NowPlayingTrack = {
   id: string;
+  uri?: string;
   name: string;
   artists: string[];
   album: string;
@@ -10,10 +11,22 @@ export type NowPlayingTrack = {
 };
 
 export type NowPlayingQueueItem = {
+  uri?: string;
   name: string;
   artists: string[];
   art_url: string | null;
 };
+
+/** Drop only a leading queue row that duplicates the currently playing track URI. */
+export function filterUpNextQueue(
+  queue: NowPlayingQueueItem[],
+  currentUri: string | null | undefined,
+): NowPlayingQueueItem[] {
+  if (!queue.length || !currentUri?.trim()) return queue;
+  const first = queue[0]?.uri?.trim();
+  if (first && first === currentUri.trim()) return queue.slice(1);
+  return queue;
+}
 
 export type NowPlayingPayload = {
   is_playing: boolean;
@@ -32,7 +45,7 @@ export const MOCK_NOW_PLAYING_PLAYING: NowPlayingPayload = {
     name: "Neon Harbor Lights",
     artists: ["The Glass Foxes"],
     album: "Velvet Lanterns",
-    art_url: "https://placehold.co/64x64/1a2d22/1ed760/png?text=NP",
+    art_url: "https://placehold.co/512x512/e10600/f5f5f5/png?text=Blinding",
     duration_ms: 240_000,
   },
   progress_ms: 82_000,

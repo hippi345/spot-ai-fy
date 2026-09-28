@@ -8,7 +8,14 @@ import re
 from spot_backend.deterministic_chat_types import DeterministicChatResult
 from spot_backend.play_artist import format_play_artist_reply, play_artist_tool_step
 from spot_backend.play_artist_intent import extract_play_artist_name
-from spot_backend.playback_reply import format_now_playing_chat_reply, prompt_asks_whats_playing
+from spot_backend.play_track import format_play_track_chat_reply, play_track_tool_step
+from spot_backend.play_track_intent import extract_play_track_request
+from spot_backend.playback_reply import (
+    format_now_playing_chat_reply,
+    format_skip_reply,
+    prompt_asks_skip,
+    prompt_asks_whats_playing,
+)
 from spot_backend.prompt_intent import prompt_requests_recent_listening_history
 from spot_backend.queue_track_intent import extract_queue_track_request
 from spot_backend.spotify_tools import SpotifyToolRunner
@@ -152,6 +159,26 @@ def try_deterministic_chat_reply(
             state = {}
         player = state if isinstance(state, dict) else {}
         return DeterministicChatResult(format_now_playing_chat_reply(player), steps)
+
+    if prompt_asks_skip(t):
+        raw = _run_tool(runner, "spotify_skip_next", {}, steps)
+        data = _parse_tool_json(raw)
+        player = data.get("player_after")
+        skipped = bool(data.get("skipped"))
+        return DeterministicChatResult(
+            format_skip_reply(player if isinstance(player, dict) else None, skipped=skipped),
+            steps,
+        )
+
+    track_req = extract_play_track_request(t)
+    if track_req:
+        track_title, track_artist = track_req
+        name, args, raw = play_track_tool_step(runner, track_title, track_artist)
+        steps.append((name, args, raw))
+        return DeterministicChatResult(
+            format_play_track_chat_reply(track_title, track_artist, raw),
+            steps,
+        )
 
     artist_name = extract_play_artist_name(t)
     if artist_name:

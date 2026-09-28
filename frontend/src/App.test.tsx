@@ -85,7 +85,7 @@ describe("App setup wizard (item 6)", () => {
     expect(screen.queryByRole("dialog", { name: /first-time setup/i })).not.toBeInTheDocument();
   });
 
-  it("opens the wizard from the header Setup button", async () => {
+  it("opens the wizard from settings → Open setup wizard", async () => {
     mockSessionFetch(true);
     vi.spyOn(api, "fetchSetupStatus").mockResolvedValue(completeStatus());
 
@@ -95,7 +95,8 @@ describe("App setup wizard (item 6)", () => {
       expect(screen.queryByRole("dialog", { name: /first-time setup/i })).not.toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Setup" }));
+    fireEvent.click(screen.getByRole("button", { name: /Model and Spotify settings/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Open setup wizard" }));
 
     expect(screen.getByRole("dialog", { name: /first-time setup/i })).toBeInTheDocument();
   });

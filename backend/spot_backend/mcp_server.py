@@ -389,6 +389,21 @@ def spotify_play_artist(artist_name: str = "", artist_id: str = "", device_id: s
 
 
 @mcp.tool()
+def spotify_play_track(
+    track_name: str,
+    artist_name: str = "",
+    device_id: str = "",
+) -> str:
+    """Play a specific track by title and artist (PUT /me/player/play, not queue)."""
+    args: dict[str, Any] = {"track_name": track_name.strip()}
+    if artist_name.strip():
+        args["artist_name"] = artist_name.strip()
+    if device_id.strip():
+        args["device_id"] = device_id.strip()
+    return _runner.run("spotify_play_track", args)
+
+
+@mcp.tool()
 def spotify_play_playlist(
     playlist_id: str,
     device_id: str = "",

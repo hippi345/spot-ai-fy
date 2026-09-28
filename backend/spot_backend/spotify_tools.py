@@ -32,6 +32,16 @@ _UNWANTED_TRACK_VARIANT_RE = re.compile(
     re.I,
 )
 
+_REMIX_VARIANT_RE = re.compile(r"\b(remix|rework|edit|mix|version)\b", re.I)
+_FEAT_VARIANT_RE = re.compile(r"\b(feat\.?|ft\.?|with)\b", re.I)
+_LIVE_VARIANT_RE = re.compile(r"\b(live)\b", re.I)
+
+
+def _normalize_track_title(text: str) -> str:
+    t = (text or "").lower()
+    t = re.sub(r"[^\w\s]", " ", t)
+    return " ".join(t.split())
+
 
 def _slim_recently_played_payload(data: dict[str, Any]) -> dict[str, Any]:
     raw_items = data.get("items") if isinstance(data.get("items"), list) else []
@@ -74,26 +84,45 @@ def _score_track_search_candidate(
 ) -> int:
     name = str(track.get("name") or "")
     name_low = name.lower()
+    norm_name = _normalize_track_title(name)
     score = int(track.get("popularity") or 0)
     if _UNWANTED_TRACK_VARIANT_RE.search(name_low):
         score -= 120
-    title = want_title.strip().lower()
-    artist = want_artist.strip().lower()
-    if title and title in name_low:
-        score += 80
-    if title and name_low == title:
-        score += 40
+    title = want_title.strip()
+    artist = want_artist.strip()
+    title_low = title.lower()
+    artist_low = artist.lower()
+    norm_want = _normalize_track_title(title)
+    if norm_want and norm_name == norm_want:
+        score += 220
+    elif norm_want and norm_want in norm_name:
+        score += 90
+    elif title_low and title_low in name_low:
+        score += 70
+    if title_low and name_low == title_low:
+        score += 50
+    want_remix = bool(_REMIX_VARIANT_RE.search(title_low))
+    if _REMIX_VARIANT_RE.search(name_low) and not want_remix:
+        score -= 160
+    if _FEAT_VARIANT_RE.search(name_low) and not _FEAT_VARIANT_RE.search(title_low):
+        score -= 100
+    if _LIVE_VARIANT_RE.search(name_low) and "live" not in title_low:
+        score -= 90
     artists = track.get("artists") if isinstance(track.get("artists"), list) else []
     artist_names = [
         str(a.get("name") or "").lower()
         for a in artists
         if isinstance(a, dict)
     ]
-    if artist:
-        if any(an == artist for an in artist_names):
-            score += 100
-        elif any(artist in an for an in artist_names):
-            score += 40
+    if artist_low:
+        if artist_names and artist_names[0] == artist_low:
+            score += 140
+        elif any(an == artist_low for an in artist_names):
+            score += 110
+        elif any(artist_low in an for an in artist_names):
+            score += 45
+        if len(artist_names) > 1 and artist_names[0] != artist_low:
+            score -= 40
     return score
 
 
@@ -1358,6 +1387,8 @@ class SpotifyToolRunner:
                 return self._add_tracks_by_query(arguments)
             case "spotify_play_artist":
                 return self._play_artist(arguments)
+            case "spotify_play_track":
+                return self._play_track(arguments)
             case "spotify_play_playlist":
                 return self._play_playlist(arguments)
             case "spotify_devices":
@@ -1372,11 +1403,9 @@ class SpotifyToolRunner:
                 self.client.api_put("/me/player/pause")
                 return json.dumps({"ok": True})
             case "spotify_skip_next":
-                self.client.api_post("/me/player/next")
-                return json.dumps({"ok": True})
+                return self._skip_next(arguments)
             case "spotify_skip_previous":
-                self.client.api_post("/me/player/previous")
-                return json.dumps({"ok": True})
+                return self._skip_previous(arguments)
             case "spotify_add_to_queue":
                 return self._add_to_queue(arguments)
             case "spotify_play_next":
@@ -3751,14 +3780,14 @@ class SpotifyToolRunner:
             "offset": {"uri": uri},
         }
 
-    def _resolve_track_uri_for_queue(
+    def _resolve_track_for_queue(
         self,
         *,
         query: str = "",
         track_name: str = "",
         artist_name: str = "",
         market: str = "",
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, dict[str, Any] | None, str | None]:
         market = _normalize_market(market)
         q = (query or "").strip()
         if not q:
@@ -3768,7 +3797,7 @@ class SpotifyToolRunner:
             elif parts:
                 q = parts[0]
         if not q:
-            return None, "query or track_name is required"
+            return None, None, "query or track_name is required"
         data = self.client.api_get(
             "/search",
             params={"q": q, "type": "track", "market": market, "limit": 10},
@@ -3776,7 +3805,7 @@ class SpotifyToolRunner:
         tracks_obj = data.get("tracks") if isinstance(data, dict) else None
         items = tracks_obj.get("items") if isinstance(tracks_obj, dict) else None
         if not isinstance(items, list) or not items:
-            return None, f"No tracks found for {q!r}"
+            return None, None, f"No tracks found for {q!r}"
         best: dict[str, Any] | None = None
         best_score = -10_000
         for tr in items:
@@ -3791,14 +3820,30 @@ class SpotifyToolRunner:
                 best_score = score
                 best = tr
         if not best:
-            return None, f"No tracks found for {q!r}"
+            return None, None, f"No tracks found for {q!r}"
         uri = best.get("uri")
         if isinstance(uri, str) and uri.strip():
-            return uri.strip(), None
+            return uri.strip(), best, None
         tid = best.get("id")
         if isinstance(tid, str) and _looks_like_spotify_catalog_id(tid):
-            return f"spotify:track:{tid}", None
-        return None, "Search returned a track without a uri"
+            return f"spotify:track:{tid}", best, None
+        return None, best, "Search returned a track without a uri"
+
+    def _resolve_track_uri_for_queue(
+        self,
+        *,
+        query: str = "",
+        track_name: str = "",
+        artist_name: str = "",
+        market: str = "",
+    ) -> tuple[str | None, str | None]:
+        uri, _track, err = self._resolve_track_for_queue(
+            query=query,
+            track_name=track_name,
+            artist_name=artist_name,
+            market=market,
+        )
+        return uri, err
 
     def _rewrite_single_track_play_for_artist_context(
         self,
@@ -3974,9 +4019,9 @@ class SpotifyToolRunner:
             body["context_uri"] = context_uri.strip()
         if isinstance(offset, dict):
             body["offset"] = offset
-        if force_interrupt:
+        if force_interrupt and not arguments.get("skip_album_context"):
             body = self._coerce_body_to_album_offset(body)
-        else:
+        elif not force_interrupt:
             plain_resume = self._should_plain_resume(body)
             if plain_resume:
                 body = self._strip_redundant_resume_uris(body)
@@ -4485,9 +4530,6 @@ class SpotifyToolRunner:
                 self.client.api_put(pause_path)
             except httpx.HTTPStatusError:
                 pass
-        manual = prior.get("manual_queue_uris")
-        if isinstance(manual, list) and manual:
-            self._requeue_manual_uris([str(u) for u in manual if u], device_id)
         return body
 
     def _describe_requested_play(self, body: dict[str, Any], label_override: str = "") -> str:
@@ -4807,6 +4849,139 @@ class SpotifyToolRunner:
 
         summary["ok"] = True
         return _compact(summary)
+
+    def _track_uri_from_player(self, player: dict[str, Any] | None) -> str:
+        if not player or not isinstance(player, dict):
+            return ""
+        item = player.get("item") if isinstance(player.get("item"), dict) else None
+        if not item:
+            return ""
+        uri = item.get("uri")
+        return uri.strip() if isinstance(uri, str) else ""
+
+    def _poll_player_state(self, *, attempts: int = 8, delay_s: float = 0.35) -> dict[str, Any] | None:
+        for _ in range(max(1, attempts)):
+            try:
+                ps = self.client.api_get("/me/player")
+            except httpx.HTTPStatusError:
+                ps = None
+            if isinstance(ps, dict) and isinstance(ps.get("item"), dict):
+                return ps
+            time.sleep(delay_s)
+        return None
+
+    def _play_track(self, arguments: dict[str, Any]) -> str:
+        track_name = _pick_arg(arguments, "track_name", "title", "name")
+        artist_name = _pick_arg(arguments, "artist_name", "artist")
+        if not track_name.strip():
+            return json.dumps({"ok": False, "error": "track_name is required"})
+        uri, track_match, err = self._resolve_track_for_queue(
+            track_name=track_name,
+            artist_name=artist_name,
+        )
+        if err or not uri:
+            return json.dumps({"ok": False, "error": err or "Could not resolve track"})
+        device_id = _coerce_str(arguments.get("device_id"))
+        play_args_base: dict[str, Any] = {"force_interrupt": True}
+        if device_id:
+            play_args_base["device_id"] = device_id
+        album_body = (
+            self._album_offset_body_for_track(track_match, track_uri=uri)
+            if isinstance(track_match, dict)
+            else None
+        )
+        play_result: dict[str, Any] = {"ok": False}
+        if album_body:
+            play_raw = self._start_playback({**play_args_base, **album_body})
+            try:
+                play_result = json.loads(play_raw)
+            except (json.JSONDecodeError, ValueError):
+                play_result = {"ok": False}
+        verified = bool(
+            isinstance(play_result, dict) and play_result.get("playback_verified") is True
+        )
+        player = self._poll_player_state()
+        if player and self._track_uri_from_player(player) == uri:
+            verified = True
+        if not verified:
+            uris_args: dict[str, Any] = {
+                **play_args_base,
+                "uris": [uri],
+                "skip_album_context": True,
+            }
+            play_raw = self._start_playback(uris_args)
+            try:
+                play_result = json.loads(play_raw)
+            except (json.JSONDecodeError, ValueError):
+                play_result = {"ok": False}
+            player = self._poll_player_state()
+            verified = bool(
+                isinstance(play_result, dict) and play_result.get("playback_verified") is True
+            )
+            if player and self._track_uri_from_player(player) == uri:
+                verified = True
+        summary: dict[str, Any] = {
+            "ok": verified,
+            "playback_verified": verified,
+            "requested_track": track_name,
+            "requested_artist": artist_name,
+            "uri": uri,
+            "player_after": player,
+            "playback": play_result,
+        }
+        if not verified:
+            summary["error"] = "Playback did not switch to the requested track."
+        return _compact(summary)
+
+    def _skip_next(self, arguments: dict[str, Any]) -> str:
+        return self._skip_direction(arguments, direction="next")
+
+    def _skip_previous(self, arguments: dict[str, Any]) -> str:
+        return self._skip_direction(arguments, direction="previous")
+
+    def _skip_direction(self, arguments: dict[str, Any], *, direction: str) -> str:
+        before = self._current_playback_snapshot()
+        before_uri = (before.get("item_uri") or "").strip()
+        device_id = str(arguments.get("device_id", "")).strip() or self._device_id()
+        params: dict[str, str] = {}
+        if device_id:
+            params["device_id"] = device_id
+        path = "/me/player/next" if direction == "next" else "/me/player/previous"
+        try:
+            if params:
+                self.client.api_post(path, params=params)
+            else:
+                self.client.api_post(path)
+        except httpx.HTTPStatusError as exc:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "skipped": False,
+                    "error": _spotify_http_message(exc),
+                    "before_uri": before_uri,
+                },
+                ensure_ascii=False,
+            )
+        changed = False
+        player: dict[str, Any] | None = None
+        for _ in range(10):
+            time.sleep(0.35)
+            snap = self._current_playback_snapshot()
+            after_uri = (snap.get("item_uri") or "").strip()
+            if after_uri and after_uri != before_uri:
+                changed = True
+                player = self._poll_player_state(attempts=1, delay_s=0)
+                break
+        return json.dumps(
+            {
+                "ok": changed,
+                "skipped": changed,
+                "before_uri": before_uri,
+                "after_uri": self._track_uri_from_player(player) if player else "",
+                "player_after": player,
+            },
+            ensure_ascii=False,
+        )
 
     def _add_to_queue(self, arguments: dict[str, Any]) -> str:
         uri = str(arguments.get("uri", "")).strip()
@@ -5545,6 +5720,26 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["playlist_id", "query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_play_track",
+            "description": (
+                "PLAY NOW — start a specific track by title and primary artist using PUT /me/player/play "
+                "with a track URI (not the queue). Prefer this for 'play <song> by <artist>'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_name": {"type": "string", "description": "Song title (e.g. Blinding Lights)."},
+                    "artist_name": {"type": "string", "description": "Primary artist (e.g. The Weeknd)."},
+                    "device_id": {"type": "string"},
+                    "market": {"type": "string"},
+                },
+                "required": ["track_name", "artist_name"],
             },
         },
     },

@@ -1,4 +1,5 @@
 import { isDesktopShell } from "../lib/api";
+import { IconClose, IconMaximize, IconMinimize } from "./icons/AppIcons";
 
 export function DesktopTitleBar() {
   if (!isDesktopShell()) {
@@ -19,7 +20,7 @@ export function DesktopTitleBar() {
             aria-label="Minimize"
             onClick={() => api?.windowMinimize?.()}
           >
-            ─
+            <IconMinimize />
           </button>
           <button
             type="button"
@@ -27,7 +28,7 @@ export function DesktopTitleBar() {
             aria-label="Maximize"
             onClick={() => api?.windowToggleMaximize?.()}
           >
-            ▢
+            <IconMaximize />
           </button>
           <button
             type="button"
@@ -35,7 +36,7 @@ export function DesktopTitleBar() {
             aria-label="Close"
             onClick={() => api?.windowClose?.()}
           >
-            ✕
+            <IconClose />
           </button>
         </div>
       ) : null}

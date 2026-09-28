@@ -3,6 +3,7 @@ import { useCallback, useEffect, useImperativeHandle, useRef, useState, forwardR
 import {
   fetchNowPlaying,
   interpolateProgress,
+  filterUpNextQueue,
   pollIntervalMs,
   postPlayerNext,
   postPlayerPrevious,
@@ -10,6 +11,7 @@ import {
   type NowPlayingPayload,
 } from "../lib/nowPlaying";
 import { NP_ART_PLACEHOLDER } from "../lib/spotifyImage";
+import { IconNext, IconPause, IconPlay, IconPrevious } from "./icons/MediaControls";
 
 export type NowPlayingBarHandle = {
   refresh: () => Promise<void>;
@@ -17,6 +19,11 @@ export type NowPlayingBarHandle = {
 
 type Props = {
   signedIn: boolean;
+  onBackgroundArtChange?: (info: {
+    artUrl: string | null;
+    hasTrack: boolean;
+    isPlaying: boolean;
+  }) => void;
 };
 
 function artistLine(artists: string[]): string {
@@ -50,7 +57,7 @@ function ArtImg({
 }
 
 export const NowPlayingBar = forwardRef<NowPlayingBarHandle, Props>(function NowPlayingBar(
-  { signedIn },
+  { signedIn, onBackgroundArtChange },
   ref,
 ) {
   const [payload, setPayload] = useState<NowPlayingPayload | null>(null);
@@ -117,6 +124,19 @@ export const NowPlayingBar = forwardRef<NowPlayingBarHandle, Props>(function Now
     return () => window.clearInterval(id);
   }, [payload?.is_playing, payload?.fetched_at]);
 
+  useEffect(() => {
+    if (!signedIn) {
+      onBackgroundArtChange?.({ artUrl: null, hasTrack: false, isPlaying: false });
+      return;
+    }
+    const track = payload?.track ?? null;
+    onBackgroundArtChange?.({
+      artUrl: track?.art_url ?? null,
+      hasTrack: Boolean(track),
+      isPlaying: Boolean(payload?.is_playing),
+    });
+  }, [signedIn, payload?.track, payload?.is_playing, onBackgroundArtChange]);
+
   if (!signedIn) {
     return null;
   }
@@ -126,7 +146,7 @@ export const NowPlayingBar = forwardRef<NowPlayingBarHandle, Props>(function Now
   const progress = payload ? interpolateProgress(payload, tick) : 0;
   const duration = track?.duration_ms ?? 0;
   const pct = duration > 0 ? Math.min(100, (progress / duration) * 100) : 0;
-  const queue = payload?.queue ?? [];
+  const queue = filterUpNextQueue(payload?.queue ?? [], payload?.track?.uri);
 
   const toggleExpanded = () => setExpanded((v) => !v);
 
@@ -187,15 +207,15 @@ export const NowPlayingBar = forwardRef<NowPlayingBarHandle, Props>(function Now
             aria-label="Previous track"
             onClick={() => void runControl(postPlayerPrevious)}
           >
-            ⏮
+            <IconPrevious />
           </button>
           <button
             type="button"
-            className="np-btn"
+            className="np-btn np-btn--primary"
             aria-label={payload?.is_playing ? "Pause" : "Play"}
             onClick={() => void runControl(postPlayerToggle)}
           >
-            {payload?.is_playing ? "⏸" : "▶"}
+            {payload?.is_playing ? <IconPause /> : <IconPlay />}
           </button>
           <button
             type="button"
@@ -203,7 +223,7 @@ export const NowPlayingBar = forwardRef<NowPlayingBarHandle, Props>(function Now
             aria-label="Next track"
             onClick={() => void runControl(postPlayerNext)}
           >
-            ⏭
+            <IconNext />
           </button>
         </div>
       </div>

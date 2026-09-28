@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { DesktopTitleBar } from "./components/DesktopTitleBar";
+import { LiquidBackground } from "./components/LiquidBackground";
+import { ModelSpotifySettings } from "./components/ModelSpotifySettings";
 import { NowPlayingBar, type NowPlayingBarHandle } from "./components/NowPlayingBar";
+import { SettingsSheet } from "./components/SettingsSheet";
+import { IconClose, IconGear } from "./components/icons/AppIcons";
 import { nowPlayingUsesMock } from "./lib/nowPlaying";
 import { SetupWizard } from "./SetupWizard";
 import { fetchSetupStatus, type SetupStatus } from "./lib/api";
@@ -220,6 +224,10 @@ export function App() {
   const [setupComplete, setSetupComplete] = useState(false);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
   const [wizardAutoOpened, setWizardAutoOpened] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [bgArtUrl, setBgArtUrl] = useState<string | null>(null);
+  const [bgHasTrack, setBgHasTrack] = useState(false);
+  const [bgPlaying, setBgPlaying] = useState(false);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const [streamStalled, setStreamStalled] = useState(false);
   const streamIdleMs = 45_000;
@@ -641,6 +649,26 @@ export function App() {
     if (session?.signed_in) void refreshDevices();
 
   }, [session?.signed_in, refreshDevices]);
+
+  useEffect(() => {
+    if (!session?.signed_in) {
+      setBgArtUrl(null);
+      setBgHasTrack(false);
+      setBgPlaying(false);
+    }
+  }, [session?.signed_in]);
+
+  const backgroundIdle =
+    !session?.signed_in || !bgHasTrack;
+
+  const handleBackgroundArtChange = useCallback(
+    (info: { artUrl: string | null; hasTrack: boolean; isPlaying: boolean }) => {
+      setBgArtUrl(info.artUrl);
+      setBgHasTrack(info.hasTrack);
+      setBgPlaying(info.isPlaying);
+    },
+    [],
+  );
 
 
 
@@ -1128,11 +1156,11 @@ export function App() {
     return `${m}m ${s.toString().padStart(2, "0")}s`;
   };
 
-  const traceIcon = (step: TraceStep): string => {
-    if (step.status === "running") return "⟳";
-    if (step.kind === "tool") return "✓";
-    if (step.kind === "round") return "▸";
-    return "•";
+  const traceIcon = (step: TraceStep): "running" | "tool" | "round" | "dot" => {
+    if (step.status === "running") return "running";
+    if (step.kind === "tool") return "tool";
+    if (step.kind === "round") return "round";
+    return "dot";
   };
 
   const showTracePanel = sending && traceSteps.length > 0;
@@ -1151,13 +1179,52 @@ export function App() {
 
 
 
+  const settingsPanelProps = {
+    llm,
+    llmPick,
+    llmSaving,
+    ollamaModelSelect,
+    ollamaCustomModel,
+    geminiModelSelect,
+    geminiCustomModel,
+    ollamaModelApplyDisabled,
+    geminiModelApplyDisabled,
+    session,
+    deviceId,
+    deviceOptions,
+    loadingDevices,
+    onLlmPickChange: setLlmPick,
+    onApplyLlmProvider: () => void applyLlmProvider(),
+    onResetLlmProvider: () => void resetLlmProvider(),
+    onRefreshLlm: () => void refreshLlm(),
+    onOllamaModelSelectChange: setOllamaModelSelect,
+    onOllamaCustomModelChange: setOllamaCustomModel,
+    onApplyOllamaModel: () => void applyOllamaModel(),
+    onGeminiModelSelectChange: setGeminiModelSelect,
+    onGeminiCustomModelChange: setGeminiCustomModel,
+    onApplyGeminiModel: () => void applyGeminiModel(),
+    onOpenSetupWizard: () => {
+      setSettingsOpen(false);
+      setShowSetupWizard(true);
+    },
+    onLogout: () => void logout(),
+    onDeviceIdChange: setDeviceId,
+    onRefreshDevices: () => void refreshDevices(),
+    onSaveDevice: () => void saveDevice(),
+  };
+
   return (
 
-    <div className="app">
+    <>
+      <LiquidBackground idle={backgroundIdle} artUrl={bgArtUrl} paused={!bgPlaying} />
+
+      <div className="app-shell">
 
       <DesktopTitleBar />
 
-      <header className="app-header">
+      <div className="app">
+
+      <header className="app-header glass-panel">
 
         <div className="app-header-main">
 
@@ -1171,8 +1238,13 @@ export function App() {
           <p className="status-chips" aria-live="polite">
             {statusChips}
           </p>
-          <button type="button" className="header-setup-btn" onClick={() => setShowSetupWizard(true)}>
-            Setup
+          <button
+            type="button"
+            className="header-gear-btn secondary"
+            aria-label="Model and Spotify settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <IconGear className="header-gear-icon" />
           </button>
         </div>
 
@@ -1198,7 +1270,7 @@ export function App() {
 
           <button type="button" className="banner-dismiss" onClick={() => setBanner(null)} aria-label="Dismiss">
 
-            ×
+            <IconClose />
 
           </button>
 
@@ -1234,7 +1306,7 @@ export function App() {
       ) : null}
 
       <section
-        className={`panel chat-panel${setupComplete ? "" : " chat-panel--blocked"}`}
+        className={`panel glass-panel chat-panel${setupComplete ? "" : " chat-panel--blocked"}`}
         aria-labelledby="chat-heading"
       >
 
@@ -1256,6 +1328,8 @@ export function App() {
           </button>
 
         </div>
+
+        <div className="chat-panel-mid">
 
         <div
           className="messages"
@@ -1329,9 +1403,10 @@ export function App() {
                     key={step.id}
                     className={`trace-step trace-step--${step.kind} trace-step--${step.status}`}
                   >
-                    <span className="trace-step-icon" aria-hidden="true">
-                      {traceIcon(step)}
-                    </span>
+                    <span
+                      className={`trace-step-icon trace-step-icon--${traceIcon(step)}`}
+                      aria-hidden="true"
+                    />
                     <span className="trace-step-label">{step.label}</span>
                     <span className="trace-step-time">{formatElapsed(elapsed)}</span>
                     {showTraceDetail && step.detail ? (
@@ -1355,9 +1430,14 @@ export function App() {
           </div>
         ) : null}
 
+        </div>
+
+        <div className="chat-panel-foot">
+
         <NowPlayingBar
           ref={nowPlayingRef}
           signedIn={nowPlayingUsesMock() || Boolean(session?.signed_in)}
+          onBackgroundArtChange={handleBackgroundArtChange}
         />
 
         <textarea
@@ -1398,453 +1478,21 @@ export function App() {
 
         ) : null}
 
-      </section>
-
-
-
-      <details className="panel settings-disclosure">
-
-        <summary className="settings-summary">
-
-          <span className="settings-summary-title">Model &amp; Spotify</span>
-
-          <span className="settings-summary-hint">LLM, account, playback device</span>
-
-        </summary>
-
-
-
-        <div className="settings-body">
-
-          {llm ? (
-
-            <div className="settings-block">
-
-              <div className="settings-block-head">
-
-                <span className="badge">{llm.provider === "gemini" ? "Gemini" : "Ollama"}</span>
-
-                <span className={llm.reachable ? "badge ok" : "badge"}>{llm.reachable ? "OK" : "Issue"}</span>
-
-              </div>
-
-              <div className="control-row">
-
-                <label htmlFor="llm-backend" className="control-label">
-
-                  Backend
-
-                </label>
-
-                <select
-
-                  id="llm-backend"
-
-                  value={llmPick}
-
-                  onChange={(e) => setLlmPick(e.target.value === "gemini" ? "gemini" : "ollama")}
-
-                  disabled={llmSaving}
-
-                >
-
-                  <option value="ollama">Ollama (local)</option>
-
-                  <option value="gemini">Gemini (API key)</option>
-
-                </select>
-
-                <button
-
-                  type="button"
-
-                  onClick={() => void applyLlmProvider()}
-
-                  disabled={llmSaving || llmPick === (llm.provider === "gemini" ? "gemini" : "ollama")}
-
-                >
-
-                  Apply
-
-                </button>
-
-                <button
-
-                  type="button"
-
-                  className="secondary"
-
-                  onClick={() => void resetLlmProvider()}
-
-                  disabled={llmSaving || !llm.ui_override}
-
-                >
-
-                  Reset to .env
-
-                </button>
-
-                <button type="button" className="secondary" onClick={() => void refreshLlm()}>
-
-                  Refresh status
-
-                </button>
-
-              </div>
-
-              {llm.provider === "ollama" ? (
-
-                <div className="control-row wrap">
-
-                  <label htmlFor="ollama-model" className="control-label">
-
-                    Model
-
-                  </label>
-
-                  <select
-
-                    id="ollama-model"
-
-                    value={ollamaModelSelect}
-
-                    onChange={(e) => setOllamaModelSelect(e.target.value)}
-
-                    disabled={llmSaving}
-
-                  >
-
-                    <option value="__env__">From .env ({llm.env_ollama_model?.trim() || "OLLAMA_MODEL"})</option>
-
-                    {(llm.models ?? []).map((m) => (
-
-                      <option key={m} value={m}>
-
-                        {m}
-
-                      </option>
-
-                    ))}
-
-                    <option value="__custom__">Custom…</option>
-
-                  </select>
-
-                  {ollamaModelSelect === "__custom__" ? (
-
-                    <input
-
-                      type="text"
-
-                      value={ollamaCustomModel}
-
-                      onChange={(e) => setOllamaCustomModel(e.target.value)}
-
-                      placeholder="e.g. mistral:7b"
-
-                      disabled={llmSaving}
-
-                      className="control-input"
-
-                      aria-label="Custom Ollama model tag"
-
-                    />
-
-                  ) : null}
-
-                  <button type="button" onClick={() => void applyOllamaModel()} disabled={llmSaving || ollamaModelApplyDisabled}>
-
-                    Apply model
-
-                  </button>
-
-                </div>
-
-              ) : null}
-
-
-
-              {llm.provider === "gemini" ? (
-
-                <div className="control-row wrap">
-
-                  <label htmlFor="gemini-model" className="control-label">
-
-                    Model
-
-                  </label>
-
-                  <select
-
-                    id="gemini-model"
-
-                    value={geminiModelSelect}
-
-                    onChange={(e) => setGeminiModelSelect(e.target.value)}
-
-                    disabled={llmSaving || !llm.reachable}
-
-                  >
-
-                    <option value="__env__">From .env ({llm.env_gemini_model?.trim() || "GEMINI_MODEL"})</option>
-
-                    {(llm.models ?? []).map((m) => (
-
-                      <option key={m} value={m}>
-
-                        {m}
-
-                      </option>
-
-                    ))}
-
-                    <option value="__custom__">Custom…</option>
-
-                  </select>
-
-                  {geminiModelSelect === "__custom__" ? (
-
-                    <input
-
-                      type="text"
-
-                      value={geminiCustomModel}
-
-                      onChange={(e) => setGeminiCustomModel(e.target.value)}
-
-                      placeholder="e.g. gemini-2.5-pro"
-
-                      disabled={llmSaving}
-
-                      className="control-input"
-
-                      aria-label="Custom Gemini model name"
-
-                    />
-
-                  ) : null}
-
-                  <button type="button" onClick={() => void applyGeminiModel()} disabled={llmSaving || geminiModelApplyDisabled}>
-
-                    Apply model
-
-                  </button>
-
-                </div>
-
-              ) : null}
-
-              <p className="meta-line">
-
-                {llm.provider === "gemini" ? (
-
-                  <>
-
-                    <code>{llm.configured_model || "—"}</code>
-
-                    {llm.gemini_model_ui_override ? (
-
-                      <>
-
-                        {" "}
-
-                        · override (env <code>{llm.env_gemini_model || "—"}</code>)
-
-                      </>
-
-                    ) : null}
-
-                    {llm.ui_override ? (
-
-                      <>
-
-                        {" "}
-
-                        · UI override (env: <code>{llm.env_provider ?? "ollama"}</code>)
-
-                      </>
-
-                    ) : null}
-
-                  </>
-
-                ) : (
-
-                  <>
-
-                    <code>{llm.configured_host || "—"}</code> · <code>{llm.configured_model || "—"}</code>
-
-                    {llm.ollama_model_ui_override ? (
-
-                      <>
-
-                        {" "}
-
-                        · override (env <code>{llm.env_ollama_model || "—"}</code>)
-
-                      </>
-
-                    ) : null}
-
-                  </>
-
-                )}
-
-                {llm.reachable && llm.model_installed === false ? (
-
-                  <span className="meta-warn">
-
-                    {" "}
-
-                    — {llm.provider === "gemini" ? "Check GEMINI_MODEL." : `Try: ollama pull ${llm.configured_model || "qwen3:4b-instruct"}`}
-
-                  </span>
-
-                ) : null}
-
-              </p>
-
-              {!llm.reachable ? (
-
-                <p className="error tight">
-
-                  {llm.error ?? "Unreachable"}
-
-                  {llm.provider === "gemini" ? " Set GEMINI_API_KEY / LLM_PROVIDER in backend/.env." : " Start Ollama or set OLLAMA_HOST."}
-
-                </p>
-
-              ) : null}
-
-            </div>
-
-          ) : null}
-
-
-
-          <div className="settings-block">
-
-            <div className="settings-block-head">
-
-              <span className="badge">Setup</span>
-
-            </div>
-
-            <button type="button" onClick={() => setShowSetupWizard(true)}>
-
-              Open setup wizard
-
-            </button>
-
-          </div>
-
-
-
-          <div className="settings-block">
-
-            <div className="settings-block-head">
-
-              <span className="badge">Account</span>
-
-              <span className={session?.signed_in ? "badge ok" : "badge"}>
-
-                {session?.signed_in ? "Signed in" : "Not connected"}
-
-              </span>
-
-            </div>
-
-            <div className="control-row">
-
-              <a className="btn-link primary" href="/login">
-
-                Connect Spotify
-
-              </a>
-
-              <button type="button" className="secondary" onClick={() => void logout()} disabled={!session?.signed_in}>
-
-                Sign out
-
-              </button>
-
-            </div>
-            {session?.signed_in && session.spotify_playlist_write_ok === false ? (
-              <p className="scope-warn">
-                This login is missing <code>playlist-modify-*</code> on the token. Click <strong>Connect Spotify</strong>{" "}
-                again — the consent screen will open so you can approve all scopes.
-              </p>
-            ) : null}
-            {session?.signed_in && session.spotify_playlist_write_ok === null ? (
-              <p className="hint tight">
-                Use <strong>Connect Spotify</strong> once more to refresh this install (older logins did not save granted scopes).
-              </p>
-            ) : null}
-          </div>
-
-          <div className="settings-block">
-
-            <div className="settings-block-head">
-
-              <span className="badge">Device</span>
-
-            </div>
-
-            <div className="control-row wrap">
-
-              <label htmlFor="device" className="control-label">
-
-                Playback
-
-              </label>
-
-              <select
-
-                id="device"
-
-                value={deviceId}
-
-                onChange={(e) => setDeviceId(e.target.value)}
-
-                disabled={!session?.signed_in || loadingDevices}
-
-              >
-
-                {deviceOptions.map((o) => (
-
-                  <option key={o.value} value={o.value}>
-
-                    {o.label}
-
-                  </option>
-
-                ))}
-
-              </select>
-
-              <button type="button" className="secondary" onClick={() => void refreshDevices()} disabled={!session?.signed_in}>
-
-                Refresh
-
-              </button>
-
-              <button type="button" onClick={() => void saveDevice()} disabled={!session?.signed_in}>
-
-                Save
-
-              </button>
-
-            </div>
-
-            <p className="hint tight">Open Spotify on this machine so a Connect device appears. Playback uses the saved device.</p>
-
-          </div>
-
         </div>
 
-      </details>
+      </section>
 
-    </div>
+      <SettingsSheet
+        open={settingsOpen}
+        title="Model & Spotify"
+        onClose={() => setSettingsOpen(false)}
+      >
+        <ModelSpotifySettings {...settingsPanelProps} />
+      </SettingsSheet>
+
+      </div>
+      </div>
+    </>
 
   );
 

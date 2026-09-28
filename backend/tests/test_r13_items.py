@@ -59,7 +59,7 @@ def test_r13_item2_make_private_exactly_one_visibility_note() -> None:
 
 
 @respx.mock
-def test_r13_item3_restore_requeues_manual_queue_excludes_context_tracks(
+def test_r13_item3_restore_does_not_requeue_manual_queue(
     data_dir, signed_in_tokens,
 ) -> None:
     album_id = "aaaaaaaaaaaaaaaaaaaaaa"
@@ -136,7 +136,7 @@ def test_r13_item3_restore_requeues_manual_queue_excludes_context_tracks(
     runner = SpotifyToolRunner(settings=Settings())
     runner.run("spotify_play_artist", {"artist_name": "Radiohead"})
     runner.close()
-    assert queue_posts == [manual_a, manual_b]
+    assert queue_posts == []
 
 
 @respx.mock

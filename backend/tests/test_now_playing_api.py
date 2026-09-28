@@ -124,6 +124,30 @@ def test_now_playing_429_returns_stale(data_dir, signed_in_tokens) -> None:
 
 
 @respx.mock
+def test_now_playing_queue_drops_leading_current_track(data_dir, signed_in_tokens) -> None:
+    current = _track_payload("aaaaaaaaaaaaaaaaaaaaaa", "Sample River Song", "John Mayer")
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(200, json=_player_json(item=current))
+    )
+    respx.get("https://api.spotify.com/v1/me/player/queue").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "queue": [
+                    {"track": current},
+                    {"track": _track_payload("bbbbbbbbbbbbbbbbbbbbbb", "Gravity", "John Mayer")},
+                ]
+            },
+        )
+    )
+    client = TestClient(app)
+    body = client.get("/api/now-playing").json()
+    assert body["track"]["name"] == "Sample River Song"
+    assert len(body["queue"]) == 1
+    assert body["queue"][0]["name"] == "Gravity"
+
+
+@respx.mock
 def test_now_playing_queue_trimmed_to_ten(data_dir, signed_in_tokens) -> None:
     queue_items = [
         {"track": _track_payload(f"{i:022d}", f"Track {i}", "Artist")}
