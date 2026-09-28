@@ -14,6 +14,7 @@ _PLAYBACK_TOOLS = frozenset(
         "spotify_start_resume_playback",
         "spotify_play_playlist",
         "spotify_play_artist",
+        "spotify_play_artist_latest_release",
         "spotify_play_track",
         "spotify_play_next",
         "spotify_add_to_queue",

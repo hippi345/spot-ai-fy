@@ -194,6 +194,26 @@ def spotify_artist_latest_album(artist_id: str, include_groups: str = "album,sin
 
 
 @mcp.tool()
+def spotify_play_artist_latest_release(
+    artist_id: str = "",
+    artist_name: str = "",
+    kind: str = "single",
+    market: str = "",
+) -> str:
+    """Find newest released single/album for an artist and start playback."""
+    args: dict[str, str] = {}
+    if artist_id.strip():
+        args["artist_id"] = artist_id.strip()
+    if artist_name.strip():
+        args["artist_name"] = artist_name.strip()
+    if kind.strip():
+        args["kind"] = kind.strip()
+    if market.strip():
+        args["market"] = market.strip()
+    return _runner.run("spotify_play_artist_latest_release", args)
+
+
+@mcp.tool()
 def spotify_get_artist(artist_id: str, market: str = "") -> str:
     """Get artist profile (genres, popularity)."""
     args: dict = {"artist_id": artist_id}

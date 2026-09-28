@@ -363,6 +363,7 @@ _OLLAMA_PLAYBACK_AFTER_LIST_TOOLS = frozenset(
         "spotify_start_resume_playback",
         "spotify_play_track",
         "spotify_play_artist",
+        "spotify_play_artist_latest_release",
     }
 )
 

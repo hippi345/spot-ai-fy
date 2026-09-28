@@ -7,9 +7,9 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from spot_backend.agent import iter_chat_events, run_chat_turn
+from spot_backend.agent import _coerce_chat_history, iter_chat_events, run_chat_turn
 from spot_backend.chat_sse import sse_data
 from spot_backend.config import get_settings
 from spot_backend.llm_catalog import SECRET_KEY_BY_PROVIDER, catalog_for_api
@@ -62,6 +62,14 @@ class ChatBody(BaseModel):
     message: str = Field(..., min_length=1, max_length=48_000)
     history: list[ChatHistoryTurn] | None = Field(default=None, max_length=48)
     conversation_id: str | None = Field(default=None, max_length=128)
+
+    @field_validator("history", mode="before")
+    @classmethod
+    def _sanitize_history(cls, value: Any) -> Any:
+        if not value:
+            return value
+        coerced = _coerce_chat_history(value)
+        return coerced if coerced else None
 
 
 def _dump_chat_history(body: ChatBody) -> list[dict[str, str]] | None:
@@ -463,6 +471,23 @@ def chat_stream(body: ChatBody) -> StreamingResponse:
                     conversation_id=body.conversation_id,
                 ):
                     out_q.put(ev)
+            except Exception as e:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "chat_stream_producer_error conversation_id=%s err=%s",
+                    body.conversation_id,
+                    e,
+                )
+                out_q.put(
+                    {
+                        "type": "error",
+                        "message": (
+                            "Something went wrong while handling that message. "
+                            "Please try again or start a new chat."
+                        ),
+                    }
+                )
             finally:
                 out_q.put(None)
 

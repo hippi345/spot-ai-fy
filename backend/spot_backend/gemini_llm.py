@@ -43,7 +43,11 @@ from spot_backend.prompt_intent import (
 )
 from spot_backend.context_loader import load_optional_agent_context_markdown
 from spot_backend.agent_system_extras import shared_agent_system_suffix
-from spot_backend.gemini_history import gemini_part_for_history, validate_gemini_contents
+from spot_backend.gemini_history import (
+    gemini_part_for_history,
+    repair_gemini_contents,
+    validate_gemini_contents,
+)
 from spot_backend.llm_secret_safety import redact_known_api_keys
 from spot_backend.llm_catalog import DEFAULT_MODEL_BY_PROVIDER
 from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
@@ -79,7 +83,7 @@ def _gemini_post_with_retry(
         last = resp
         if resp.status_code not in _GEMINI_RETRY_STATUSES:
             if resp.status_code == 400:
-                logger.error(
+                logger.warning(
                     "gemini_http_400 body=%s",
                     redact_known_api_keys((resp.text or "")[:2000], [params.get("key", "")]),
                 )
@@ -381,6 +385,18 @@ def gemini_intent_allowed_function_names(user_text: str) -> list[str] | None:
         t,
     ):
         return ["spotify_recently_played"]
+    if re.search(r"\b(?:latest|newest|most recent)\s+(?:single|release)\b", t):
+        return [
+            "spotify_play_artist_latest_release",
+            "spotify_artist_latest_album",
+            "spotify_search",
+        ]
+    if re.search(r"\b(?:his|her|their)\s+(?:latest|newest)\s+(?:single|release)\b", t):
+        return [
+            "spotify_play_artist_latest_release",
+            "spotify_artist_latest_album",
+            "spotify_search",
+        ]
     if re.search(r"\b(like this|save this|add to (my )?library)\b", t):
         return [
             "spotify_playback_state",
@@ -564,6 +580,10 @@ def run_chat_turn_gemini(
                     "generationConfig": _gemini_generation_config_for_model(model),
                 }
                 apply_gemini_function_calling_tools(body, decls=decls, fc_cfg=fc_cfg)
+                repaired = repair_gemini_contents(contents)
+                contents.clear()
+                contents.extend(repaired)
+                body["contents"] = contents
                 history_errors = validate_gemini_contents(contents)
                 if history_errors:
                     logger.warning(
@@ -734,8 +754,21 @@ def run_chat_turn_gemini(
                         )
 
                 if fr_parts:
+                    if not model_parts_out:
+                        model_parts_out = [
+                            gemini_part_for_history(p)
+                            for p in parts
+                            if isinstance(p, dict) and p.get("functionCall")
+                        ]
+                        model_parts_out = [p for p in model_parts_out if p]
                     if model_parts_out:
                         contents.append({"role": "model", "parts": model_parts_out})
+                    else:
+                        logger.warning(
+                            "gemini_tool_round_missing_model_parts user_text=%s tools=%s",
+                            user_text[:120],
+                            [name for name, _ in turn_tool_calls],
+                        )
                     if (
                         not vague_playlist_nudge_used
                         and prompt_is_vague_playlist_play_request(user_text)
@@ -871,7 +904,7 @@ def run_chat_turn_gemini(
         )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
-            logger.error(
+            logger.warning(
                 "gemini_http_400_turn body=%s",
                 redact_known_api_keys((e.response.text or "")[:2000], [key]),
             )
@@ -964,6 +997,19 @@ def iter_gemini_chat_events(
         )
         for ev in events:
             yield ev
-        yield {"type": "final", "text": text}
+        visible = (text or "").strip()
+        if not visible:
+            logger.warning("gemini_sse_empty_final user_text=%s", user_text[:120])
+            visible = (
+                "Something went wrong on that turn and I couldn't produce a reply. "
+                "Please try again or start a new chat."
+            )
+        yield {"type": "final", "text": visible}
     except Exception as e:
-        yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+        logger.warning("gemini_sse_turn_error err=%s user_text=%s", e, user_text[:120])
+        yield {
+            "type": "error",
+            "message": (
+                "Something went wrong while talking to Gemini. Please try again or start a new chat."
+            ),
+        }

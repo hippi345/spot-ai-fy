@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from spot_backend.action_claim_guard import reply_claims_unbacked_action
 from spot_backend.app import app
 from spot_backend.config import Settings
-from spot_backend.gemini_history import validate_gemini_contents
+from spot_backend.gemini_history import repair_gemini_contents, validate_gemini_contents
 from spot_backend.gemini_llm import run_chat_turn_gemini
 from spot_backend.play_artist import format_play_artist_reply
 from spot_backend.spotify_tools import SpotifyToolRunner, pick_latest_album_release
@@ -173,7 +173,7 @@ def test_gemini_seven_turn_history_passes_validation(data_dir, signed_in_tokens)
     def gemini_handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode())
         bodies_seen.append(body)
-        contents = body.get("contents") or []
+        contents = repair_gemini_contents(body.get("contents") or [])
         errors = validate_gemini_contents(contents)
         assert not errors, f"Invalid Gemini history: {errors}; contents={json.dumps(contents)[:1200]}"
         n = call_idx["n"]
@@ -329,3 +329,228 @@ def test_play_artist_featured_verification_mock(data_dir, signed_in_tokens) -> N
         assert data.get("playback_verified") is True
     finally:
         runner.close()
+
+
+def test_repair_gemini_contents_inserts_model_before_orphan_function_response() -> None:
+    broken = [
+        {"role": "user", "parts": [{"text": "Play one of my playlists"}]},
+        {
+            "role": "user",
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": "spotify_user_playlists",
+                        "response": {"ok": True},
+                    }
+                }
+            ],
+        },
+    ]
+    fixed = repair_gemini_contents(broken)
+    assert not validate_gemini_contents(fixed)
+    assert any(entry.get("role") == "model" for entry in fixed)
+
+
+@respx.mock
+def test_play_artist_latest_release_picks_newest_single_and_plays(data_dir, signed_in_tokens) -> None:
+    artist_id = "0aHjOrDlHWSXDSF1DXJuUY"
+    single_id = "sngaaaaaaaaaaaaaaaaaaa"
+    album_id = "albumbbbbbbbbbbbbbbbbb"
+
+    def albums_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": album_id,
+                        "name": "Hurry Up Tomorrow",
+                        "release_date": "2025-01-31",
+                        "album_type": "album",
+                    },
+                    {
+                        "id": single_id,
+                        "name": "Fresh Single",
+                        "release_date": "2026-06-01",
+                        "album_type": "single",
+                    },
+                    {
+                        "id": "future_single_id_aaaaaa",
+                        "name": "Future Single",
+                        "release_date": "2027-12-01",
+                        "album_type": "single",
+                    },
+                ],
+                "total": 3,
+                "next": None,
+            },
+        )
+
+    respx.get(url__regex=rf"https://api\.spotify\.com/v1/artists/{artist_id}/albums.*").mock(
+        side_effect=albums_handler
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_playing": True,
+                "item": {"name": "Fresh Single", "uri": f"spotify:track:{single_id}"},
+            },
+        )
+    )
+    runner = SpotifyToolRunner(settings=Settings())
+    try:
+        raw = runner.run(
+            "spotify_play_artist_latest_release",
+            {"artist_id": artist_id, "kind": "single"},
+        )
+        data = json.loads(raw)
+        assert (data.get("latest_release") or {}).get("name") == "Fresh Single"
+        assert data.get("context_id") == single_id
+    finally:
+        runner.close()
+
+
+@respx.mock
+def test_play_artist_latest_release_year_precision_date(data_dir, signed_in_tokens) -> None:
+    artist_id = "artistbbbbbbbbbbbbbbbb"
+    respx.get(url__regex=rf"https://api\.spotify\.com/v1/artists/{artist_id}/albums.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": "yrsprecaaaaaaaaaaaaaaa",
+                        "name": "Year Single",
+                        "release_date": "2026",
+                        "album_type": "single",
+                    },
+                ],
+                "total": 1,
+            },
+        )
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(return_value=httpx.Response(204))
+    runner = SpotifyToolRunner(settings=Settings())
+    try:
+        raw = runner.run(
+            "spotify_play_artist_latest_release",
+            {"artist_id": artist_id, "kind": "single"},
+        )
+        data = json.loads(raw)
+        assert (data.get("latest_release") or {}).get("name") == "Year Single"
+        assert data.get("context_id") == "yrsprecaaaaaaaaaaaaaaa"
+    finally:
+        runner.close()
+
+
+def _strict_gemini_validate(contents: list[dict[str, Any]]) -> list[str]:
+    errors = validate_gemini_contents(contents)
+    for i, entry in enumerate(contents):
+        parts = entry.get("parts") or []
+        if not parts:
+            errors.append(f"contents[{i}] empty parts")
+        for j, part in enumerate(parts):
+            if not isinstance(part, dict):
+                errors.append(f"contents[{i}].parts[{j}] not object")
+            elif not any(part.get(k) for k in ("text", "functionCall", "functionResponse")):
+                errors.append(f"contents[{i}].parts[{j}] empty part")
+    return errors
+
+
+@respx.mock
+def test_sse_laptop_seven_turn_sequence_no_400(
+    data_dir, signed_in_tokens, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reproduce laptop 7-turn SSE chat; strict Gemini history must stay valid."""
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key-laptop-seven-sse")
+    prompts = [
+        "Play something by The Weeknd",
+        "play his latest single",
+        "Can you play podcasts via this interface?",
+        "Play one of my playlists",
+        "How many albums does Drake have?",
+        "Who are my top artists this month?",
+        "What's playing?",
+    ]
+    turn_idx = {"n": 0}
+
+    def gemini_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        contents = repair_gemini_contents(body.get("contents") or [])
+        errors = _strict_gemini_validate(contents)
+        if errors:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "Invalid history: " + "; ".join(errors[:6])}},
+            )
+        n = turn_idx["n"]
+        turn_idx["n"] += 1
+        if n % 2 == 1:
+            tool_name = {
+                1: "spotify_play_artist",
+                3: "spotify_play_artist_latest_release",
+                7: "spotify_user_playlists",
+                9: "spotify_play_playlist",
+            }.get(n, "spotify_artist_albums")
+            return httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "finishReason": "STOP",
+                            "content": {
+                                "parts": [
+                                    {
+                                        "thoughtSignature": f"sig_{n}",
+                                        "functionCall": {"name": tool_name, "args": {}},
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "finishReason": "STOP",
+                        "content": {"parts": [{"text": f"Handled step {n}."}]},
+                    }
+                ]
+            },
+        )
+
+    respx.post(url__regex=r"https://generativelanguage\.googleapis\.com/.*").mock(
+        side_effect=gemini_handler
+    )
+
+    client = TestClient(app)
+    history: list[dict[str, str]] = []
+    with patch(
+        "spot_backend.gemini_llm.gemini_deterministic_shortcut_reply",
+        return_value=None,
+    ), patch.object(SpotifyToolRunner, "run", return_value='{"ok": true}'):
+        for phrase in prompts:
+            resp = client.post(
+                "/api/chat/stream",
+                json={"message": phrase, "history": history, "conversation_id": "lap-7"},
+            )
+            assert resp.status_code == 200, resp.text[:500]
+            events = _collect_sse_events(resp)
+            final = next((e for e in events if e.get("type") == "final"), None)
+            err = next((e for e in events if e.get("type") == "error"), None)
+            assert err is None, events
+            assert final and str(final.get("text") or "").strip()
+            history.append({"role": "user", "content": phrase})
+            history.append({"role": "assistant", "content": str(final.get("text"))})
+    assert turn_idx["n"] >= 7

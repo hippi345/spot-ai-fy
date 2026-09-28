@@ -30,7 +30,7 @@ Vague or ambiguous library requests:
 
 Discography and latest release:
 - "How many albums does <artist> have?" → use spotify_artist_albums (discography_counts when present). Report studio albums separately from singles and compilations — never add singles into an "album" count.
-- "Latest single" / "newest release" for an artist → spotify_artist_albums with include_groups album,single (or spotify_artist_latest_album with prefer=single), pick the newest by release_date, then play with spotify_play_track or spotify_start_resume_playback.
+- "Latest single" / "newest release" / "play his latest single" → call spotify_play_artist_latest_release (kind=single) immediately. Do not ask the user to confirm. If no single exists, the tool plays the newest release of any type — say that in one short line.
 
 Top artists / top tracks:
 - When reporting spotify_top_artists or spotify_top_tracks, only describe the time window you actually passed: short_term ≈ last 4 weeks, medium_term ≈ last 6 months, long_term ≈ several years — do not invent a different range.

@@ -1337,6 +1337,8 @@ class SpotifyToolRunner:
                 return self._artist_albums(arguments)
             case "spotify_artist_latest_album":
                 return self._artist_latest_album(arguments)
+            case "spotify_play_artist_latest_release":
+                return self._play_artist_latest_release(arguments)
             case "spotify_get_artist":
                 return self._get_artist(arguments)
             case "spotify_artist_top_tracks":
@@ -1727,19 +1729,87 @@ class SpotifyToolRunner:
             )
         return _compact(page)
 
+    def _paginate_artist_album_items(
+        self,
+        canonical_id: str,
+        include_groups: str,
+        market: str,
+        *,
+        max_pages: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Collect artist album/single items across pages (Spotify does not sort by date)."""
+        limit = 10
+        offset = 0
+        collected: list[dict[str, Any]] = []
+        total: int | None = None
+        for _ in range(max_pages):
+            page = self.client.api_get(
+                f"/artists/{canonical_id}/albums",
+                params={
+                    "include_groups": include_groups,
+                    "limit": limit,
+                    "offset": offset,
+                    "market": market,
+                },
+            )
+            if not isinstance(page, dict):
+                break
+            if total is None and isinstance(page.get("total"), int):
+                total = page["total"]
+            batch = page.get("items")
+            if not isinstance(batch, list) or not batch:
+                break
+            collected.extend([it for it in batch if isinstance(it, dict)])
+            offset += len(batch)
+            if isinstance(total, int) and offset >= total:
+                break
+            if not page.get("next"):
+                break
+        return collected
+
+    def _pick_latest_artist_release(
+        self,
+        canonical_id: str,
+        *,
+        prefer: str,
+        market: str,
+        include_groups: str = "album,single",
+    ) -> tuple[dict[str, Any] | None, str]:
+        from datetime import date
+
+        today_key = _release_date_sort_key(date.today().isoformat())
+        prefer_norm = (prefer or "release").strip().lower()
+        pool = self._paginate_artist_album_items(canonical_id, include_groups, market)
+        if prefer_norm == "single":
+            singles = [it for it in pool if str(it.get("album_type") or "") == "single"]
+            if not singles:
+                singles = self._paginate_artist_album_items(canonical_id, "single", market)
+            latest = pick_latest_album_release(singles, on_or_before=today_key)
+            return latest, "single"
+        if prefer_norm == "album":
+            albums = [it for it in pool if str(it.get("album_type") or "") == "album"]
+            if not albums:
+                albums = self._paginate_artist_album_items(canonical_id, "album", market)
+            latest = pick_latest_album_release(albums, on_or_before=today_key)
+            return latest, "album"
+        combined = pool or self._paginate_artist_album_items(
+            canonical_id, include_groups or "album,single", market
+        )
+        latest = pick_latest_album_release(combined, on_or_before=today_key)
+        kind = str(latest.get("album_type") if latest else "release")
+        return latest, kind
+
     def _artist_latest_album(self, arguments: dict[str, Any]) -> str:
         from datetime import date
 
-        raw_id = _pick_arg(arguments, "artist_id", "artistId", "id")
+        raw_id = _pick_arg(arguments, "artist_id", "artistId", "id", "artist_name")
         artist_id = _normalize_spotify_id(raw_id, "artist")
         if not artist_id:
-            return json.dumps({"error": "artist_id is required"})
+            artist_id = _coerce_str(raw_id, "").strip()
         include_groups = _normalize_include_groups(
             _coerce_str(arguments.get("include_groups"), "album,single")
         )
         prefer = _coerce_str(arguments.get("prefer"), "album").strip().lower()
-        today_key = _release_date_sort_key(date.today().isoformat())
-        limit = _safe_int(arguments.get("limit"), 10, lo=1, hi=10)
         market = _normalize_market(_pick_arg(arguments, "market", "country"))
         canonical_id = self._canonical_artist_id(artist_id, market)
         if not canonical_id:
@@ -1751,45 +1821,12 @@ class SpotifyToolRunner:
                 }
             )
 
-        def _album_items(groups: str) -> list[Any]:
-            page = self.client.api_get(
-                f"/artists/{canonical_id}/albums",
-                params={
-                    "include_groups": groups,
-                    "limit": limit,
-                    "offset": 0,
-                    "market": market,
-                },
-            )
-            if isinstance(page, dict) and isinstance(page.get("items"), list):
-                return [it for it in page["items"] if isinstance(it, dict)]
-            return []
-
-        pool = _album_items(include_groups)
-        if prefer == "single":
-            singles = [it for it in pool if str(it.get("album_type") or "") == "single"]
-            if not singles:
-                singles = [
-                    it
-                    for it in _album_items("single")
-                    if str(it.get("album_type") or "single") == "single"
-                ]
-            latest = pick_latest_album_release(singles, on_or_before=today_key)
-            kind = "single"
-        elif prefer == "album":
-            albums = [it for it in pool if str(it.get("album_type") or "") == "album"]
-            if not albums:
-                albums = [
-                    it
-                    for it in _album_items("album")
-                    if str(it.get("album_type") or "album") == "album"
-                ]
-            latest = pick_latest_album_release(albums, on_or_before=today_key)
-            kind = "album"
-        else:
-            combined = _album_items(include_groups if include_groups else "album,single")
-            latest = pick_latest_album_release(combined, on_or_before=today_key)
-            kind = str(latest.get("album_type") if latest else "release")
+        latest, kind = self._pick_latest_artist_release(
+            canonical_id,
+            prefer=prefer,
+            market=market,
+            include_groups=include_groups,
+        )
         if not latest:
             return json.dumps({"error": "No releases found for this artist", "artist_id": canonical_id})
         return json.dumps(
@@ -1805,11 +1842,85 @@ class SpotifyToolRunner:
                 "reference_date_utc": date.today().isoformat(),
                 "assistant_guidance": (
                     "latest_release is the newest album or single already released (release_date <= today). "
-                    "Play it with spotify_play_playlist (album/single URI) or spotify_start_resume_playback."
+                    "For play requests call spotify_play_artist_latest_release instead of asking the user to confirm."
                 ),
             },
             ensure_ascii=False,
         )
+
+    def _play_artist_latest_release(self, arguments: dict[str, Any]) -> str:
+        from datetime import date
+
+        raw_id = _pick_arg(arguments, "artist_id", "artistId", "id", "artist_name")
+        artist_ref = _coerce_str(raw_id, "").strip()
+        kind = _coerce_str(arguments.get("kind"), "single").strip().lower()
+        if kind not in ("single", "album", "any"):
+            kind = "single"
+        market = _normalize_market(_pick_arg(arguments, "market", "country"))
+        norm_id = _normalize_spotify_id(artist_ref, "artist")
+        canonical_id = self._canonical_artist_id(norm_id or artist_ref, market)
+        if not canonical_id:
+            return json.dumps(
+                {
+                    "error": "Could not resolve artist to a Spotify catalog id",
+                    "hint": "Pass artist_id from spotify_search or a recognizable artist name.",
+                    "query_tried": artist_ref,
+                },
+                ensure_ascii=False,
+            )
+
+        prefer = "release" if kind == "any" else kind
+        latest, picked_kind = self._pick_latest_artist_release(
+            canonical_id,
+            prefer=prefer,
+            market=market,
+        )
+        if not latest and kind == "single":
+            latest, picked_kind = self._pick_latest_artist_release(
+                canonical_id,
+                prefer="release",
+                market=market,
+            )
+        if not latest:
+            return json.dumps(
+                {"error": "No released singles or albums found for this artist", "artist_id": canonical_id},
+                ensure_ascii=False,
+            )
+
+        album_id = latest.get("id")
+        if not isinstance(album_id, str) or not album_id.strip():
+            return json.dumps({"error": "Latest release is missing a catalog id", "latest_release": latest})
+
+        play_raw = self._play_playlist(
+            {
+                "playlist_id": f"spotify:album:{album_id.strip()}",
+                "market": market,
+                **{
+                    k: v
+                    for k, v in arguments.items()
+                    if k in ("device_id", "offset", "position_ms", "repeat", "shuffle")
+                },
+            }
+        )
+        try:
+            play_data = json.loads(play_raw)
+        except (json.JSONDecodeError, ValueError):
+            play_data = {"raw": play_raw}
+        if not isinstance(play_data, dict):
+            play_data = {"raw": play_raw}
+        play_data["latest_release"] = latest
+        play_data["release_kind"] = picked_kind
+        play_data["reference_date_utc"] = date.today().isoformat()
+        if kind == "single" and picked_kind != "single":
+            play_data["assistant_guidance"] = (
+                "No released single was found; played the newest release of any type instead."
+            )
+        elif play_data.get("ok"):
+            play_data["assistant_guidance"] = (
+                "Playback started for the newest released "
+                f"{picked_kind}. Reply in one short sentence — do not ask to confirm."
+            )
+        return json.dumps(play_data, ensure_ascii=False)
 
     def _get_artist(self, arguments: dict[str, Any]) -> str:
         raw = _pick_arg(arguments, "artist_id", "artistId", "id")
@@ -5305,15 +5416,35 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "spotify_artist_latest_album",
-            "description": "Newest album or single for an artist (by release_date). Use for 'latest album' questions.",
+            "description": "Newest album or single for an artist (by release_date). Lookup only — use spotify_play_artist_latest_release to play.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "artist_id": {"type": "string"},
                     "include_groups": {"type": "string"},
+                    "prefer": {"type": "string"},
                     "market": {"type": "string"},
                 },
                 "required": ["artist_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spotify_play_artist_latest_release",
+            "description": (
+                "Find the newest released single/album for an artist (paginated, release_date <= today) and start playback."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artist_id": {"type": "string"},
+                    "artist_name": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "market": {"type": "string"},
+                    "device_id": {"type": "string"},
+                },
             },
         },
     },
