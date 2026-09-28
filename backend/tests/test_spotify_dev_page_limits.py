@@ -89,11 +89,26 @@ def test_vague_playlist_shortcut_paginates_with_limit_10(data_dir, signed_in_tok
     respx.get(url__regex=r"https://api\.spotify\.com/v1/me/playlists.*").mock(
         side_effect=playlists_handler
     )
+    respx.get(url__regex=rf"https://api\.spotify\.com/v1/playlists/{owned_id}/items.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={"total": 3, "items": [{"track": {"id": "trk1", "name": "One"}}]},
+        )
+    )
+    respx.get(f"https://api.spotify.com/v1/playlists/{owned_id}").mock(
+        return_value=httpx.Response(200, json={"id": owned_id, "owner": {"id": me_id}})
+    )
     respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
         return_value=httpx.Response(204)
     )
     respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(200, json={"is_playing": True})
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_playing": True,
+                "context": {"uri": f"spotify:playlist:{owned_id}"},
+            },
+        )
     )
     respx.get("https://api.spotify.com/v1/me/player/devices").mock(
         return_value=httpx.Response(200, json={"devices": []})

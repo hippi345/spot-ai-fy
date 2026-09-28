@@ -111,6 +111,12 @@ def test_issue2_vague_playlist_skips_curated_and_retries_owned(data_dir, signed_
             },
         )
     )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/playlists/ownedpl000000000000001/items.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={"total": 2, "items": [{"track": {"id": "tr1", "name": "Song"}}]},
+        )
+    )
     respx.get(f"https://api.spotify.com/v1/playlists/{owned_id}").mock(
         return_value=httpx.Response(
             200,
@@ -131,7 +137,13 @@ def test_issue2_vague_playlist_skips_curated_and_retries_owned(data_dir, signed_
         side_effect=play_handler
     )
     respx.get("https://api.spotify.com/v1/me/player").mock(
-        return_value=httpx.Response(200, json={"is_playing": True})
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_playing": True,
+                "context": {"uri": f"spotify:playlist:{owned_id}"},
+            },
+        )
     )
     respx.get("https://api.spotify.com/v1/me/player/devices").mock(
         return_value=httpx.Response(200, json={"devices": []})

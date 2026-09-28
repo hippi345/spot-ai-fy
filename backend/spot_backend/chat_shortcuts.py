@@ -22,9 +22,14 @@ from spot_backend.playback_reply import (
     prompt_asks_skip,
     prompt_asks_whats_playing,
 )
+from spot_backend.library_mutation_store import (
+    load_played_playlist_ids,
+    record_played_playlist_id,
+)
 from spot_backend.playlist_pick import fetch_owned_playlist_candidates_paginated
 from spot_backend.spotify_dev_limits import SPOTIFY_DEV_MAX_PAGE
 from spot_backend.prompt_intent import (
+    prompt_is_alternate_owned_playlist_play_request,
     prompt_is_vague_playlist_play_request,
     prompt_requests_current_track_release,
     prompt_requests_recent_listening_history,
@@ -174,28 +179,52 @@ def try_deterministic_current_track_release_reply(
     )
 
 
-def try_deterministic_vague_playlist_reply(
-    user_text: str,
+def _try_owned_playlist_play_reply(
     runner: SpotifyToolRunner,
-) -> DeterministicChatResult | None:
-    if not prompt_is_vague_playlist_play_request(user_text):
-        return None
-    steps: list[tuple[str, dict, str]] = []
+    steps: list[tuple[str, dict, str]],
+    *,
+    conversation_id: str | None,
+    exclude_ids: set[str] | None = None,
+    exclude_current_context: bool = False,
+    offer_alternate: bool,
+    empty_message: str,
+    failure_message: str,
+) -> DeterministicChatResult:
     me_raw = _run_tool(runner, "spotify_me", {}, steps)
     me = _parse_tool_json(me_raw)
     me_id = me.get("id") if isinstance(me.get("id"), str) else ""
+    skip = set(exclude_ids or set())
+    skip.update(load_played_playlist_ids(conversation_id))
+    if exclude_current_context:
+        state_raw = _run_tool(runner, "spotify_playback_state", {}, steps)
+        state = _parse_tool_json(state_raw)
+        ctx = state.get("context") if isinstance(state.get("context"), dict) else {}
+        uri = ctx.get("uri") if isinstance(ctx.get("uri"), str) else ""
+        if uri.lower().startswith("spotify:playlist:"):
+            skip.add(uri.rsplit(":", 1)[-1].strip())
+    probe_cache: dict[str, bool] = {}
 
     def _fetch_pl(args: dict[str, int]) -> str:
         return _run_tool(runner, "spotify_user_playlists", args, steps)
 
-    candidates, _pl_steps = fetch_owned_playlist_candidates_paginated(_fetch_pl, me_id)
-    if not candidates:
-        return DeterministicChatResult(
-            "I couldn't find a playlist in your library that I can play from here.",
+    def _probe_items(playlist_id: str) -> str:
+        return _run_tool(
+            runner,
+            "spotify_playlist_tracks",
+            {"playlist_id": playlist_id, "limit": 1},
             steps,
         )
+
+    candidates, _pl_steps = fetch_owned_playlist_candidates_paginated(
+        _fetch_pl,
+        me_id,
+        exclude_ids=skip,
+        probe_cache=probe_cache,
+        run_probe=_probe_items,
+    )
+    if not candidates:
+        return DeterministicChatResult(empty_message, steps)
     attempts = min(3, len(candidates))
-    last_msg = "I couldn't start a playlist just now."
     for row in candidates[:attempts]:
         pid = row.get("id")
         pname = row.get("name") if isinstance(row.get("name"), str) else "your playlist"
@@ -210,10 +239,11 @@ def try_deterministic_vague_playlist_reply(
         play = _parse_tool_json(play_raw)
         verified = bool(play.get("playback_verified"))
         if play.get("ok") and verified:
+            record_played_playlist_id(conversation_id, pid)
             reply = format_playlist_play_chat_reply(
                 pname,
                 play_raw,
-                offer_alternate=True,
+                offer_alternate=offer_alternate,
             )
             return DeterministicChatResult(reply, steps)
         err_body = play.get("spotify_error_body_redacted")
@@ -223,10 +253,47 @@ def try_deterministic_vague_playlist_reply(
                 pid,
                 err_body[:400],
             )
-        last_msg = str(
-            play.get("user_message") or play.get("error") or last_msg
-        ).strip()
-    return DeterministicChatResult(last_msg, steps)
+    return DeterministicChatResult(failure_message, steps)
+
+
+def try_deterministic_vague_playlist_reply(
+    user_text: str,
+    runner: SpotifyToolRunner,
+    *,
+    conversation_id: str | None = None,
+) -> DeterministicChatResult | None:
+    if not prompt_is_vague_playlist_play_request(user_text):
+        return None
+    steps: list[tuple[str, dict, str]] = []
+    return _try_owned_playlist_play_reply(
+        runner,
+        steps,
+        conversation_id=conversation_id,
+        exclude_current_context=False,
+        offer_alternate=True,
+        empty_message="I couldn't find a playlist in your library that I can play from here.",
+        failure_message="I couldn't start a playlist just now.",
+    )
+
+
+def try_deterministic_alternate_playlist_reply(
+    user_text: str,
+    runner: SpotifyToolRunner,
+    *,
+    conversation_id: str | None = None,
+) -> DeterministicChatResult | None:
+    if not prompt_is_alternate_owned_playlist_play_request(user_text):
+        return None
+    steps: list[tuple[str, dict, str]] = []
+    return _try_owned_playlist_play_reply(
+        runner,
+        steps,
+        conversation_id=conversation_id,
+        exclude_current_context=True,
+        offer_alternate=True,
+        empty_message="I couldn't find another playlist in your library to play.",
+        failure_message="I couldn't switch to another playlist just now.",
+    )
 
 
 def try_deterministic_list_playlists_reply(
@@ -419,8 +486,21 @@ def try_deterministic_chat_reply(
             steps,
         )
 
+    if prompt_is_alternate_owned_playlist_play_request(t):
+        alt = try_deterministic_alternate_playlist_reply(
+            t,
+            runner,
+            conversation_id=conversation_id,
+        )
+        if alt is not None:
+            return alt
+
     if prompt_is_vague_playlist_play_request(t):
-        vague = try_deterministic_vague_playlist_reply(t, runner)
+        vague = try_deterministic_vague_playlist_reply(
+            t,
+            runner,
+            conversation_id=conversation_id,
+        )
         if vague is not None:
             return vague
 

@@ -152,8 +152,12 @@ def format_playlist_play_chat_reply(
     player = data.get("player_after")
     if not isinstance(player, dict):
         player = playback.get("player_after") if isinstance(playback.get("player_after"), dict) else None
-    line = format_verified_playback_line(player if isinstance(player, dict) else None, verified=verified)
-    if line:
+    if verified:
+        pl_label = (playlist_name or "").strip() or "your playlist"
+        if pl_label.lower().endswith(" playlist"):
+            line = f"Playing {pl_label}."
+        else:
+            line = f"Playing your {pl_label} playlist."
         if offer_alternate:
             return f"{line.rstrip('.')} — want a different one?"
         return line

@@ -16,9 +16,12 @@ from spot_backend.deterministic_chat import resolve_deterministic_chat_outcome
 from spot_backend.gemini_llm import run_chat_turn_gemini
 from spot_backend.playback_reply import format_skip_reply
 from spot_backend.reply_tool_trace import append_tool_trace_record, tool_trace_log_path
+from spot_backend.app import app
 from spot_backend.spotify_tools import SpotifyToolRunner
 from tests.recheck_helpers import make_gemini_post_recorder
+from tests.test_laptop_multiturn_shortcuts import _collect_sse_events
 from tests.test_play_track_selection import BLINDING_URI, _blinding_search_json
+from fastapi.testclient import TestClient
 from unittest.mock import patch
 
 YE_ARTIST_ID = "3TVXtAsR1Inumwj472S9r4"
@@ -116,11 +119,15 @@ def test_issue2_skips_empty_owned_playlist_and_retries(data_dir, signed_in_token
     respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
         side_effect=play_handler
     )
+    respx.get(f"https://api.spotify.com/v1/playlists/{good_id}").mock(
+        return_value=httpx.Response(200, json={"id": good_id, "owner": {"id": me_id}})
+    )
     respx.get("https://api.spotify.com/v1/me/player").mock(
         return_value=httpx.Response(
             200,
             json={
                 "is_playing": True,
+                "context": {"uri": f"spotify:playlist:{good_id}"},
                 "item": {"name": "Track A", "artists": [{"name": "Artist"}]},
             },
         )
@@ -134,7 +141,187 @@ def test_issue2_skips_empty_owned_playlist_and_retries(data_dir, signed_in_token
     runner.close()
     assert outcome is not None
     assert empty_id not in outcome.reply
-    assert "My Mix" in outcome.reply or "Track A" in outcome.reply
+    assert "My Mix" in outcome.reply
+    assert "playlist" in outcome.reply.lower()
+
+
+@respx.mock
+def test_issue2_skips_playlist_without_tracks_field_when_probe_empty(
+    data_dir, signed_in_tokens
+) -> None:
+    me_id = "user123456789012345678901"
+    empty_id = "0b6XBbGmm43kPseTVuSlnR"
+    good_id = "ownedpl000000000000002"
+    respx.get("https://api.spotify.com/v1/me").mock(
+        return_value=httpx.Response(200, json={"id": me_id})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/playlists.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": empty_id,
+                        "name": "My new playlist",
+                        "owner": {"id": me_id},
+                    },
+                    {
+                        "id": good_id,
+                        "name": "Jamz · My Artists",
+                        "owner": {"id": me_id},
+                        "items": {"total": 4},
+                    },
+                ]
+            },
+        )
+    )
+    respx.get(url__regex=rf"https://api\.spotify\.com/v1/playlists/{empty_id}/items.*").mock(
+        return_value=httpx.Response(200, json={"total": 0, "items": []})
+    )
+    respx.get(f"https://api.spotify.com/v1/playlists/{good_id}").mock(
+        return_value=httpx.Response(200, json={"id": good_id, "owner": {"id": me_id}})
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_playing": True,
+                "context": {"uri": f"spotify:playlist:{good_id}"},
+                "item": {"name": "Song", "artists": [{"name": "A"}]},
+            },
+        )
+    )
+    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
+        return_value=httpx.Response(200, json={"devices": []})
+    )
+    runner = SpotifyToolRunner(settings=Settings())
+    outcome = try_deterministic_chat_reply("Play one of my playlists", runner)
+    runner.close()
+    assert outcome is not None
+    assert empty_id not in str(outcome.tool_names())
+    assert "Jamz" in outcome.reply
+
+
+@respx.mock
+def test_issue2_skips_items_total_zero_without_play_attempt(data_dir, signed_in_tokens) -> None:
+    me_id = "user123456789012345678901"
+    empty_id = "emptypl00000000000001"
+    good_id = "ownedpl000000000000003"
+    play_calls: list[str] = []
+
+    def play_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode() or "{}")
+        play_calls.append(body.get("context_uri") or "")
+        return httpx.Response(204)
+
+    respx.get("https://api.spotify.com/v1/me").mock(
+        return_value=httpx.Response(200, json={"id": me_id})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/playlists.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": empty_id,
+                        "name": "Empty via items",
+                        "owner": {"id": me_id},
+                        "items": {"total": 0},
+                    },
+                    {
+                        "id": good_id,
+                        "name": "Has songs",
+                        "owner": {"id": me_id},
+                        "tracks": {"total": 3},
+                    },
+                ]
+            },
+        )
+    )
+    respx.get(f"https://api.spotify.com/v1/playlists/{good_id}").mock(
+        return_value=httpx.Response(200, json={"id": good_id, "owner": {"id": me_id}})
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        side_effect=play_handler
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_playing": True,
+                "context": {"uri": f"spotify:playlist:{good_id}"},
+                "item": {"name": "Song", "artists": [{"name": "A"}]},
+            },
+        )
+    )
+    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
+        return_value=httpx.Response(200, json={"devices": []})
+    )
+    runner = SpotifyToolRunner(settings=Settings())
+    outcome = try_deterministic_chat_reply("Play one of my playlists", runner)
+    runner.close()
+    assert outcome is not None
+    assert not any(empty_id in (c or "") for c in play_calls)
+    assert any(good_id in (c or "") for c in play_calls)
+
+
+@respx.mock
+def test_issue2_alternate_playlist_excludes_current_context(data_dir, signed_in_tokens) -> None:
+    me_id = "user123456789012345678901"
+    current_id = "currentpl00000000000001"
+    other_id = "otherpl000000000000001"
+    play_calls: list[str] = []
+    player_state = {
+        "is_playing": True,
+        "context": {"uri": f"spotify:playlist:{current_id}"},
+        "item": {"name": "On Current", "artists": [{"name": "A"}]},
+    }
+
+    respx.get("https://api.spotify.com/v1/me").mock(
+        return_value=httpx.Response(200, json={"id": me_id})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/playlists.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {"id": current_id, "name": "Current", "owner": {"id": me_id}, "tracks": {"total": 5}},
+                    {"id": other_id, "name": "Other Mix", "owner": {"id": me_id}, "tracks": {"total": 8}},
+                ]
+            },
+        )
+    )
+    respx.get(f"https://api.spotify.com/v1/playlists/{other_id}").mock(
+        return_value=httpx.Response(200, json={"id": other_id, "owner": {"id": me_id}})
+    )
+
+    def player_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=player_state)
+
+    respx.get("https://api.spotify.com/v1/me/player").mock(side_effect=player_handler)
+
+    def play_handler_update(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode() or "{}")
+        play_calls.append(body.get("context_uri") or "")
+        player_state["context"] = {"uri": f"spotify:playlist:{other_id}"}
+        player_state["item"] = {"name": "On Other", "artists": [{"name": "B"}]}
+        return httpx.Response(204)
+
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        side_effect=play_handler_update
+    )
+    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
+        return_value=httpx.Response(200, json={"devices": []})
+    )
+    runner = SpotifyToolRunner(settings=Settings())
+    outcome = try_deterministic_chat_reply("Actually, play a different playlist", runner)
+    runner.close()
+    assert outcome is not None
+    assert not any(current_id in (c or "") for c in play_calls)
+    assert "Other Mix" in outcome.reply
 
 
 @respx.mock
@@ -275,6 +462,104 @@ def test_issue4_play_ye_prefers_artist(data_dir, signed_in_tokens) -> None:
     assert outcome.tool_names()[0] == "spotify_play_bare"
     assert "YES IT IS" not in outcome.reply
     assert "Runaway" in outcome.reply or "Ye" in outcome.reply
+
+
+@respx.mock
+def test_issue4_play_ye_verifies_kanye_west_credits(data_dir, signed_in_tokens) -> None:
+    def search_handler(request: httpx.Request) -> httpx.Response:
+        qtype = request.url.params.get("type")
+        q = request.url.params.get("q") or ""
+        if qtype == "artist":
+            return httpx.Response(
+                200,
+                json={
+                    "artists": {
+                        "items": [
+                            {"id": YE_ARTIST_ID, "name": "Ye", "popularity": 85},
+                        ]
+                    }
+                },
+            )
+        if qtype == "track" and YE_ARTIST_ID in q:
+            return httpx.Response(
+                200,
+                json={
+                    "tracks": {
+                        "items": [
+                            {
+                                "name": "Runaway",
+                                "popularity": 80,
+                                "uri": "spotify:track:runaway000000000001",
+                                "album": {"id": "alb0000000000000000002"},
+                                "artists": [
+                                    {"id": YE_ARTIST_ID, "name": "Kanye West"},
+                                ],
+                            }
+                        ]
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "tracks": {
+                    "items": [
+                        {
+                            "name": "YES IT IS",
+                            "popularity": 60,
+                            "artists": [{"name": "Leon Thomas"}],
+                            "uri": f"spotify:track:{YE_TRACK_ID}",
+                            "album": {"id": "alb0000000000000000001"},
+                        }
+                    ]
+                }
+            },
+        )
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/search\?.*").mock(
+        side_effect=search_handler
+    )
+    respx.get(f"https://api.spotify.com/v1/artists/{YE_ARTIST_ID}").mock(
+        return_value=httpx.Response(200, json={"id": YE_ARTIST_ID, "name": "Ye"})
+    )
+    respx.get(f"https://api.spotify.com/v1/artists/{YE_ARTIST_ID}/albums").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+    respx.get(f"https://api.spotify.com/v1/albums/alb0000000000000000002/tracks").mock(
+        return_value=httpx.Response(
+            200,
+            json={"items": [{"uri": "spotify:track:runaway000000000001"}]},
+        )
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(204)
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_playing": True,
+                "item": {
+                    "name": "Runaway",
+                    "uri": "spotify:track:runaway000000000001",
+                    "artists": [
+                        {"id": YE_ARTIST_ID, "name": "Kanye West"},
+                    ],
+                },
+            },
+        )
+    )
+    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
+        return_value=httpx.Response(200, json={"devices": []})
+    )
+
+    runner = SpotifyToolRunner(settings=Settings())
+    outcome = try_deterministic_chat_reply("Play Ye", runner)
+    runner.close()
+    assert outcome is not None
+    assert outcome.tool_names()[0] == "spotify_play_bare"
+    assert "could not start playback" not in outcome.reply.lower()
+    assert "Runaway" in outcome.reply
 
 
 @respx.mock
@@ -560,3 +845,63 @@ def test_issue8_trace_includes_redacted_spotify_error_body(data_dir, signed_in_t
     row = json.loads(tool_trace_log_path(data_dir).read_text(encoding="utf-8").strip().splitlines()[-1])
     assert row.get("spotify_error_body_redacted")
     assert token not in row["spotify_error_body_redacted"]
+
+
+@respx.mock
+def test_issue8_sse_vague_playlist_trace_writes_redacted_error_on_disk(
+    data_dir, signed_in_tokens, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key-trace-playlist")
+    me_id = "user123456789012345678901"
+    pid = "ownedpl000000000000004"
+    respx.get("https://api.spotify.com/v1/me").mock(
+        return_value=httpx.Response(200, json={"id": me_id})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/playlists.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": pid,
+                        "name": "Trace Playlist",
+                        "owner": {"id": me_id},
+                        "tracks": {"total": 2},
+                    },
+                ]
+            },
+        )
+    )
+    respx.get(f"https://api.spotify.com/v1/playlists/{pid}").mock(
+        return_value=httpx.Response(200, json={"id": pid, "owner": {"id": me_id}})
+    )
+    respx.put(url__regex=r"https://api\.spotify\.com/v1/me/player/play.*").mock(
+        return_value=httpx.Response(
+            403,
+            json={"error": {"message": "Restriction violated", "status": 403}},
+        )
+    )
+    respx.get("https://api.spotify.com/v1/me/player").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    respx.get("https://api.spotify.com/v1/me/player/devices").mock(
+        return_value=httpx.Response(200, json={"devices": [{"id": "d1", "is_active": True}]})
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/api/chat/stream",
+        json={"message": "Play one of my playlists", "conversation_id": "trace-vague-pl"},
+    )
+    assert resp.status_code == 200
+    path = tool_trace_log_path(data_dir)
+    assert path.is_file()
+    rows = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    play_rows = [r for r in rows if r.get("tool") == "spotify_play_playlist"]
+    assert play_rows
+    err_row = play_rows[-1]
+    assert err_row.get("outcome") == "error"
+    body = err_row.get("spotify_error_body_redacted") or ""
+    assert body
+    assert "test-access-token" not in body
+    assert "Restriction" in body or "403" in body

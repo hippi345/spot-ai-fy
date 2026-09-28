@@ -39,11 +39,58 @@ def playlist_row_track_total_or_zero(row: dict[str, Any]) -> int:
     return total if isinstance(total, int) else 0
 
 
-def playlist_row_has_tracks(row: dict[str, Any]) -> bool:
+def _probe_playlist_has_tracks(
+    playlist_id: str,
+    probe_cache: dict[str, bool],
+    run_probe: Callable[[str], str],
+) -> bool:
+    """GET /playlists/{id}/items?limit=1 — cached per request."""
+    pid = (playlist_id or "").strip()
+    if not pid:
+        return False
+    if pid in probe_cache:
+        return probe_cache[pid]
+    raw = run_probe(pid)
+    has_tracks = False
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        probe_cache[pid] = False
+        return False
+    if isinstance(data, dict):
+        if data.get("error"):
+            probe_cache[pid] = False
+            return False
+        total = data.get("total")
+        if isinstance(total, int):
+            has_tracks = total > 0
+        else:
+            items = data.get("items")
+            has_tracks = isinstance(items, list) and any(
+                isinstance(row, dict) for row in items
+            )
+    probe_cache[pid] = has_tracks
+    return has_tracks
+
+
+def playlist_row_has_tracks(
+    row: dict[str, Any],
+    *,
+    probe_cache: dict[str, bool] | None = None,
+    run_probe: Callable[[str], str] | None = None,
+) -> bool:
     total = playlist_row_track_total(row)
-    if total is None:
-        return True
-    return total > 0
+    if total is not None:
+        return total > 0
+    pid = row.get("id")
+    if (
+        isinstance(pid, str)
+        and pid.strip()
+        and probe_cache is not None
+        and run_probe is not None
+    ):
+        return _probe_playlist_has_tracks(pid, probe_cache, run_probe)
+    return False
 
 
 def playlist_row_playable_owned(row: dict[str, Any], me_id: str) -> bool:
@@ -71,13 +118,22 @@ def playlist_row_playable_owned(row: dict[str, Any], me_id: str) -> bool:
 def owned_playlist_candidates(
     items: list[Any],
     me_id: str,
+    *,
+    exclude_ids: set[str] | frozenset[str] | None = None,
+    probe_cache: dict[str, bool] | None = None,
+    run_probe: Callable[[str], str] | None = None,
 ) -> list[dict[str, Any]]:
+    skip = {x.strip() for x in (exclude_ids or frozenset()) if str(x).strip()}
     out: list[dict[str, Any]] = []
     for row in items:
+        if not isinstance(row, dict):
+            continue
+        pid = row.get("id")
+        if isinstance(pid, str) and pid.strip() in skip:
+            continue
         if (
-            isinstance(row, dict)
-            and playlist_row_playable_owned(row, me_id)
-            and playlist_row_has_tracks(row)
+            playlist_row_playable_owned(row, me_id)
+            and playlist_row_has_tracks(row, probe_cache=probe_cache, run_probe=run_probe)
         ):
             out.append(row)
     return out
@@ -89,6 +145,9 @@ def fetch_owned_playlist_candidates_paginated(
     *,
     max_pages: int = SPOTIFY_DEV_MAX_PAGINATION_PAGES,
     page_size: int = SPOTIFY_DEV_MAX_PAGE,
+    exclude_ids: set[str] | frozenset[str] | None = None,
+    probe_cache: dict[str, bool] | None = None,
+    run_probe: Callable[[str], str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, dict[str, int], str]]]:
     """Page GET /me/playlists with dev-mode limit until enough owned rows or cap."""
     owned: list[dict[str, Any]] = []
@@ -107,7 +166,15 @@ def fetch_owned_playlist_candidates_paginated(
         if data.get("error") and not data.get("items"):
             break
         items = data.get("items") if isinstance(data.get("items"), list) else []
-        owned.extend(owned_playlist_candidates(items, me_id))
+        owned.extend(
+            owned_playlist_candidates(
+                items,
+                me_id,
+                exclude_ids=exclude_ids,
+                probe_cache=probe_cache,
+                run_probe=run_probe,
+            )
+        )
         if owned:
             return owned, steps
         # Keep paging when the only owned rows on this page were empty playlists.

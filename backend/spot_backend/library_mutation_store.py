@@ -6,6 +6,7 @@ from typing import Any
 
 _store: dict[str, dict[str, Any]] = {}
 _playlist_id_store: dict[str, str] = {}
+_played_playlist_ids_store: dict[str, list[str]] = {}
 
 
 def _key(conversation_id: str | None) -> str | None:
@@ -61,9 +62,30 @@ def load_last_playlist_id(conversation_id: str | None) -> str | None:
     return pid if isinstance(pid, str) and pid.strip() else None
 
 
+def record_played_playlist_id(conversation_id: str | None, playlist_id: str) -> None:
+    key = _key(conversation_id)
+    pid = (playlist_id or "").strip()
+    if key is None or not pid:
+        return
+    seen = _played_playlist_ids_store.setdefault(key, [])
+    if pid not in seen:
+        seen.append(pid)
+
+
+def load_played_playlist_ids(conversation_id: str | None) -> list[str]:
+    key = _key(conversation_id)
+    if key is None:
+        return []
+    rows = _played_playlist_ids_store.get(key)
+    if not isinstance(rows, list):
+        return []
+    return [str(r).strip() for r in rows if str(r).strip()]
+
+
 def clear_session(conversation_id: str | None) -> None:
     """Test helper — drop stored mutation for a conversation key."""
     key = _key(conversation_id)
     if key is not None:
         _store.pop(key, None)
         _playlist_id_store.pop(key, None)
+        _played_playlist_ids_store.pop(key, None)

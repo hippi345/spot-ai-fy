@@ -397,6 +397,19 @@ _VAGUE_PLAYLIST_PLAY_RE = re.compile(
     re.I,
 )
 
+_ALTERNATE_OWNED_PLAYLIST_RE = re.compile(
+    r"(?:"
+    r"\b(?:actually,?\s+)?play\s+(?:a\s+)?different\s+playlist\b"
+    r"|"
+    r"\banother\s+playlist\b"
+    r"|"
+    r"\ba\s+different\s+one\b"
+    r"|"
+    r"\bsomething\s+else\s+from\s+my\s+playlists?\b"
+    r")",
+    re.I,
+)
+
 _OLLAMA_PLAYBACK_AFTER_LIST_TOOLS = frozenset(
     {
         "spotify_play_playlist",
@@ -420,7 +433,17 @@ def prompt_is_vague_playlist_play_request(user_text: str) -> bool:
     t = (user_text or "").strip()
     if not t:
         return False
+    if prompt_is_alternate_owned_playlist_play_request(t):
+        return False
     return bool(_VAGUE_PLAYLIST_PLAY_RE.search(t))
+
+
+def prompt_is_alternate_owned_playlist_play_request(user_text: str) -> bool:
+    """True when the user wants another owned playlist (not the one now playing)."""
+    t = (user_text or "").strip()
+    if not t:
+        return False
+    return bool(_ALTERNATE_OWNED_PLAYLIST_RE.search(t))
 
 
 def turn_needs_vague_playlist_play_nudge(turn_tool_calls: list[tuple[str, str]]) -> bool:

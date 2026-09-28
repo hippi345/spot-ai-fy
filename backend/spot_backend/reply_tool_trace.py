@@ -63,17 +63,18 @@ def tool_trace_outcome(raw_result: str) -> str:
         return "error"
     if data.get("ok") is False:
         return "error"
+    inner = data.get("playback_result")
+    if isinstance(inner, str):
+        inner_outcome = tool_trace_outcome(inner)
+        if inner_outcome == "error":
+            return "error"
+    playback = data.get("playback")
+    if isinstance(playback, dict) and playback.get("ok") is False:
+        return "error"
     return "ok"
 
 
-def tool_trace_spotify_error_body(raw_result: str) -> str | None:
-    """Extract redacted Spotify error body from a tool JSON payload (nested or top-level)."""
-    try:
-        data = json.loads(raw_result)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
+def _walk_trace_dicts(data: dict[str, Any]) -> list[dict[str, Any]]:
     stack: list[dict[str, Any]] = [data]
     playback = data.get("playback")
     if isinstance(playback, dict):
@@ -89,10 +90,39 @@ def tool_trace_spotify_error_body(raw_result: str) -> str | None:
             pb = parsed.get("playback")
             if isinstance(pb, dict):
                 stack.append(pb)
-    for row in stack:
+    return stack
+
+
+def tool_trace_spotify_error_body(raw_result: str) -> str | None:
+    """Extract redacted Spotify error body from a tool JSON payload (nested or top-level)."""
+    try:
+        data = json.loads(raw_result)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    for row in _walk_trace_dicts(data):
         body = row.get("spotify_error_body_redacted")
         if isinstance(body, str) and body.strip():
             return body.strip()
+    return None
+
+
+def tool_trace_failure_reason(raw_result: str) -> str | None:
+    try:
+        data = json.loads(raw_result)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    for row in _walk_trace_dicts(data):
+        reason = row.get("failure_reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()
+    if data.get("playback_verified") is False and data.get("ok") is False:
+        return "playback_not_verified"
+    if data.get("playlist_not_owned_by_user"):
+        return "not_owned"
     return None
 
 
@@ -145,8 +175,14 @@ def append_tool_trace_record(
     err_body = spotify_error_body_redacted
     if not err_body and raw_result:
         err_body = tool_trace_spotify_error_body(raw_result)
-    if err_body and outcome == "error":
-        row["spotify_error_body_redacted"] = err_body
+    failure_reason = tool_trace_failure_reason(raw_result or "") if raw_result else None
+    if outcome == "error":
+        if err_body:
+            row["spotify_error_body_redacted"] = err_body
+        if failure_reason:
+            row["failure_reason"] = failure_reason
+        elif not err_body:
+            row["failure_reason"] = "unknown_error"
     line = json.dumps(row, ensure_ascii=False)
     secrets = [s for s in (known_secrets or []) if s]
     if secrets:
