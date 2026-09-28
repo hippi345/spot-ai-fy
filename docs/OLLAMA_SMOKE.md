@@ -14,8 +14,8 @@ Deterministic chat shortcuts are disabled (`SPOT_AI_FY_DISABLE_DETERMINISTIC_CHA
 
 | Model tag | Approx size | RAM hint | Notes |
 |-----------|-------------|----------|--------|
-| `qwen2.5:3b` or `qwen2.5:3b-instruct` | ~2 GB | 8 GB+ system RAM | Best first try; native tool calls |
-| `llama3.2:3b` | ~2 GB | 8 GB+ | Fallback if Qwen tag unavailable |
+| `qwen2.5:3b` or `qwen2.5:3b-instruct` | ~2 GB | 8 GB+ system RAM | **Recommended CPU default** — passed 7/7 smoke prompts; native tool calls |
+| `llama3.2:3b` | ~2 GB | 8 GB+ | Fallback if Qwen tag unavailable (smoke: 4/7) |
 | `qwen2.5:7b-instruct` | ~4.5 GB | 16 GB+ | Slower on CPU but fewer tool mistakes |
 
 On CPU-only hosts, expect **30–120 seconds per prompt** for 3B models with the default agent prompt and tool list. The first prompt after a cold start is often much slower until the model is loaded (`OLLAMA_KEEP_ALIVE=30m` helps).

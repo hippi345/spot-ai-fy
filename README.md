@@ -177,8 +177,8 @@ Best for privacy, offline use, and "I already have a GPU / spare laptop running 
 
    ```powershell
    # Good defaults on CPU-only machines (8 GB+ RAM)
-   ollama pull qwen2.5:3b-instruct        # recommended: native tool calls, small, fast
-   ollama pull llama3.2:3b-instruct       # similar tier, Meta format
+   ollama pull qwen2.5:3b-instruct        # recommended CPU default (Ollama smoke 7/7); native tool calls
+   ollama pull llama3.2:3b-instruct       # similar tier (smoke 4/7); Meta format
 
    # Higher quality if you have a GPU or plenty of CPU headroom
    ollama pull qwen2.5:7b-instruct
