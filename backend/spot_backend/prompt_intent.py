@@ -428,6 +428,16 @@ OLLAMA_VAGUE_PLAYLIST_PLAY_NUDGE = (
 )
 
 
+_SURPRISE_ME_RE = re.compile(
+    r"^\s*(?:surprise\s+me|play\s+something\s+random|something\s+random|pick\s+something\s+for\s+me)\s*\.?\s*$",
+    re.I,
+)
+
+
+def prompt_is_surprise_me_request(user_text: str) -> bool:
+    return bool(_SURPRISE_ME_RE.match((user_text or "").strip()))
+
+
 def prompt_is_vague_playlist_play_request(user_text: str) -> bool:
     """True for requests like 'play one of my playlists' without naming a specific list."""
     t = (user_text or "").strip()

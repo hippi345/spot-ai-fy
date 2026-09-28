@@ -606,6 +606,96 @@ def spotify_playlists_containing_track(
     )
 
 
+@mcp.tool()
+def spotify_library_contains(uris: list[str] | None = None, uri: str = "") -> str:
+    """Check whether URIs are saved in the user's library."""
+    args: dict[str, Any] = {}
+    if uri.strip():
+        args["uri"] = uri.strip()
+    if uris:
+        args["uris"] = uris
+    return _runner.run("spotify_library_contains", args)
+
+
+@mcp.tool()
+def spotify_library_save(uris: list[str]) -> str:
+    """Save Spotify URIs to the user's library."""
+    return _runner.run("spotify_library_save", {"uris": uris})
+
+
+@mcp.tool()
+def spotify_library_remove(uris: list[str]) -> str:
+    """Remove Spotify URIs from the user's library."""
+    return _runner.run("spotify_library_remove", {"uris": uris})
+
+
+@mcp.tool()
+def spotify_get_show(show_id: str) -> str:
+    return _runner.run("spotify_get_show", {"show_id": show_id})
+
+
+@mcp.tool()
+def spotify_get_show_episodes(show_id: str, limit: int = 10, offset: int = 0) -> str:
+    return _runner.run(
+        "spotify_get_show_episodes",
+        {"show_id": show_id, "limit": limit, "offset": offset},
+    )
+
+
+@mcp.tool()
+def spotify_get_episode(episode_id: str) -> str:
+    return _runner.run("spotify_get_episode", {"episode_id": episode_id})
+
+
+@mcp.tool()
+def spotify_get_audiobook(audiobook_id: str) -> str:
+    return _runner.run("spotify_get_audiobook", {"audiobook_id": audiobook_id})
+
+
+@mcp.tool()
+def spotify_get_audiobook_chapters(audiobook_id: str, limit: int = 10, offset: int = 0) -> str:
+    return _runner.run(
+        "spotify_get_audiobook_chapters",
+        {"audiobook_id": audiobook_id, "limit": limit, "offset": offset},
+    )
+
+
+@mcp.tool()
+def spotify_get_chapter(chapter_id: str) -> str:
+    return _runner.run("spotify_get_chapter", {"chapter_id": chapter_id})
+
+
+@mcp.tool()
+def spotify_user_saved_shows(limit: int = 10, offset: int = 0) -> str:
+    return _runner.run("spotify_user_saved_shows", {"limit": limit, "offset": offset})
+
+
+@mcp.tool()
+def spotify_user_saved_episodes(limit: int = 10, offset: int = 0) -> str:
+    return _runner.run("spotify_user_saved_episodes", {"limit": limit, "offset": offset})
+
+
+@mcp.tool()
+def spotify_user_saved_audiobooks(limit: int = 10, offset: int = 0) -> str:
+    return _runner.run("spotify_user_saved_audiobooks", {"limit": limit, "offset": offset})
+
+
+@mcp.tool()
+def spotify_playlist_builder_preview(name: str, track_queries: list[str]) -> str:
+    return _runner.run(
+        "spotify_playlist_builder_preview",
+        {"name": name, "track_queries": track_queries},
+    )
+
+
+@mcp.tool()
+def spotify_playlist_builder_commit(approve: bool = True, name: str = "") -> str:
+    args: dict[str, Any] = {"approve": approve}
+    if name.strip():
+        args["name"] = name.strip()
+    return _runner.run("spotify_playlist_builder_commit", args)
+
+
 def main() -> None:
     mcp.run()
 

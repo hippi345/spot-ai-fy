@@ -7,6 +7,9 @@ from typing import Any
 # Feb 2026 migration: many list/search endpoints reject limit > 10 in dev mode.
 SPOTIFY_DEV_MAX_PAGE = 10
 
+# Search endpoints default to 5 in dev mode; hard cap 10.
+SPOTIFY_SEARCH_DEFAULT_LIMIT = 5
+
 # Max pages when scanning a user's library for owned playlists, etc.
 SPOTIFY_DEV_MAX_PAGINATION_PAGES = 10
 

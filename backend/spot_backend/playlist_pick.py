@@ -8,12 +8,13 @@ from typing import Any
 
 from spot_backend.spotify_dev_limits import SPOTIFY_DEV_MAX_PAGE, SPOTIFY_DEV_MAX_PAGINATION_PAGES
 
-_SPOTIFY_CURATED_PREFIX = "37i9dQZF1"
+_SPOTIFY_EDITORIAL_PREFIX = "37i9"
 
 
 def playlist_id_is_spotify_curated(playlist_id: str) -> bool:
+    """True for Spotify-owned editorial playlist ids (inaccessible in dev-mode apps)."""
     pid = (playlist_id or "").strip()
-    return pid.startswith(_SPOTIFY_CURATED_PREFIX)
+    return pid.startswith(_SPOTIFY_EDITORIAL_PREFIX)
 
 
 def playlist_row_track_total(row: dict[str, Any]) -> int | None:

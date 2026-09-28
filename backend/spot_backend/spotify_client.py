@@ -8,6 +8,10 @@ from typing import Any
 import httpx
 
 from spot_backend.config import Settings, get_settings
+from spot_backend.spotify_removed_routes import (
+    SpotifyRemovedRouteError,
+    assert_spotify_route_allowed,
+)
 from spot_backend.token_store import TokenBundle, is_expired, load_tokens, save_tokens
 
 
@@ -57,6 +61,14 @@ class SpotifyRateLimitError(RuntimeError):
     """Spotify returned 429 twice; message includes Retry-After seconds for the user."""
 
 
+class SpotifyQuotaExceededError(RuntimeError):
+    """Spotify returned 429 with error.reason QUOTA_EXCEEDED — do not retry."""
+
+    def __init__(self, message: str, *, failure_reason: str = "quota_exceeded") -> None:
+        self.failure_reason = failure_reason
+        super().__init__(message)
+
+
 _SPOTIFY_RATE_LIMIT_MAX_SLEEP_SECONDS = 5.0
 
 
@@ -77,12 +89,27 @@ def _rate_limit_user_message(response: httpx.Response) -> str:
     return f"Spotify rate limited, try again in {n} s"
 
 
+def _response_quota_exceeded(response: httpx.Response) -> bool:
+    try:
+        body = response.json()
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(body, dict):
+        return False
+    err = body.get("error")
+    if not isinstance(err, dict):
+        return False
+    reason = str(err.get("reason") or "").strip().upper()
+    return reason == "QUOTA_EXCEEDED"
+
+
 class SpotifyClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self._http = httpx.Client(timeout=30.0)
         # Injectable for tests (defaults to real sleep between 429 retries).
         self._rate_limit_sleep = time.sleep
+        self._metadata_cache: dict[str, Any] = {}
 
     def close(self) -> None:
         self._http.close()
@@ -185,6 +212,18 @@ class SpotifyClient:
     def _api_url(self, path: str) -> str:
         return path if path.startswith("http") else f"{API}{path}"
 
+    def clear_metadata_cache(self) -> None:
+        self._metadata_cache.clear()
+
+    def api_get_cached(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        """GET a single-object catalog path once per client cache generation."""
+        key = f"GET:{path}:{json.dumps(params or {}, sort_keys=True)}"
+        if key in self._metadata_cache:
+            return self._metadata_cache[key]
+        data = self.api_get(path, params=params)
+        self._metadata_cache[key] = data
+        return data
+
     def _authorized_request(
         self,
         method: str,
@@ -193,6 +232,8 @@ class SpotifyClient:
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> httpx.Response:
+        assert_spotify_route_allowed(method, self._api_url(url) if not url.startswith("http") else url, params=params)
+
         def _do(access_token: str) -> httpx.Response:
             headers = {"Authorization": f"Bearer {access_token}"}
             kw: dict[str, Any] = {"headers": headers}
@@ -211,11 +252,23 @@ class SpotifyClient:
                 token = self.ensure_fresh_access_token()
                 response = _do(token)
         if response.status_code == 429:
+            if _response_quota_exceeded(response):
+                raise SpotifyQuotaExceededError(
+                    "Spotify's usage limit was hit — try again later.",
+                    failure_reason="quota_exceeded",
+                )
             self._rate_limit_sleep(_rate_limit_sleep_seconds(response))
             token = self.ensure_fresh_access_token()
             response = _do(token)
             if response.status_code == 429:
-                raise SpotifyRateLimitError(_rate_limit_user_message(response))
+                if _response_quota_exceeded(response):
+                    raise SpotifyQuotaExceededError(
+                        "Spotify's usage limit was hit — try again later.",
+                        failure_reason="quota_exceeded",
+                    )
+                raise SpotifyRateLimitError(
+                    _rate_limit_user_message(response),
+                )
         response.raise_for_status()
         return response
 
