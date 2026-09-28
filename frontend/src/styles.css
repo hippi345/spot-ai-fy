@@ -24,6 +24,22 @@
 
   --glass-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 
+  /* Album-art backdrop (see .liquid-bg-layer) */
+  --liquid-art-blur: 36px;
+  --liquid-art-blur-paused: 32px;
+  --liquid-art-scale: 1.05;
+  --liquid-art-scale-paused: 1.04;
+  --liquid-art-saturate: 1.7;
+  --liquid-art-saturate-paused: 1.45;
+
+  /* Glass panel fills — lowered ~0.13 alpha for a clearer art read-through */
+  --glass-panel-alpha: 0.69;
+  --glass-panel-alpha-backdrop: 0.58;
+  --glass-np-alpha: 0.42;
+  --glass-queue-alpha: 0.58;
+  --bubble-fill-alpha: 0.82;
+  --bubble-user-fill-alpha: 0.85;
+
   --shell-edge: 18px;
 
   font-family: "Segoe UI", system-ui, sans-serif;
@@ -108,15 +124,17 @@ body {
 
   position: absolute;
 
-  inset: -20%;
+  inset: 0;
 
   background-size: cover;
 
   background-position: center;
 
-  filter: blur(88px) saturate(1.85);
+  background-repeat: no-repeat;
 
-  transform: scale(1.38);
+  filter: blur(var(--liquid-art-blur)) saturate(var(--liquid-art-saturate));
+
+  transform: scale(var(--liquid-art-scale));
 
   opacity: 0.88;
 
@@ -124,8 +142,8 @@ body {
 
 .liquid-bg--paused .liquid-bg-layer {
   opacity: 0.52;
-  filter: blur(80px) saturate(1.45);
-  transform: scale(1.28);
+  filter: blur(var(--liquid-art-blur-paused)) saturate(var(--liquid-art-saturate-paused));
+  transform: scale(var(--liquid-art-scale-paused));
 }
 
 
@@ -204,7 +222,7 @@ body {
 
 .glass-panel {
 
-  background: rgba(10, 10, 14, 0.82);
+  background: rgba(10, 10, 14, var(--glass-panel-alpha));
 
   border: 1px solid var(--border);
 
@@ -220,7 +238,7 @@ body {
 
   .glass-panel {
 
-    background: rgba(12, 12, 18, 0.72);
+    background: rgba(12, 12, 18, var(--glass-panel-alpha-backdrop));
 
     backdrop-filter: blur(22px) saturate(1.5);
 
@@ -584,7 +602,7 @@ select {
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
-  background: rgba(12, 12, 16, 0.55);
+  background: rgba(12, 12, 16, var(--glass-np-alpha));
   border: 1px solid var(--border);
   border-top-color: var(--border-top);
   border-radius: 16px;
@@ -734,7 +752,7 @@ select {
   list-style: none;
   margin: 0;
   padding: 10px 12px 12px;
-  background: rgba(10, 10, 14, 0.72);
+  background: rgba(10, 10, 14, var(--glass-queue-alpha));
   border: 1px solid var(--border);
   border-top: none;
   border-radius: 0 0 16px 16px;
@@ -1059,7 +1077,7 @@ button:disabled {
 
   border-top-color: var(--border-top);
 
-  background: rgba(16, 16, 22, 0.72);
+  background: rgba(16, 16, 22, var(--bubble-fill-alpha));
 
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
 
@@ -1085,7 +1103,7 @@ button:disabled {
 
   align-self: flex-end;
 
-  background: rgba(20, 48, 32, 0.78);
+  background: rgba(20, 48, 32, var(--bubble-user-fill-alpha));
 
   border-color: rgba(29, 185, 84, 0.35);
 

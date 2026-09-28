@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -121,5 +125,17 @@ describe("App liquid glass integration", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("settings-sheet-panel")).not.toBeInTheDocument();
     });
+  });
+});
+
+describe("liquid glass art backdrop tokens", () => {
+  it("keeps subtle album-art read-through (blur, scale, panel alpha)", () => {
+    const cssPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "styles.css");
+    const css = readFileSync(cssPath, "utf8");
+    expect(css).toContain("--liquid-art-blur: 36px");
+    expect(css).toContain("--liquid-art-scale: 1.05");
+    expect(css).toContain("--glass-panel-alpha: 0.69");
+    expect(css).toMatch(/\.liquid-bg-layer[\s\S]*?inset:\s*0/);
+    expect(css).toMatch(/\.liquid-bg--paused[\s\S]*?--liquid-art-blur-paused/);
   });
 });
