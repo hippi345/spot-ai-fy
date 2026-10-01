@@ -8,7 +8,7 @@
 
 Spot-AI-fy is a local-first natural-language front end for the Spotify Web API. You type things like *"add a SZA song from 2024 to RNB2025 and play the playlist starting at that track with repeat on"* and an LLM translates that into a sequence of Spotify API calls — search, dedupe against the playlist, add, verify, play, set repeat — returning one short summary.
 
-![Spot-AI-fy UI](docs/spot-ai-fy-screenshot.png)
+![Spot-AI-fy demo](docs/demo.gif)
 
 ---
 
@@ -30,7 +30,7 @@ Spot-AI-fy is a local-first natural-language front end for the Spotify Web API. 
 - **Resilient LLM calls** — exponential backoff + `Retry-After` handling for Gemini `429` and `503` responses; user-friendly surfacing of quota / high-demand errors instead of raw HTTP text.
 - **Known-limitation guardrails** — the system prompt tells the agent which Spotify endpoints don't exist (per-playlist listen counts, per-track play counts, long listening history) so it answers plainly instead of looping through tools.
 - **Good OAuth diagnostics** — distinguishes stale scopes (requires re-consent, since Spotify refresh tokens don't upgrade scopes), not-owned playlists, and the Spotify Web API [Feb 2026 dev-mode migration](https://developer.spotify.com/blog/2026-02-06-update-on-developer-access-and-platform-security) (`/tracks` → `/items`, removed `/artists/{id}/top-tracks`, capped `/search` limit).
-- **Two LLM backends, swappable at runtime from the UI** — no `.env` edit needed to switch between local Ollama and Gemini. Model tags for both providers are populated dynamically from what the provider reports (`ollama list` for Ollama, the Google Generative Language models API for Gemini).
+- **Multiple LLM backends, swappable at runtime from the UI** — no `.env` edit needed to switch among Ollama, Gemini, OpenAI, Anthropic, and xAI. Model lists come from the active provider when reachable (`ollama list`, Gemini list-models, or curated fallbacks in [`llm_catalog.py`](backend/spot_backend/llm_catalog.py)).
 - **Live agent-progress panel** — shows rounds, tool calls, and elapsed time per step with a live ticker for both Ollama and Gemini streams; toggle "Show details" to expand the raw tool-result previews.
 - **CPU-friendly Ollama tuning knobs** — per-provider settings for context window, keep-alive, history replay, tool-result caps, and agent-step caps so a local model on a laptop stays responsive without silently truncating prompts. See [Bring your own LLM](#bring-your-own-llm).
 - **Optional agent-context file** — drop a markdown file in `backend/AGENT_CONTEXT.md` (or point `AGENT_CONTEXT_FILE` at a path) and it's appended to the system prompt for both backends, letting you tune tone and rules without editing Python.
@@ -375,8 +375,7 @@ Default data directory: `~/.spot_ai_fy` on macOS/Linux and `%USERPROFILE%\.spot_
 
 Likely next additions, in descending priority:
 
-- **OpenAI-compatible provider** (`LLM_PROVIDER=openai_compat` + `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`). One driver, one tool-call shape, zero provider-specific code — unlocks OpenAI itself, Azure OpenAI, OpenRouter (which in turn fronts Anthropic Claude, Meta Llama 4, Mistral, Cohere, and most other hosted models), Groq, Together, DeepInfra, Fireworks, vLLM, LM Studio, and any self-hosted inference server that speaks the OpenAI `chat/completions` shape.
-- **Native Anthropic provider** (`LLM_PROVIDER=anthropic`) for direct Claude access when users want Anthropic-specific features (prompt caching, extended thinking) beyond what OpenRouter exposes.
+- **Generic OpenAI-compatible endpoint** — configurable base URL and API key so one driver can target OpenRouter, Azure OpenAI, Groq, LM Studio, vLLM, and other `chat/completions` hosts (first-party OpenAI and xAI are already supported).
 - **Token/cost accounting** surfaced in the progress panel for cloud providers.
 
 If you'd like to contribute a new provider, the shape to match is the existing `backend/spot_backend/gemini_llm.py` (non-streaming final-text return) plus an entry in `iter_chat_events` in `backend/spot_backend/agent.py` so the UI can hit `/api/chat/stream`.
@@ -385,7 +384,7 @@ If you'd like to contribute a new provider, the shape to match is the existing `
 
 - **Backend**: Python 3.12, FastAPI, Uvicorn, httpx, pydantic / pydantic-settings, [mcp](https://pypi.org/project/mcp/) for the MCP server.
 - **Frontend**: React 19, Vite 6, TypeScript.
-- **LLMs**: Pluggable. Ollama (local, default) or Gemini (`gemini-3.5-flash-lite` by default) via Google Generative Language API. See [Bring your own LLM](#bring-your-own-llm) for model and tuning guidance; see [Roadmap](#roadmap) for planned provider support.
+- **LLMs**: Pluggable — Ollama (local, default), Gemini, OpenAI, Anthropic (Claude), and xAI (Grok). See [Bring your own LLM](#bring-your-own-llm) for model and tuning guidance; see [Roadmap](#roadmap) for what is still planned.
 - **Spotify**: Web API, PKCE OAuth, scopes include `playlist-modify-public`/`-private`, `playlist-read-private`/`-collaborative`, `user-read-playback-state`, `user-modify-playback-state`, `user-library-read`, `user-top-read`, `user-follow-read`, `user-read-private`.
 
 ## License
