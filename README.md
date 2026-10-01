@@ -8,7 +8,7 @@
 
 Spot-AI-fy is a local-first natural-language front end for the Spotify Web API. You type things like *"add a SZA song from 2024 to RNB2025 and play the playlist starting at that track with repeat on"* and an LLM translates that into a sequence of Spotify API calls — search, dedupe against the playlist, add, verify, play, set repeat — returning one short summary.
 
-![Spot-AI-fy UI](docs/spot-ai-fy-screenshot.png)
+![Spot-AI-fy demo](docs/demo.gif)
 
 ---
 
