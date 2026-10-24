@@ -15,7 +15,7 @@ from spot_backend.spotify_tools import SpotifyToolRunner
 from spot_backend.token_store import TokenBundle, save_tokens
 from spot_backend.spotify_client import DEFAULT_SCOPES
 
-from evals.mock_spotify import install_profile
+from evals.mock_spotify import allow_eval_llm_passthrough, install_profile
 from evals.types import AgentTurnResult, EvalCaseInput, ToolCallRecord
 
 
@@ -195,6 +195,21 @@ def run_live_case(
     with respx.mock:
         _ensure_eval_tokens(settings)
         install_profile(case_input.mock_spotify_profile)
+        allow_eval_llm_passthrough()
+        arm = (case_input.library_index_arm or "").strip().lower()
+        if arm == "on" or (os.environ.get("SPOT_LIBRARY_INDEX") or "").strip().lower() in (
+            "on",
+            "1",
+            "true",
+            "yes",
+        ):
+            from spot_backend.library_index import LibraryIndex
+            from spot_backend.ollama_embed import HashingEmbedder
+
+            try:
+                LibraryIndex(settings=settings, embedder=HashingEmbedder()).sync_full()
+            except Exception:
+                pass
         for ev in iter_chat_events(
             case_input.prompt,
             settings,

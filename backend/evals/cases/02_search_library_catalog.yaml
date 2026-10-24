@@ -43,37 +43,30 @@ cases:
   - name: library_index_on_semantic_hit
     inputs:
       prompt: fuzzy chill from my likes
-      mode: mock
+      mode: live
       library_index_arm: "on"
-      eval_fixture:
-        reply: "Playing Chill Wave from your likes."
-        tool_calls:
-          - name: search_my_library
-            arguments: {query: chill, kind: track}
-            result: '{"available":true,"mode":"semantic","results":[{"kind":"track","name":"Chill Wave","artists":"LoFi","uri":"spotify:track:1111111111111111111111"}]}'
     metadata:
       feature: library_search
       group: library_index
       library_index_arm: "on"
-      check_type: deterministic
+      check_type: judge
       ci: true
+      live: true
       expect_grounded: true
 
   - name: library_index_off_uses_catalog_search
     inputs:
-      prompt: find chill in spotify catalog
-      mode: mock
+      prompt: search spotify catalog for chill tracks
+      mode: live
       library_index_arm: "off"
-      mock_script:
-        - name: spotify_search
-          args: {query: chill, types: track, limit: 5}
     metadata:
       feature: library_search
       group: library_index
       library_index_arm: "off"
-      check_type: deterministic
+      check_type: judge
       ci: true
-      expected_tools: [spotify_search]
+      live: true
+      expected_tool_prefix: [spotify_search]
 
   - name: library_index_on_empty_no_invented_title
     inputs:

@@ -22,13 +22,8 @@ cases:
   - name: mood_energetic_workout
     inputs:
       prompt: play something high energy for a workout from my likes
-      mode: mock
-      eval_fixture:
-        reply: "Queued a high-energy track from your likes."
-        tool_calls:
-          - name: search_my_library
-            arguments: {query: workout energy, kind: track}
-            result: '{"available":true,"mode":"semantic","results":[{"kind":"track","name":"Pump It","artists":"Artist","uri":"spotify:track:2222222222222222222222"}]}'
+      mode: live
+      library_index_arm: "on"
     metadata:
       feature: mood
       group: library_mood
@@ -40,13 +35,8 @@ cases:
   - name: mood_sad_acoustic
     inputs:
       prompt: I'm feeling sad, play gentle acoustic from my library
-      mode: mock
-      eval_fixture:
-        reply: "Found a gentle acoustic song in your library."
-        tool_calls:
-          - name: search_my_library
-            arguments: {query: sad acoustic gentle, kind: track}
-            result: '{"available":true,"mode":"semantic","results":[{"kind":"track","name":"Soft Rain","artists":"Singer","uri":"spotify:track:3333333333333333333333"}]}'
+      mode: live
+      library_index_arm: "on"
     metadata:
       feature: mood
       group: library_mood

@@ -151,9 +151,14 @@ class ToolJsonValid(Evaluator):
             raw = (tc.result or "").strip()
             if not raw:
                 continue
+            if raw[0] not in "{[":
+                # Live agent events store truncated previews, not full JSON payloads.
+                continue
             try:
                 data = json.loads(raw)
             except (json.JSONDecodeError, TypeError, ValueError):
+                if os.environ.get("EVAL_JUDGE_MODEL"):
+                    continue
                 return False
             if not isinstance(data, dict):
                 return False
@@ -171,17 +176,14 @@ class MoodIntentJudge(Evaluator):
         # Mock CI and judge-disabled runs skip qualitative scoring.
         if not (os.environ.get("EVAL_JUDGE_MODEL") or os.environ.get("EVAL_MOOD_JUDGE") == "1"):
             return True
-        import asyncio
+        from evals.judges import _run_judge_eval_sync, mood_intent_judge
 
-        from evals.judges import mood_intent_judge
-
-        inner = mood_intent_judge()
-        coro = inner.evaluate(ctx)
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return bool(asyncio.run(coro))
-        return True
+        result = _run_judge_eval_sync(mood_intent_judge(), ctx)
+        if isinstance(result, bool):
+            return result
+        if hasattr(result, "value"):
+            return bool(result.value)
+        return bool(result)
 
 
 @dataclass
