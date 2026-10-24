@@ -28,3 +28,7 @@ status=200
 {
   "reply": "I sent skip to Spotify, but the track did not change after a few seconds. Try skipping once in the Spotify app, then ask again."
 }
+
+## Electron desktop headless smoke (npm run smoke in desktop/)
+exit_code=0
+notes=Electron shell started bundled uvicorn backend on :8765; loaded UI bundle; health/session/setup endpoints returned 200; unsigned session expected 401 on now-playing/devices.
