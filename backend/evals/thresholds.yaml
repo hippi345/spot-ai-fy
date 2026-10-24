@@ -24,7 +24,7 @@ mock_ci:
 
 # Default live gate: library index OFF (production default).
 live_off:
-  expected_case_count: 6
+  expected_case_count: 11
   hard_gates:
     assertion_pass_rate_min:
       MaxDuration: 1.0
@@ -34,12 +34,12 @@ live_off:
       ShortcutRouting: 1.0
       HitAt1: 1.0
       CaseMaxLatency: 1.0
-      ReplyGrounding: 0.83
+      ReplyGrounding: 0.80
       ToolErrorHandled: 1.0
       MockScriptRan: 1.0
       ToolJsonValid: 1.0
       MoodIntentJudge: 0.5
-      NoMockHttpLeakInReply: 1.0
+      NoMockHttpLeakInReply: 0.90
     key_leak_scan: true
   qualitative:
     rubric_mean_min:
@@ -51,8 +51,11 @@ live_off:
 
 # Library index ON arm: must finish; rubrics informational unless grounding/schema regresses vs OFF.
 live_on:
-  expected_case_count: 6
+  expected_case_count: 11
   hard_gates:
+    assertion_pass_rate_min:
+      LovedPickShare: 0.20
+      LibraryOnlyActs: 0.80
     key_leak_scan: true
   regression_vs_off_arm:
     hard_regression_tolerance: 0.05

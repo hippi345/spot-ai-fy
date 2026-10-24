@@ -206,8 +206,15 @@ def run_live_case(
             from spot_backend.library_index import LibraryIndex
             from spot_backend.ollama_embed import HashingEmbedder
 
+            profile = (case_input.mock_spotify_profile or "").strip().lower()
+            if profile in ("canonical_library", "eval_library"):
+                from evals.fixture_embedder import CommittedFixtureEmbedder
+
+                embedder = CommittedFixtureEmbedder()
+            else:
+                embedder = HashingEmbedder()
             try:
-                LibraryIndex(settings=settings, embedder=HashingEmbedder()).sync_full()
+                LibraryIndex(settings=settings, embedder=embedder).sync_full()
             except Exception:
                 pass
         for ev in iter_chat_events(

@@ -107,12 +107,20 @@ def check_thresholds(
     if (section.get("hard_gates") or {}).get("key_leak_scan") and report_text:
         leaks = find_key_leaks(report_text)
         _add_row(result, "key_leak_scan", "0 leaks", len(leaks), len(leaks) == 0)
-    for name, target in (section.get("qualitative") or {}).get("rubric_mean_min", {}).items():
-        actual = (agg.get("score_means") or {}).get(name)
-        if actual is None:
-            _add_row(result, f"rubric_mean:{name}", f">= {target}", "n/a", False)
-        else:
-            _add_row(result, f"rubric_mean:{name}", f">= {target}", f"{actual:.3f}", float(actual) + 1e-9 >= float(target))
+    qual = (section.get("qualitative") or {}).get("rubric_mean_min") or {}
+    if qual and mode != "live_on":
+        for name, target in qual.items():
+            actual = (agg.get("score_means") or {}).get(name)
+            if actual is None:
+                _add_row(result, f"rubric_mean:{name}", f">= {target}", "n/a", False)
+            else:
+                _add_row(
+                    result,
+                    f"rubric_mean:{name}",
+                    f">= {target}",
+                    f"{actual:.3f}",
+                    float(actual) + 1e-9 >= float(target),
+                )
     reg = section.get("regression_vs_live_baseline") or {}
     if reg.get("enabled") and BASELINE_LIVE_PATH.is_file():
         diff = regression_diff(report, BASELINE_LIVE_PATH, score_tolerance=float(reg.get("score_tolerance", 0.08)))

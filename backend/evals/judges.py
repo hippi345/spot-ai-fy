@@ -86,6 +86,38 @@ class SyncLLMJudge(Evaluator):
         return _run_judge_eval_sync(self.inner, ctx)
 
 
+def canonical_fits_vibe_judge() -> LLMJudge:
+    model = _judge_model()
+    settings = _judge_settings()
+    return LLMJudge(
+        rubric=(
+            "The assistant's pick and wording fit the requested mood/vibe (e.g. sunset, late-night, "
+            "Sunday morning) using only library tool evidence."
+        ),
+        model=model,
+        include_input=True,
+        model_settings=settings,
+        score={"evaluation_name": "fits_vibe_score", "include_reason": True},
+        assertion={"evaluation_name": "fits_vibe_pass", "include_reason": True},
+    )
+
+
+def canonical_fits_taste_judge() -> LLMJudge:
+    model = _judge_model()
+    settings = _judge_settings()
+    return LLMJudge(
+        rubric=(
+            "The pick reflects the user's listening taste implied by play counts / loved history in tool "
+            "results (heavy-rotation favorites), not random catalog guesses."
+        ),
+        model=model,
+        include_input=True,
+        model_settings=settings,
+        score={"evaluation_name": "fits_taste_score", "include_reason": True},
+        assertion={"evaluation_name": "fits_taste_pass", "include_reason": True},
+    )
+
+
 def qualitative_judges() -> list[SyncLLMJudge]:
     model = _judge_model()
     settings = _judge_settings()

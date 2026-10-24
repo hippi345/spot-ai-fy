@@ -23,6 +23,7 @@ cases:
     inputs:
       prompt: play something high energy for a workout from my likes
       mode: live
+      mock_spotify_profile: canonical_library
       library_index_arm: "on"
     metadata:
       feature: mood
@@ -36,6 +37,7 @@ cases:
     inputs:
       prompt: I'm feeling sad, play gentle acoustic from my library
       mode: live
+      mock_spotify_profile: canonical_library
       library_index_arm: "on"
     metadata:
       feature: mood

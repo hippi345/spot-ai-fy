@@ -314,26 +314,57 @@ Try **“play sunset vibes from songs I've loved over the years”** locally, in
 
 Everything above is **SAMPLE_DATA** for development and evals only.
 
-### RAG (honest naming)
+### RAG (retrieve → augment → generate)
 
-This is **not** full retrieval-augmented generation (no extra context injected into the system prompt). It is **tool-retrieval grounding**:
+**Example (Joel):** *“Play sunset songs based on what folks have liked in the past.”*
 
-1. The model calls `search_my_library` when the user asks about *their* library in fuzzy/mood language.
-2. The tool returns a **small JSON list** (`kind`, `name`, `artists`, `uri`, `score`, `why`) under ~1.5 KB.
-3. The LLM uses those URIs/names for follow-up Spotify tools (`spotify_play_track`, `spotify_play_playlist`, etc.).
+| Step | What happens in Spot-AI-fy |
+|------|----------------------------|
+| **Retrieve** | Vector search (or FTS fallback) over **the signed-in user’s own library** — liked tracks, playlists, artists in `library_index.sqlite` — via the `search_my_library` tool. |
+| **Augment** | Top hits return as **tool JSON** on the next model turn (`name`, `artists`, `uri`, `score`, `why`), not as a hidden system-prompt injection. |
+| **Generate** | The LLM reads those hits and **generates** a reply plus follow-up tool calls (`spotify_play_track`, queue, playlist tools, etc.). |
+
+Spot-AI-fy uses **agentic, tool-based RAG**: the model **chooses** whether to call `search_my_library`. Nothing pre-fetches library candidates on the server before the LLM runs.
+
+**Contrast — Juke-style classic pre-retrieval RAG:** the server runs k-NN over an embedding index **first**, injects candidate tracks into the prompt (or context block), **then** calls the LLM once. Retrieval is guaranteed; the model always sees candidates.
+
+| | Agentic (Spot-AI-fy) | Classic pre-retrieval (e.g. Juke) |
+|--|----------------------|-----------------------------------|
+| Who retrieves? | LLM via `search_my_library` | Server before LLM |
+| Context shape | Tool results in the chat turn | Injected text / context |
+| Flexibility | Can search catalog, shortcuts, or skip library | Library candidates always present |
+| Risk | Model may **skip** retrieval and guess | Retrieval cost every turn; less tool flexibility |
+
+**Tradeoff:** agentic RAG is flexible (multi-tool plans, non-library prompts) but the model can skip vector search. Evals guard that path — e.g. **library-mood** live cases and tool-sequence expectations on index **ON** arms check that retrieval runs when the prompt is library-specific.
 
 Deterministic shortcuts (e.g. “play something chill”) are unchanged — they never hit the index.
 
 ```mermaid
 flowchart TB
-  User[User prompt] --> LLM[LLM chat turn]
-  LLM -->|fuzzy my-library intent| LibTool[search_my_library]
-  LibTool --> Idx[(library_index.sqlite)]
-  Idx --> Emb[Ollama nomic-embed-text]
-  Idx --> FTS[FTS5 fallback]
-  LibTool -->|slim JSON hits| LLM
-  LLM --> PlayTools[spotify_play_* / queue / playlist tools]
-  PlayTools --> SP[Spotify Web API]
+  User["User: play sunset songs based on what folks have liked"]
+  LLM[LLM chat turn]
+  Decide{Agent chooses tools}
+  LibTool[search_my_library]
+  Idx[(library_index.sqlite)]
+  Vec[Vector cosine + play/like boost]
+  FTS[FTS5 keyword fallback]
+  Augment["Augment: slim JSON hits in tool message"]
+  Gen[Generate reply + playback tools]
+  Play[spotify_play_track / queue / playlist]
+  SP[Spotify Web API]
+
+  User --> LLM
+  LLM --> Decide
+  Decide -->|library mood / fuzzy likes| LibTool
+  Decide -->|other intent| Play
+  LibTool --> Idx
+  Idx --> Vec
+  Idx --> FTS
+  LibTool --> Augment
+  Augment --> LLM
+  LLM --> Gen
+  Gen --> Play
+  Play --> SP
 ```
 
 Optional real-Gemini replay eval (Spotify HTTP mocked; skipped when `GEMINI_API_KEY` is unset):

@@ -25,6 +25,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements-dev.txt
 
+      - name: SAMPLE library vector integration (no LLM)
+        env:
+          DATA_DIR: /tmp/spot-library-integration
+        run: |
+          python -m pytest backend/tests/test_eval_library_fixture_integration.py \
+            backend/tests/test_eval_library_sunset_e2e.py \
+            backend/tests/test_sample_library_seed.py -q
+
       - name: Mocked agent eval vs baseline-ci.json
         env:
           DATA_DIR: /tmp/spot-agent-eval

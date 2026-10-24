@@ -182,6 +182,64 @@ class MoodIntentJudge(Evaluator):
 
 
 @dataclass
+class LibraryOnlyActs(Evaluator):
+    """Canonical SAMPLE cases: played URIs must exist in the committed fixture library."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        if not meta.canonical_library and not meta.library_only:
+            return True
+        from evals.eval_library_fixture import all_track_uris
+
+        allowed = all_track_uris()
+        out = _output(ctx)
+        if not out.acted_uris:
+            return True
+        return all(u in allowed for u in out.acted_uris)
+
+
+@dataclass
+class LovedPickShare(Evaluator):
+    """Share of acted URIs from top-loved tier (canonical SAMPLE sunset suite)."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        if not meta.canonical_library:
+            return True
+        from evals.eval_library_fixture import loved_pick_share
+
+        out = _output(ctx)
+        share = loved_pick_share(out.acted_uris)
+        return share >= 0.15
+
+
+@dataclass
+class CanonicalVibeJudge(Evaluator):
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        if not meta.canonical_library:
+            return True
+        if not (os.environ.get("EVAL_JUDGE_MODEL") or os.environ.get("EVAL_MOOD_JUDGE") == "1"):
+            return True
+        from evals.judges import _judge_passed, _run_judge_eval_sync, canonical_fits_vibe_judge
+
+        return _judge_passed(_run_judge_eval_sync(canonical_fits_vibe_judge(), ctx))
+
+
+@dataclass
+class CanonicalTasteJudge(Evaluator):
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        if not meta.canonical_library:
+            return True
+        if not (os.environ.get("EVAL_JUDGE_MODEL") or os.environ.get("EVAL_MOOD_JUDGE") == "1"):
+            return True
+        from evals.judges import _judge_passed, _run_judge_eval_sync, canonical_fits_taste_judge
+
+        return _judge_passed(_run_judge_eval_sync(canonical_fits_taste_judge(), ctx))
+
+
+@dataclass
 class NoMockHttpLeakInReply(Evaluator):
     """Fail when respx AllMockedAssertionError text leaks into the user-visible reply."""
 
@@ -225,6 +283,10 @@ CUSTOM_EVALUATOR_TYPES: list[type[Evaluator]] = [
     MockScriptRan,
     MoodIntentJudge,
     ToolJsonValid,
+    LibraryOnlyActs,
+    LovedPickShare,
+    CanonicalVibeJudge,
+    CanonicalTasteJudge,
     NoMockHttpLeakInReply,
 ]
 
@@ -247,6 +309,10 @@ def dataset_evaluators(include_judges: bool = True) -> list[Any]:
         MockScriptRan(),
         MoodIntentJudge(),
         ToolJsonValid(),
+        LibraryOnlyActs(),
+        LovedPickShare(),
+        CanonicalVibeJudge(),
+        CanonicalTasteJudge(),
         NoMockHttpLeakInReply(),
     ]
     if include_judges:
