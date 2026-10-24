@@ -39,6 +39,7 @@ SPOTIFY_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
         "spotify_devices",
         "spotify_playback_state",
         "search_my_library",
+        "search_play_history",
     }
 )
 

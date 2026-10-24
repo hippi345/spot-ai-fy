@@ -99,6 +99,14 @@ def run_mock_case(
         )
     _ensure_eval_tokens(settings)
     install_profile(case_input.mock_spotify_profile)
+    if case_input.play_log_enabled:
+        settings = settings.model_copy(update={"spot_play_log": "on"})
+        from evals.play_history_fixture import seed_play_log_db
+        from spot_backend.play_log import PlayLogStore
+
+        store = PlayLogStore(settings=settings)
+        store.clear_all()
+        seed_play_log_db(store)
     t0 = time.perf_counter()
     runner = SpotifyToolRunner(settings=settings, conversation_id=case_input.conversation_id)
 

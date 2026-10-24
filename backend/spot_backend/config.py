@@ -80,12 +80,23 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "nomic-embed-text"
     library_index_refresh_hours: float = 6.0
 
+    # Local play history RAG (search_play_history). Env: SPOT_PLAY_LOG=on|off (default off).
+    spot_play_log: str = "off"
+    user_timezone: str = "UTC"
+    # Skip if user skips within this many seconds or before this fraction of track duration.
+    play_log_skip_within_seconds: float = 30.0
+    play_log_skip_before_fraction: float = 0.5
+
     # Optional path to a markdown file appended to the Spot-AI-fy system prompt (Ollama + Gemini).
     agent_context_file: str = ""
 
     @property
     def library_index_enabled(self) -> bool:
         return (self.spot_library_index or "").strip().lower() in ("on", "1", "true", "yes")
+
+    @property
+    def play_log_enabled(self) -> bool:
+        return (self.spot_play_log or "").strip().lower() in ("on", "1", "true", "yes")
 
     @property
     def resolved_token_path(self) -> Path:

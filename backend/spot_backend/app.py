@@ -241,6 +241,15 @@ def _library_index_startup() -> None:
     start_background_build(s)
 
 
+@app.on_event("startup")
+def _play_log_startup() -> None:
+    from spot_backend.play_log import play_log_enabled, schedule_daily_prune
+
+    s = get_settings()
+    if play_log_enabled(s):
+        schedule_daily_prune(s)
+
+
 @app.post("/api/library-index/rebuild")
 def api_library_index_rebuild() -> dict[str, str]:
     from spot_backend.library_index import LibraryIndex, library_index_enabled

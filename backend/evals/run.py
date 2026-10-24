@@ -45,6 +45,11 @@ def _load_dataset() -> Dataset:
         CASES_PATH,
         custom_evaluator_types=CUSTOM_EVALUATOR_TYPES,
     )
+    cases_dir = Path(__file__).parent / "cases"
+    if cases_dir.is_dir():
+        for path in sorted(cases_dir.glob("*.yaml")):
+            extra = Dataset.from_file(path, custom_evaluator_types=CUSTOM_EVALUATOR_TYPES)
+            ds.cases.extend(extra.cases)
     for ev in dataset_evaluators(include_judges=False):
         if ev not in ds.evaluators:
             ds.evaluators.append(ev)

@@ -141,6 +141,25 @@ class ToolErrorHandled(Evaluator):
 
 
 @dataclass
+class PlayHistoryWindowMatch(Evaluator):
+    """search_play_history must use the expected window argument when set."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        want = (meta.expect_play_history_window or "").strip()
+        if not want:
+            return True
+        out = _output(ctx)
+        for tc in out.tool_calls:
+            if tc.name != "search_play_history":
+                continue
+            got = str(tc.arguments.get("window") or "").strip().lower()
+            if got == want.lower():
+                return True
+        return False
+
+
+@dataclass
 class MockScriptRan(Evaluator):
     """Mock cases with mock_script must execute at least one tool."""
 
@@ -165,6 +184,7 @@ CUSTOM_EVALUATOR_TYPES: list[type[Evaluator]] = [
     ReplyGrounding,
     ToolErrorHandled,
     MockScriptRan,
+    PlayHistoryWindowMatch,
 ]
 
 
@@ -184,6 +204,7 @@ def dataset_evaluators(include_judges: bool = True) -> list[Any]:
         ReplyGrounding(),
         ToolErrorHandled(),
         MockScriptRan(),
+        PlayHistoryWindowMatch(),
     ]
     if include_judges:
         evals.extend(qualitative_judges())

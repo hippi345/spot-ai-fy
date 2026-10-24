@@ -25,6 +25,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements-dev.txt
 
+      - name: Play history RAG deterministic tests
+        env:
+          DATA_DIR: /tmp/spot-play-history-tests
+        run: |
+          python -m pytest backend/tests/test_play_log_windows.py \
+            backend/tests/test_play_log_integration.py -q
+
       - name: Mocked agent eval vs baseline-ci.json
         env:
           DATA_DIR: /tmp/spot-agent-eval
