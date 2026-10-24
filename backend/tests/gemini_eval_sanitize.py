@@ -60,11 +60,6 @@ def write_sanitized_eval_artifact(
 
 def assert_no_secrets_in_text(text: str, secrets: Iterable[str] = ()) -> None:
     """Raise AssertionError if any secret or API-key pattern appears."""
-    for secret in secrets:
-        s = (secret or "").strip()
-        if len(s) >= 8 and s in text:
-            raise AssertionError("secret value leaked into output")
-    patterns = ("AIza", "sk-ant-", "sk-", "xai-")
-    for pat in patterns:
-        if pat in text:
-            raise AssertionError(f"suspicious key-like pattern {pat!r} in output")
+    from evals.key_leak_scan import assert_no_key_leaks
+
+    assert_no_key_leaks(text, extra_secrets=secrets)

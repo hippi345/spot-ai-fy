@@ -1,0 +1,15 @@
+# Install: pip install pre-commit && pre-commit install
+# Never commit generated eval reports under backend/tests/artifacts/.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: block-generated-eval-artifacts
+        name: block generated eval artifacts
+        entry: bash -c 'staged=$(git diff --cached --name-only --diff-filter=ACM); if echo "$staged" | grep -q "^backend/tests/artifacts/"; then echo "Refusing to commit generated files under backend/tests/artifacts/ (gitignored)."; exit 1; fi'
+        language: system
+        pass_filenames: false

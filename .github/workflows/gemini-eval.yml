@@ -25,11 +25,11 @@ jobs:
       - name: Run Gemini eval (mocked Spotify)
         if: false
         run: echo "gemini eval disabled"
-      - name: Scan artifacts before upload
-        if: false
-        run: python3 scripts/ci_scan_artifacts_for_secrets.py backend/tests/artifacts/gemini_eval_latest.json
+      - name: Scan and redact artifacts before upload
+        if: false # When re-enabled: must run before upload-artifact (never upload raw JSON).
+        run: python3 scripts/ci_scan_artifacts_for_secrets.py backend/tests/artifacts/
       - name: Upload eval artifact
-        if: false # DISABLED: no gemini-eval artifacts until leak remediation complete.
+        if: false # DISABLED: real Gemini eval paused until rotated GEMINI_API_KEY is in repo secrets.
         uses: actions/upload-artifact@v4
         with:
           name: gemini-eval-json

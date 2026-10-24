@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
-import pytest
-
 from evals.case_loader import load_dataset
 from evals.key_leak_scan import assert_no_key_leaks
 from evals.report_json import evaluation_report_to_json
@@ -29,6 +24,17 @@ def test_mock_ci_report_has_no_key_patterns() -> None:
         )
     blob = evaluation_report_to_json(report)
     assert_no_key_leaks(blob, extra_secrets=(fake_key,))
+
+
+def test_evaluation_report_json_redacts_query_key_in_payload(monkeypatch) -> None:
+    secret = "AIzaSyEvalReportJsonRedactQueryKey12345"
+    monkeypatch.setattr(
+        "evals.report_json.asdict",
+        lambda _report: {"crash_detail": f"respx not mocked ?key={secret}"},
+    )
+    blob = evaluation_report_to_json(object())
+    assert secret not in blob
+    assert_no_key_leaks(blob, (secret,))
 
 
 def test_gemini_eval_artifact_guard_unchanged(tmp_path) -> None:

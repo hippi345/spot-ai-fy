@@ -34,6 +34,21 @@ def gemini_eval_settings(data_dir, signed_in_tokens, monkeypatch):
     return s
 
 
+def test_gemini_eval_redacts_respx_not_mocked_query_key(tmp_path) -> None:
+    """respx errors embed the full request URL including ?key= when auth was query-based."""
+    secret = "AIzaSyRespxNotMockedLeakKeyForUnitTest12"
+    crash = (
+        "respx.models.RouteAssertionError: GET request not mocked for "
+        f"https://generativelanguage.googleapis.com/v1beta/models?key={secret}"
+    )
+    report = EvalReport(crashed=True, crash_detail=crash)
+    out = tmp_path / "gemini_eval_latest.json"
+    write_sanitized_eval_artifact(report, out, secrets=(secret,))
+    text = out.read_text(encoding="utf-8")
+    assert secret not in text
+    assert_no_secrets_in_text(text, (secret,))
+
+
 def test_gemini_eval_artifact_redacts_api_key(tmp_path) -> None:
     secret = "AIzaSySecretKeyThatMustNotAppearInJsonFile"
     report = EvalReport(crashed=True, crash_detail=f"error body mentioned {secret}")

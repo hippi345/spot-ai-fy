@@ -6,8 +6,9 @@ import re
 from typing import Iterable
 
 _KEY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"AIza[0-9A-Za-z_-]{35}"),
     re.compile(r"AIza[0-9A-Za-z\-_]{20,}"),
-    re.compile(r"key=[A-Za-z0-9_\-]{16,}", re.I),
+    re.compile(r"key=[^&\s'\"]+", re.I),
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}"),
     re.compile(r"xai-[A-Za-z0-9_-]{20,}"),
