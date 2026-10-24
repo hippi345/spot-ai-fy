@@ -246,9 +246,39 @@ Optional **local semantic index** of the signed-in user’s library (off by defa
 | **Privacy** | Library text and vectors stay on disk locally; embeddings never go to cloud LLM providers — only slim tool JSON in chat turns. |
 | **Setup** | `ollama pull nomic-embed-text`; API: `POST /api/library-index/rebuild`, `DELETE /api/library-index` (also removed on logout). |
 
+### Play history RAG (`search_play_history`)
+
+Optional **local play log** of tracks started through Spot-AI-fy (off by default). Each row stores title/artist/album, UTC `played_at`, the **user request** that triggered the play, skip status, and a local embedding of `title — artist — album — request_text` (plus mood tags when known). **FTS5** backs keyword fallback when vectors are missing.
+
+| Topic | Detail |
+|-------|--------|
+| **Flag** | `SPOT_PLAY_LOG=on` (default **off**). Adds `search_play_history` and `clear_play_history` tools. |
+| **Pruning** | Daily + startup: delete plays older than **90 days**; delete **skipped** plays older than **7 days**; `VACUUM` after deletes. |
+| **Skip rule** | Skipped when the user hits next/skip within `PLAY_LOG_SKIP_WITHIN_SECONDS` (default **30**) or before `PLAY_LOG_SKIP_BEFORE_FRACTION` of the track (default **0.5**). Both are configurable for live recall tests. |
+| **Retrieval** | Agent tool: time window → filter (skipped excluded) → **vector** rank with small boosts for repeats/long listens → dedupe by URI → FTS fallback. |
+| **Sample data** | `make seed-play-history` / `make reset-play-history` loads a deterministic **SAMPLE** fixture (~3k plays, committed embeddings — no Ollama in CI). |
+| **Tests** | `pytest backend/tests/test_play_log_*.py` (mock CI gate); eval cases under `backend/evals/cases/08_play_history_rag.yaml`. |
+
+**Sunset example (agentic RAG):** Joel asks *“play sunset music like what we've played this week.”* The model calls `search_play_history(query="sunset", window="this_week")`, gets URIs from this week's non-skipped plays, then calls `spotify_start_resume_playback` / queue tools using those URIs (or similar-search seeds) — grounding stays in tool JSON, not a hidden prompt injection.
+
+```mermaid
+flowchart TB
+  User[User: sunset like this week] --> LLM[Gemini / Ollama agent]
+  LLM --> HistTool[search_play_history]
+  HistTool --> Time[Time window filter]
+  HistTool --> Vec[Vector search play_log]
+  Vec --> FTS[FTS5 fallback]
+  HistTool -->|tracks + scores| LLM
+  LLM --> Play[spotify_play_* / queue]
+  Play --> SP[Spotify Web API]
+  Play --> Log[(play_log.sqlite capture)]
+```
+
+Compared with **Juke-style pre-retrieval RAG**, Spot-AI-fy keeps retrieval **on the tool path**: the model chooses when to search history vs catalog vs liked-library (`search_my_library`).
+
 ### RAG (honest naming)
 
-This is **not** full retrieval-augmented generation (no extra context injected into the system prompt). It is **tool-retrieval grounding**:
+Library search is **tool-retrieval grounding** (not hidden prompt injection):
 
 1. The model calls `search_my_library` when the user asks about *their* library in fuzzy/mood language.
 2. The tool returns a **small JSON list** (`kind`, `name`, `artists`, `uri`, `score`, `why`) under ~1.5 KB.

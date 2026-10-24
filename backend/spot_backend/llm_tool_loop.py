@@ -78,6 +78,9 @@ def run_tool_calls(
     trace_secrets: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Execute tool calls; returns OpenAI-style tool messages to append."""
+    from spot_backend.play_log_capture import bind_turn_context
+
+    bind_turn_context(user_text, trace_conversation_id or runner.conversation_id)
     tool_messages: list[dict[str, Any]] = []
     for tc in tool_calls:
         fn = tc.get("function") or tc

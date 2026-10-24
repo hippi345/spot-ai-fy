@@ -38,6 +38,7 @@ class EvalCaseInput(BaseModel):
     expect_shortcut: bool = False
     forbid_llm: bool = False
     eval_fixture: dict[str, Any] | None = None
+    play_log_enabled: bool = False
 
 
 class EvalCaseMetadata(BaseModel):
@@ -57,3 +58,5 @@ class EvalCaseMetadata(BaseModel):
     mock_spotify_profile: str = "default"
     expect_grounded: bool = False
     expect_tool_error: bool = False
+    expect_play_history_window: str = ""
+    play_log_arm: str = ""
