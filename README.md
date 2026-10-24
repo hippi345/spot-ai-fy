@@ -151,27 +151,78 @@ pytest backend/tests
 
 Optional: set `SPOT_DEBUG_BUILDER_Q=1` when running backend tests or a local server to log each playlist-builder Spotify search query at warning level and append a `q` field (no chat text) to `DATA_DIR/chat_tool_traces.jsonl` under tool `playlist_builder_search`.
 
-### Agent eval suite (pydantic-evals)
+### Qualitative testing and agent evals (pydantic-evals)
 
-Reusable regression suite under `backend/evals/` (mocked Spotify + optional live LLM). Verified against **pydantic-evals 2.61.0** / **pydantic-ai-slim 2.61.0** ([multi-run `repeat`](https://pydantic.dev/docs/ai/evals/how-to/multi-run/), [`MaxDuration`](https://pydantic.dev/docs/ai/evals/evaluators/built-in/), [`report.print(baseline=...)`](https://pydantic.dev/docs/ai/evals/evaluators/built-in/), [`LLMJudge`](https://pydantic.dev/docs/ai/evals/evaluators/llm-judge/) via `pydantic-ai-slim[openai]`).
+Dev-only suite in `backend/evals/` that regression-tests **current agent behavior** before you ship prompt or tool changes. It uses **[pydantic-evals 2.61.0](https://pypi.org/project/pydantic-evals/)** with **[pydantic-ai-slim 2.61.0](https://pypi.org/project/pydantic-ai-slim/)** for `LLMJudge` (see [multi-run `repeat`](https://pydantic.dev/docs/ai/evals/how-to/multi-run/), [`MaxDuration`](https://pydantic.dev/docs/ai/evals/evaluators/built-in/), [`report.print(baseline=…)`](https://pydantic.dev/docs/ai/api/pydantic_evals/reporting/), [LLM judge](https://pydantic.dev/docs/ai/evals/evaluators/llm-judge/)).
+
+**Case groups** (in `backend/evals/cases.yaml`): search/play, playlist add with dedupe, create/rename playlist, queue/repeat/shuffle/volume, multi-step flows, deterministic-shortcut routing, ambiguous artists, refusals/errors (no device, 429, empty search), and reply grounding.
+
+**Deterministic evaluators** (`backend/evals/evaluators.py`): tool-sequence match, forbidden tools, shortcut routing (no LLM), Hit@1, per-case latency, reply grounding (reuses `reply_grounding.py`), and tool-error handling. Dataset-level `MaxDuration` caps runaway tasks.
+
+**LLM-judge rubrics** (`backend/evals/judges.py`): mood/intent fit, accurate summary of actions, concise tone, and no false claims. Each rubric emits a **score** (0–1) and **pass/fail assertion**. Judges are off in CI; enable with `--judge` for local live runs.
+
+**Judge model config** (env vars, never committed):
+
+| Variable | Purpose |
+|----------|---------|
+| `EVAL_JUDGE_MODEL` | Full pydantic-ai model id (e.g. `openai:qwen2.5:7b` or `ollama:…`) |
+| `EVAL_JUDGE_OLLAMA_MODEL` | Shorthand when using Ollama’s OpenAI-compatible `/v1` (default `qwen2.5:7b`) |
+| `OLLAMA_HOST` | Used to set `OPENAI_BASE_URL` for local judges |
+
+`temperature=0` is pinned via `ModelSettings`.
+
+**Mocked vs live**
+
+| Mode | Command | Needs |
+|------|---------|--------|
+| Mock (CI) | `python -m evals.run --mode mock --ci --regression-report` | No Spotify/LLM; respx fixtures |
+| Mock (full) | `python -m evals.run --mode mock --regression-report` | Same |
+| Live | `python -m evals.run --mode live --provider all --judge ollama:qwen2.5:7b` | Tokens + at least one LLM provider |
+
+Fast pytest mirror: `pytest backend/tests/test_eval_smoke.py backend/tests/test_eval_evaluators.py`.
+
+**CI workflows**
+
+| Workflow | Trigger | Role |
+|----------|---------|------|
+| [`agent-eval-mock`](.github/workflows/agent-eval-mock.yml) | Every PR | **Required gate** — mocked subset vs `backend/evals/baseline.json` |
+| [`agent-eval-live`](.github/workflows/agent-eval-live.yml) | `workflow_dispatch` + weekly | Full live suite; **skips cleanly** if Gemini/Ollama/Spotify secrets are unset; uploads JSON/Markdown artifacts |
+
+**Baseline gate:** `backend/evals/baseline.json` stores aggregate assertion pass rates from the mock CI subset. PRs fail when `python -m evals.run --mode mock --ci --regression-report` detects a drop (see `backend/evals/baseline.py`). **Update baseline** only when you intentionally change expected behavior:
 
 ```bash
 cd backend
-pip install -r requirements-dev.txt
-
-# Fast mocked run (same subset as CI)
-python -m evals.run --mode mock --ci
-
-# Full mocked dataset + save/compare baseline
-python -m evals.run --mode mock --save-baseline
-python -m evals.run --mode mock --regression-report
-
-# Live providers (Ollama default; cloud only when the matching API key env is set)
-python -m evals.run --mode live --provider ollama
-python -m evals.run --mode live --provider all --judge ollama:qwen2.5:7b
+python -m evals.run --mode mock --ci --save-baseline
+# commit backend/evals/baseline.json with the behavior change
 ```
 
-Environment: `EVAL_JUDGE_MODEL` (default local Ollama via OpenAI-compatible `/v1`), `EVAL_JUDGE_OLLAMA_MODEL`, `DATA_DIR`, provider keys (`GEMINI_API_KEY`, etc.). No secrets in the repo.
+```bash
+cd backend && pip install -r requirements-dev.txt
+python -m evals.run --mode mock --ci
+python -m evals.run --mode mock --regression-report
+python -m evals.run --mode live --provider ollama --judge ollama:qwen2.5:7b
+```
+
+```mermaid
+flowchart TB
+  subgraph runtime [Chat runtime]
+    UI[React / Electron UI] --> API[FastAPI /api/chat]
+    API --> LLM[LLM provider]
+    LLM --> Tools[SpotifyToolRunner tools]
+    Tools --> SP[Spotify Web API]
+  end
+  subgraph evals [Agent evals - dev only]
+    YAML[cases.yaml] --> Task[mock or live task]
+    Task --> Det[Deterministic evaluators]
+    Task --> Judge[LLMJudge rubrics]
+    Det --> Report[Evaluation report]
+    Judge --> Report
+    Report --> Base[baseline.json regression gate]
+  end
+  Task -.->|live only| API
+```
+
+**Branch protection (PR 1):** mark these GitHub checks as required: **`pytest / test`**, **`agent-eval-mock / mock-eval-regression`** (plus your existing `pylint` / frontend jobs if you already require them).
 
 Optional real-Gemini replay eval (Spotify HTTP mocked; skipped when `GEMINI_API_KEY` is unset):
 
