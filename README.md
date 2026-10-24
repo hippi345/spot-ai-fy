@@ -153,13 +153,9 @@ Optional: set `SPOT_DEBUG_BUILDER_Q=1` when running backend tests or a local ser
 
 ### Qualitative testing and agent evals (pydantic-evals)
 
-Full catalog, env vars, and **annotated example cases**: [backend/evals/README.md](backend/evals/README.md).
-
 Dev-only suite in `backend/evals/` that regression-tests **current agent behavior** before you ship prompt or tool changes. It uses **[pydantic-evals 2.61.0](https://pypi.org/project/pydantic-evals/)** with **[pydantic-ai-slim 2.61.0](https://pypi.org/project/pydantic-ai-slim/)** for `LLMJudge` (see [multi-run `repeat`](https://pydantic.dev/docs/ai/evals/how-to/multi-run/), [`MaxDuration`](https://pydantic.dev/docs/ai/evals/evaluators/built-in/), [`report.print(baseline=…)`](https://pydantic.dev/docs/ai/api/pydantic_evals/reporting/), [LLM judge](https://pydantic.dev/docs/ai/evals/evaluators/llm-judge/)).
 
-Full catalog, env vars, and **annotated example cases**: [backend/evals/README.md](backend/evals/README.md).
-
-**Case groups** (in `backend/evals/cases/*.yaml`): search/play, playlist add with dedupe, create/rename playlist, queue/repeat/shuffle/volume, multi-step flows, deterministic-shortcut routing, ambiguous artists, refusals/errors (no device, 429, empty search), and reply grounding.
+**Case groups** (in `backend/evals/cases.yaml`): search/play, playlist add with dedupe, create/rename playlist, queue/repeat/shuffle/volume, multi-step flows, deterministic-shortcut routing, ambiguous artists, refusals/errors (no device, 429, empty search), and reply grounding.
 
 **Deterministic evaluators** (`backend/evals/evaluators.py`): tool-sequence match, forbidden tools, shortcut routing (no LLM), Hit@1, per-case latency, reply grounding (reuses `reply_grounding.py`), and tool-error handling. Dataset-level `MaxDuration` caps runaway tasks.
 
@@ -183,39 +179,7 @@ Full catalog, env vars, and **annotated example cases**: [backend/evals/README.m
 | Mock (full) | `python -m evals.run --mode mock --regression-report` | Same |
 | Live | `python -m evals.run --mode live --provider all --judge ollama:qwen2.5:7b` | Tokens + at least one LLM provider; **`--provider all` is live-only** (mock CI always uses the respx task) |
 
-One-shot live run (same flags as [`agent-eval-live`](.github/workflows/agent-eval-live.yml)): from the repo root, set `SPOTIFY_CLIENT_ID`, `SPOTIFY_REFRESH_TOKEN`, and at least one LLM credential (or `OLLAMA_HOST`), then `./scripts/run-live-evals.sh`. Reports land in `/tmp/spot-live-eval-reports/` by default.
-
-Fast pytest mirror: `pytest backend/tests/test_eval_smoke.py backend/tests/test_eval_evaluators.py backend/tests/test_eval_key_leak_guard.py`.
-
-**Case catalog (68 cases in `backend/evals/cases/*.yaml`)**
-
-| Feature | Cases | CI | Check type | Mode |
-|---|---:|---:|---|---|
-| ambiguous | 2 | 0 | deterministic | mock |
-| ambiguous_artist | 1 | 1 | deterministic | mock |
-| deterministic_shortcut | 3 | 3 | deterministic | mock |
-| grounding | 2 | 2 | deterministic | mock |
-| library_mood | 2 | 2 | deterministic | mock |
-| library_ops | 7 | 0 | deterministic | mock |
-| library_search | 3 | 3 | deterministic | mock |
-| mood | 2 | 0 | judge | mock |
-| multi_step | 1 | 1 | deterministic | mock |
-| multi_turn | 1 | 1 | deterministic | mock |
-| play | 3 | 1 | deterministic, judge | live, mock |
-| playlist | 7 | 0 | deterministic | mock |
-| playlist_add_dedupe | 1 | 1 | deterministic | mock |
-| playlist_create_rename | 2 | 1 | deterministic, judge | mock |
-| podcasts | 1 | 0 | deterministic | mock |
-| profile | 1 | 1 | deterministic | mock |
-| queue | 2 | 0 | deterministic | mock |
-| refusals | 1 | 1 | deterministic | mock |
-| refusals_errors | 3 | 2 | deterministic, judge | mock |
-| safety | 4 | 3 | deterministic | mock |
-| search | 5 | 1 | deterministic | mock |
-| search_and_play | 2 | 2 | deterministic | mock |
-| transport | 8 | 4 | deterministic, judge | live, mock |
-
-Mock CI (`metadata.ci: true`, 31 cases) gates deterministic evaluators (tool sequence, grounding, JSON tool payloads, errors). Live scheduled runs use `metadata.live: true` cases with LLM judges; **mood** rubric applies only when `metadata.mood_request` is set. Library index eval arms use `library_index_arm: "on"|"off"` (`SPOT_LIBRARY_INDEX` stays **off** by default). Secret hygiene: `backend/tests/test_eval_key_leak_guard.py` and the [`gitleaks`](.github/workflows/gitleaks.yml) workflow.
+Fast pytest mirror: `pytest backend/tests/test_eval_smoke.py backend/tests/test_eval_evaluators.py`.
 
 **CI workflows**
 
@@ -282,89 +246,56 @@ Optional **local semantic index** of the signed-in user’s library (off by defa
 | **Privacy** | Library text and vectors stay on disk locally; embeddings never go to cloud LLM providers — only slim tool JSON in chat turns. |
 | **Setup** | `ollama pull nomic-embed-text`; API: `POST /api/library-index/rebuild`, `DELETE /api/library-index` (also removed on logout). |
 
-#### SAMPLE catalog (local dev / demo — not your Spotify library)
+### Play history RAG (`search_play_history`)
 
-Evals and local demos share one **committed fictional catalog** (`backend/evals/fixtures/eval_library.json`, ~3.6k **SAMPLE** tracks with moods/tempo/tags, play counts, and 50 planted “sunset loved” tracks). Regenerate with:
+Optional **local play log** of tracks started through Spot-AI-fy (off by default). Each row stores title/artist/album, UTC `played_at`, the **user request** that triggered the play, skip status, and a local embedding of `title — artist — album — request_text` (plus mood tags when known). **FTS5** backs keyword fallback when vectors are missing.
 
-```bash
-python3 scripts/generate_eval_library_fixture.py
+| Topic | Detail |
+|-------|--------|
+| **Flag** | `SPOT_PLAY_LOG=on` (default **off**). Adds `search_play_history` and `clear_play_history` tools. |
+| **Pruning** | Daily + startup: delete plays older than **90 days**; delete **skipped** plays older than **7 days**; `VACUUM` after deletes. |
+| **Skip rule** | Skipped when the user hits next/skip within `PLAY_LOG_SKIP_WITHIN_SECONDS` (default **30**) or before `PLAY_LOG_SKIP_BEFORE_FRACTION` of the track (default **0.5**). Both are configurable for live recall tests. |
+| **Retrieval** | Agent tool: time window → filter (skipped excluded) → **vector** rank with small boosts for repeats/long listens → dedupe by URI → FTS fallback. |
+| **Sample data** | `make seed-play-history` / `make reset-play-history` loads a deterministic **SAMPLE** fixture (~3k plays, committed embeddings — no Ollama in CI). |
+| **Tests** | `pytest backend/tests/test_play_log_*.py` (mock CI gate); eval cases under `backend/evals/cases/08_play_history_rag.yaml`. |
+
+**Sunset example (agentic RAG):** Joel asks *“play sunset music like what we've played this week.”* The model calls `search_play_history(query="sunset", window="this_week")`, gets URIs from this week's non-skipped plays, then calls `spotify_start_resume_playback` / queue tools using those URIs (or similar-search seeds) — grounding stays in tool JSON, not a hidden prompt injection.
+
+```mermaid
+flowchart TB
+  User[User: sunset like this week] --> LLM[Gemini / Ollama agent]
+  LLM --> HistTool[search_play_history]
+  HistTool --> Time[Time window filter]
+  HistTool --> Vec[Vector search play_log]
+  Vec --> FTS[FTS5 fallback]
+  HistTool -->|tracks + scores| LLM
+  LLM --> Play[spotify_play_* / queue]
+  Play --> SP[Spotify Web API]
+  Play --> Log[(play_log.sqlite capture)]
 ```
 
-**Seed the index without any Spotify account** (writes `{DATA_DIR}/library_index.sqlite` + `{DATA_DIR}/sample_library_catalog.json`):
+Compared with **Juke-style pre-retrieval RAG**, Spot-AI-fy keeps retrieval **on the tool path**: the model chooses when to search history vs catalog vs liked-library (`search_my_library`).
 
-```bash
-make seed-library
-# optional: DATA_DIR=/tmp/spot-demo make seed-library
-```
+### RAG (honest naming)
 
-**Remove the SAMPLE index and marker:**
+Library search is **tool-retrieval grounding** (not hidden prompt injection):
 
-```bash
-make reset-library
-```
-
-Try **“play sunset vibes from songs I've loved over the years”** locally, index **ON vs OFF**:
-
-1. **SAMPLE seed** (once): `make seed-library` — uses committed embeddings; no Spotify login required for the index itself.
-2. **Backend** (from `backend/`): set `SPOT_LIBRARY_INDEX=on`, start the API as you usually do for local dev.
-3. **Chat** with your LLM provider configured; ask: `play sunset vibes from songs I've loved over the years`.
-   - **Index ON** (`SPOT_LIBRARY_INDEX=on`): agent can call `search_my_library` against the **SAMPLE** index; picks should stay within the fictional catalog (planted sunset tracks rank highly).
-4. Stop the server, set `SPOT_LIBRARY_INDEX=off` (or unset), restart, and repeat the same prompt — tool is unavailable; behavior falls back to catalog search / other tools (compare grounding and whether picks stay in-library).
-5. When finished: `make reset-library` to drop the **SAMPLE** sqlite file and marker.
-
-Everything above is **SAMPLE_DATA** for development and evals only.
-
-### RAG (retrieve → augment → generate)
-
-**Example (Joel):** *“Play sunset songs based on what folks have liked in the past.”*
-
-| Step | What happens in Spot-AI-fy |
-|------|----------------------------|
-| **Retrieve** | Vector search (or FTS fallback) over **the signed-in user’s own library** — liked tracks, playlists, artists in `library_index.sqlite` — via the `search_my_library` tool. |
-| **Augment** | Top hits return as **tool JSON** on the next model turn (`name`, `artists`, `uri`, `score`, `why`), not as a hidden system-prompt injection. |
-| **Generate** | The LLM reads those hits and **generates** a reply plus follow-up tool calls (`spotify_play_track`, queue, playlist tools, etc.). |
-
-Spot-AI-fy uses **agentic, tool-based RAG**: the model **chooses** whether to call `search_my_library`. Nothing pre-fetches library candidates on the server before the LLM runs.
-
-**Contrast — Juke-style classic pre-retrieval RAG:** the server runs k-NN over an embedding index **first**, injects candidate tracks into the prompt (or context block), **then** calls the LLM once. Retrieval is guaranteed; the model always sees candidates.
-
-| | Agentic (Spot-AI-fy) | Classic pre-retrieval (e.g. Juke) |
-|--|----------------------|-----------------------------------|
-| Who retrieves? | LLM via `search_my_library` | Server before LLM |
-| Context shape | Tool results in the chat turn | Injected text / context |
-| Flexibility | Can search catalog, shortcuts, or skip library | Library candidates always present |
-| Risk | Model may **skip** retrieval and guess | Retrieval cost every turn; less tool flexibility |
-
-**Tradeoff:** agentic RAG is flexible (multi-tool plans, non-library prompts) but the model can skip vector search. Evals guard that path — e.g. **library-mood** live cases and tool-sequence expectations on index **ON** arms check that retrieval runs when the prompt is library-specific.
+1. The model calls `search_my_library` when the user asks about *their* library in fuzzy/mood language.
+2. The tool returns a **small JSON list** (`kind`, `name`, `artists`, `uri`, `score`, `why`) under ~1.5 KB.
+3. The LLM uses those URIs/names for follow-up Spotify tools (`spotify_play_track`, `spotify_play_playlist`, etc.).
 
 Deterministic shortcuts (e.g. “play something chill”) are unchanged — they never hit the index.
 
 ```mermaid
 flowchart TB
-  User["User: play sunset songs based on what folks have liked"]
-  LLM[LLM chat turn]
-  Decide{Agent chooses tools}
-  LibTool[search_my_library]
-  Idx[(library_index.sqlite)]
-  Vec[Vector cosine + play/like boost]
-  FTS[FTS5 keyword fallback]
-  Augment["Augment: slim JSON hits in tool message"]
-  Gen[Generate reply + playback tools]
-  Play[spotify_play_track / queue / playlist]
-  SP[Spotify Web API]
-
-  User --> LLM
-  LLM --> Decide
-  Decide -->|library mood / fuzzy likes| LibTool
-  Decide -->|other intent| Play
-  LibTool --> Idx
-  Idx --> Vec
-  Idx --> FTS
-  LibTool --> Augment
-  Augment --> LLM
-  LLM --> Gen
-  Gen --> Play
-  Play --> SP
+  User[User prompt] --> LLM[LLM chat turn]
+  LLM -->|fuzzy my-library intent| LibTool[search_my_library]
+  LibTool --> Idx[(library_index.sqlite)]
+  Idx --> Emb[Ollama nomic-embed-text]
+  Idx --> FTS[FTS5 fallback]
+  LibTool -->|slim JSON hits| LLM
+  LLM --> PlayTools[spotify_play_* / queue / playlist tools]
+  PlayTools --> SP[Spotify Web API]
 ```
 
 Optional real-Gemini replay eval (Spotify HTTP mocked; skipped when `GEMINI_API_KEY` is unset):

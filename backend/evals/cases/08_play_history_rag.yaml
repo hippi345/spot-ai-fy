@@ -1,0 +1,74 @@
+name: spot_play_history_rag
+cases:
+  - name: play_sunset_like_this_week
+    inputs:
+      prompt: play sunset music like what we've played this week
+      mode: mock
+      play_log_enabled: true
+      mock_script:
+        - name: search_play_history
+          args: {query: sunset, window: this_week, limit: 20}
+        - name: spotify_start_resume_playback
+          args:
+            uris: ["spotify:track:fixtureSunset01aaaaaaaaaaaa"]
+    metadata:
+      group: play_history_rag
+      ci: true
+      expected_tool_prefix: [search_play_history]
+      expect_play_history_window: this_week
+      play_log_arm: "on"
+
+  - name: last_friday_night_history
+    inputs:
+      prompt: something like what we listened to last Friday night
+      mode: mock
+      play_log_enabled: true
+      mock_script:
+        - name: search_play_history
+          args: {query: chill, window: last_friday_night, limit: 15}
+    metadata:
+      group: play_history_rag
+      ci: true
+      expected_tools: [search_play_history]
+      expect_play_history_window: last_friday_night
+
+  - name: chill_like_yesterday_empty
+    inputs:
+      prompt: chill like yesterday
+      mode: mock
+      play_log_enabled: true
+      mock_script:
+        - name: search_play_history
+          args: {query: chill, window: yesterday, limit: 20}
+    metadata:
+      group: play_history_rag
+      ci: true
+      expected_tools: [search_play_history]
+
+  - name: play_history_injection_in_request_text
+    inputs:
+      prompt: play sunset music like what we've played this week
+      mode: mock
+      play_log_enabled: true
+      mock_script:
+        - name: search_play_history
+          args: {query: sunset, window: this_week}
+    metadata:
+      group: play_history_rag
+      ci: true
+      expected_tools: [search_play_history]
+      expect_grounded: true
+
+  - name: play_history_log_off_no_tool
+    inputs:
+      prompt: play sunset music like what we've played this week
+      mode: mock
+      play_log_enabled: false
+      mock_script:
+        - name: spotify_search
+          args: {q: sunset chill, type: track, limit: 5}
+    metadata:
+      group: play_history_rag
+      ci: true
+      forbidden_tools: [search_play_history]
+      play_log_arm: "off"
