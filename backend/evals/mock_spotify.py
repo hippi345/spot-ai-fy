@@ -33,6 +33,16 @@ def _player_json(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def allow_eval_llm_passthrough() -> None:
+    """Allow real HTTP to cloud LLM APIs while respx mocks Spotify in live evals."""
+    respx.route(url__regex=r"https://generativelanguage\.googleapis\.com/.*").pass_through()
+    respx.route(url__regex=r"https://api\.openai\.com/.*").pass_through()
+    respx.route(url__regex=r"https://api\.anthropic\.com/.*").pass_through()
+    respx.route(url__regex=r"https://api\.x\.ai/.*").pass_through()
+    respx.route(url__regex=r"http://127\.0\.0\.1:\d+/.*").pass_through()
+    respx.route(url__regex=r"http://localhost:\d+/.*").pass_through()
+
+
 def install_profile(profile: str = "default") -> None:
     """Register Spotify API mocks for the given profile name."""
     respx.reset()
@@ -56,6 +66,9 @@ def install_profile(profile: str = "default") -> None:
         return
     if profile == "empty_search":
         _install_empty_search()
+        return
+    if profile == "canonical_library":
+        _install_canonical_library()
         return
     _install_default()
 
@@ -153,6 +166,98 @@ def _install_default() -> None:
     )
     respx.get(url__regex=r"https://api\.spotify\.com/v1/me$").mock(
         return_value=httpx.Response(200, json={"id": "meuser", "display_name": "Eval User"})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/artists/[^/]+$").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": ARTIST_SZA, "name": "SZA", "uri": f"spotify:artist:{ARTIST_SZA}"},
+        )
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/artists/[^/]+/top-tracks.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "tracks": [
+                    {
+                        "id": TRACK_B,
+                        "uri": f"spotify:track:{TRACK_B}",
+                        "name": "Kill Bill",
+                        "artists": [{"name": "SZA"}],
+                    }
+                ]
+            },
+        )
+    )
+    _install_library_sync_mocks()
+
+
+def _install_canonical_library() -> None:
+    """Large saved-tracks library for vector-search live evals."""
+    from evals.eval_library_fixture import spotify_saved_tracks_page, spotify_top_tracks
+
+    _install_default()
+
+    def _tracks_handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params.get("offset") or 0)
+        limit = int(request.url.params.get("limit") or 50)
+        return httpx.Response(200, json=spotify_saved_tracks_page(offset, limit))
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/tracks.*").mock(side_effect=_tracks_handler)
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/top/tracks.*").mock(
+        return_value=httpx.Response(200, json=spotify_top_tracks(50))
+    )
+
+
+def _install_library_sync_mocks() -> None:
+    """Saved tracks/playlists/following for search_my_library and library tools in live evals."""
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/tracks.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "track": {
+                            "id": TRACK_B,
+                            "uri": f"spotify:track:{TRACK_B}",
+                            "name": "Pump It",
+                            "artists": [{"name": "Artist"}],
+                            "album": {"name": "Workout", "release_date": "2020"},
+                        }
+                    },
+                    {
+                        "track": {
+                            "id": "3333333333333333333333",
+                            "uri": "spotify:track:3333333333333333333333",
+                            "name": "Soft Rain",
+                            "artists": [{"name": "Singer"}],
+                            "album": {"name": "Gentle", "release_date": "2019"},
+                        }
+                    },
+                ],
+                "total": 2,
+            },
+        )
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/playlists.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "id": PL_RNB,
+                        "name": "RNB2025",
+                        "uri": f"spotify:playlist:{PL_RNB}",
+                    }
+                ],
+                "total": 1,
+            },
+        )
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/following.*").mock(
+        return_value=httpx.Response(200, json={"artists": {"items": [], "total": 0}})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/playlists/[^/]+/tracks.*").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0})
     )
 
 

@@ -9,6 +9,8 @@ from typing import Any
 from pydantic import BaseModel
 from pydantic_evals.reporting import EvaluationReport
 
+from spot_backend.llm_secret_safety import redact_known_api_keys
+
 
 def _json_default(obj: Any) -> Any:
     if isinstance(obj, BaseModel):
@@ -22,4 +24,5 @@ def _json_default(obj: Any) -> Any:
 
 def evaluation_report_to_json(report: EvaluationReport) -> str:
     payload = asdict(report)
-    return json.dumps(payload, indent=2, default=_json_default)
+    text = json.dumps(payload, indent=2, default=_json_default)
+    return redact_known_api_keys(text)

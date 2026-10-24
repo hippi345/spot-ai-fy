@@ -42,7 +42,7 @@ from spot_backend.llm_tool_loop import (
     finalize_assistant_text,
     run_library_save_fallback_if_needed,
 )
-from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
+from spot_backend.spotify_tools import SpotifyToolRunner, ollama_tools_for_agent
 from spot_backend.tool_server_enforcement import (
     enforce_tool_arguments_for_turn,
     rewrite_tool_call_for_turn,
@@ -64,7 +64,7 @@ def _gemini_post_with_retry(
     client: httpx.Client,
     url: str,
     *,
-    params: dict[str, Any],
+    headers: dict[str, str],
     json_body: dict[str, Any],
 ) -> httpx.Response:
     """POST to Gemini with exponential backoff on 503 / 429.
@@ -75,13 +75,13 @@ def _gemini_post_with_retry(
     """
     last: httpx.Response | None = None
     for attempt in range(_GEMINI_RETRY_ATTEMPTS):
-        resp = client.post(url, params=params, json=json_body)
+        resp = client.post(url, headers=headers, json=json_body)
         last = resp
         if resp.status_code not in _GEMINI_RETRY_STATUSES:
             if resp.status_code == 400:
                 logger.warning(
                     "gemini_http_400 body=%s",
-                    redact_known_api_keys((resp.text or "")[:2000], [params.get("key", "")]),
+                    redact_known_api_keys((resp.text or "")[:2000], [headers.get("x-goog-api-key", "")]),
                 )
             resp.raise_for_status()
             return resp
@@ -526,7 +526,7 @@ def run_chat_turn_gemini(
     from spot_backend.llm_prefs import read_effective_gemini_model
 
     model = read_effective_gemini_model(settings.data_dir, settings.gemini_model) or _DEFAULT_GEMINI_MODEL
-    declarations = _openai_tools_to_gemini_declarations(OLLAMA_TOOLS)
+    declarations = _openai_tools_to_gemini_declarations(ollama_tools_for_agent(settings))
     runner = SpotifyToolRunner(settings=settings, conversation_id=conversation_id)
     hist = _coerce_chat_history(history)
     seed_runner_from_chat_history(runner, hist, conversation_id=conversation_id)
@@ -558,7 +558,9 @@ def run_chat_turn_gemini(
     spotify_intent_blob = " ".join([user_text] + [t["content"] for t in hist[-10:]])
 
     url = f"{_GEMINI_REST}/models/{model}:generateContent"
-    params = {"key": key}
+    from spot_backend.gemini_http import gemini_rest_headers
+
+    gemini_headers = gemini_rest_headers(key)
 
     loop_state = ToolLoopState()
     had_tool_results = False
@@ -623,7 +625,7 @@ def run_chat_turn_gemini(
                         history_errors[:8],
                     )
 
-                resp = _gemini_post_with_retry(client, url, params=params, json_body=body)
+                resp = _gemini_post_with_retry(client, url, headers=gemini_headers, json_body=body)
                 data = resp.json()
 
                 cands = data.get("candidates")
@@ -1026,13 +1028,24 @@ def iter_gemini_chat_events(
 
     yield {"type": "status", "message": "Calling Gemini…"}
     try:
+        llm_activity_emitted = False
+
+        def _emit_with_llm_mark(ev: dict[str, Any]) -> None:
+            nonlocal llm_activity_emitted
+            if ev.get("type") in ("tool_start", "tool_done") and not llm_activity_emitted:
+                llm_activity_emitted = True
+                events.append({"type": "llm_delta", "text": ""})
+            events.append(ev)
+
         text = run_chat_turn_gemini(
             user_text,
             settings,
             history=history,
-            emit=_emit,
+            emit=_emit_with_llm_mark,
             conversation_id=conversation_id,
         )
+        if not llm_activity_emitted and (text or "").strip():
+            yield {"type": "llm_delta", "text": ""}
         for ev in events:
             yield ev
         visible = (text or "").strip()
@@ -1044,7 +1057,11 @@ def iter_gemini_chat_events(
             )
         yield {"type": "final", "text": visible}
     except Exception as e:
-        logger.warning("gemini_sse_turn_error err=%s user_text=%s", e, user_text[:120])
+        logger.warning(
+            "gemini_sse_turn_error err=%s user_text=%s",
+            redact_known_api_keys(str(e), [key]),
+            user_text[:120],
+        )
         yield {
             "type": "error",
             "message": (

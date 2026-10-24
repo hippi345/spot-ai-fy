@@ -1,0 +1,71 @@
+name: spot_agent_evals
+cases:
+  - name: sample_sunset_loved_over_years
+    inputs:
+      prompt: play sunset vibes from songs I've loved over the years
+      mode: live
+      mock_spotify_profile: canonical_library
+    metadata:
+      feature: library_search
+      group: sample_sunset
+      canonical_library: true
+      library_only: true
+      check_type: judge
+      live: true
+      expect_grounded: true
+
+  - name: sample_sunset_late_night_loved
+    inputs:
+      prompt: late-night wind-down from my loved tracks over the years
+      mode: live
+      mock_spotify_profile: canonical_library
+    metadata:
+      feature: library_search
+      group: sample_sunset
+      canonical_library: true
+      library_only: true
+      check_type: judge
+      live: true
+      expect_grounded: true
+
+  - name: sample_sunday_morning_loved
+    inputs:
+      prompt: sunday morning gentle picks from songs I've loved
+      mode: live
+      mock_spotify_profile: canonical_library
+    metadata:
+      feature: library_search
+      group: sample_sunset
+      canonical_library: true
+      library_only: true
+      check_type: judge
+      live: true
+      expect_grounded: true
+
+  - name: sample_last_summer_loved
+    inputs:
+      prompt: what I loved last summer from my library
+      mode: live
+      mock_spotify_profile: canonical_library
+    metadata:
+      feature: library_search
+      group: sample_sunset
+      canonical_library: true
+      library_only: true
+      check_type: judge
+      live: true
+      expect_grounded: true
+
+  - name: sample_loved_2022_upbeat
+    inputs:
+      prompt: play upbeat tracks I loved in 2022 from my library
+      mode: live
+      mock_spotify_profile: canonical_library
+    metadata:
+      feature: library_search
+      group: sample_sunset
+      canonical_library: true
+      library_only: true
+      check_type: judge
+      live: true
+      expect_grounded: true

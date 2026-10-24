@@ -18,7 +18,12 @@ def _aggregate_report(report: EvaluationReport) -> dict[str, Any]:
     score_vals: dict[str, list[float]] = {}
     for case in report.cases:
         for name, res in (case.assertions or {}).items():
-            assertion_rates.setdefault(name, []).append(bool(res.value))
+            if isinstance(res.value, str) and res.value == "skipped":
+                continue
+            if isinstance(res.value, bool):
+                assertion_rates.setdefault(name, []).append(res.value)
+            else:
+                assertion_rates.setdefault(name, []).append(bool(res.value))
         for name, res in (case.scores or {}).items():
             try:
                 score_vals.setdefault(name, []).append(float(res.value))

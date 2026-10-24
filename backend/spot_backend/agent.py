@@ -57,7 +57,7 @@ from spot_backend.ollama_agent_profile import (
     should_retry_ollama_without_think,
     use_small_model_mode,
 )
-from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
+from spot_backend.spotify_tools import SpotifyToolRunner, ollama_tools_for_agent
 
 _SYSTEM = """You are a Spotify assistant with tools to read the user's library and control playback.
 Rules:
@@ -561,7 +561,7 @@ def iter_ollama_chat_events(
         session_ctx = format_runner_session_context(runner)
         if session_ctx:
             base_system = base_system + session_ctx
-        active_tools = filter_ollama_tools(OLLAMA_TOOLS, small=small_model)
+        active_tools = filter_ollama_tools(ollama_tools_for_agent(settings), small=small_model)
         informational_turn = prompt_is_informational(user_text)
         if informational_turn:
             base_system = base_system + informational_system_suffix(user_text)

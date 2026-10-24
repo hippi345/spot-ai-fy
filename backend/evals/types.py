@@ -38,6 +38,7 @@ class EvalCaseInput(BaseModel):
     expect_shortcut: bool = False
     forbid_llm: bool = False
     eval_fixture: dict[str, Any] | None = None
+    library_index_arm: str = ""
 
 
 class EvalCaseMetadata(BaseModel):
@@ -57,3 +58,7 @@ class EvalCaseMetadata(BaseModel):
     mock_spotify_profile: str = "default"
     expect_grounded: bool = False
     expect_tool_error: bool = False
+    mood_request: bool = False
+    library_index_arm: str = ""  # "on" | "off" | "" (unset)
+    canonical_library: bool = False
+    library_only: bool = False

@@ -43,6 +43,20 @@ def main() -> None:
 
     with respx.mock:
         install_profile("default")
+        from evals.mock_spotify import TRACK_A
+
+        respx.get(url__regex=rf"https://api\.spotify\.com/v1/tracks/{TRACK_A}").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": TRACK_A,
+                    "uri": f"spotify:track:{TRACK_A}",
+                    "name": "Down",
+                    "artists": [{"name": "Jay Sean"}],
+                    "album": {"id": "alb1" + "x" * 18, "name": "All or Nothing"},
+                },
+            )
+        )
         client = TestClient(app)
         flows = [
             ("GET /api/session", lambda: client.get("/api/session")),
@@ -93,9 +107,15 @@ def _chat_gemini_mock(client: TestClient, message: str, tool: str) -> httpx.Resp
 
     def handler(_body: dict, n: int, req: httpx.Request) -> httpx.Response:
         if n == 1:
-            part = {"functionCall": {"name": tool, "args": {}}}
+            args = {}
+            if tool == "spotify_play_track":
+                args = {"track_name": "Down", "artist_name": "Jay Sean"}
+            part = {"functionCall": {"name": tool, "args": args}}
         else:
-            part = {"text": "Done."}
+            if tool == "spotify_play_track":
+                part = {"text": "Playing Down by Jay Sean."}
+            else:
+                part = {"text": "Done."}
         return httpx.Response(200, json=gemini_candidates_payload(gemini_stop_candidate(part)), request=req)
 
     _, fake_post = make_gemini_post_recorder(handler)

@@ -11,8 +11,10 @@ from spot_backend.llm_catalog import SECRET_KEY_BY_PROVIDER
 _KEY_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
     re.compile(r"sk-ant-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"AIza[0-9A-Za-z_-]{35}"),
     re.compile(r"AIza[A-Za-z0-9_-]{8,}"),
     re.compile(r"xai-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"key=[^&\s'\"]+", re.I),
 )
 
 

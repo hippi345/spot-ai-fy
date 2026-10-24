@@ -2,9 +2,40 @@
   "version": 1,
   "suite": "spot_agent_evals_live",
   "metrics": {
-    "case_count": 0,
-    "assertion_pass_rate": {},
-    "score_means": {}
+    "case_count": 11,
+    "assertion_pass_rate": {
+      "MaxDuration": 1.0,
+      "ToolSequenceMatch": 1.0,
+      "ToolSequencePrefix": 1.0,
+      "ForbiddenTools": 1.0,
+      "ShortcutRouting": 1.0,
+      "HitAt1": 1.0,
+      "CaseMaxLatency": 1.0,
+      "ReplyGrounding": 0.8181818181818182,
+      "ToolErrorHandled": 1.0,
+      "MockScriptRan": 1.0,
+      "MoodIntentJudge": 1.0,
+      "ToolJsonValid": 1.0,
+      "LibraryOnlyActs": 1.0,
+      "LovedPickShare": 0.5454545454545454,
+      "CanonicalVibeJudge": 1.0,
+      "CanonicalTasteJudge": 1.0,
+      "NoMockHttpLeakInReply": 0.9090909090909091,
+      "accurate_summary_pass": 0.8181818181818182,
+      "concise_friendly_pass": 0.8181818181818182,
+      "no_false_claims_pass": 0.8181818181818182
+    },
+    "score_means": {
+      "accurate_summary_score": 0.8181818181818182,
+      "concise_friendly_score": 0.8181818181818182,
+      "no_false_claims_score": 0.8181818181818182
+    }
   },
-  "_comment": "Populated by agent-eval-live workflow when secrets are set and --save-live-baseline runs."
+  "prior_runs": [
+    {
+      "case_count": 0,
+      "assertion_pass_rate": {},
+      "score_means": {}
+    }
+  ]
 }

@@ -83,7 +83,9 @@ def main() -> int:
             decls=decls_subset,
             fc_mode="AUTO",
         )
-        resp = client.post(url, params={"key": key}, json=body)
+        from spot_backend.gemini_http import gemini_rest_headers
+
+        resp = client.post(url, headers=gemini_rest_headers(key), json=body)
         if resp.status_code != 200:
             print(f"  [{label}] HTTP {resp.status_code}: {resp.text[:600]}")
             return False
@@ -114,7 +116,9 @@ def main() -> int:
                     decls=decls,
                     fc_mode="AUTO",
                 )
-                resp = client.post(url, params={"key": key}, json=body)
+                from spot_backend.gemini_http import gemini_rest_headers
+
+                resp = client.post(url, headers=gemini_rest_headers(key), json=body)
                 print(f"\n>>> prompt: {prompt!r}")
                 print(f"    status: {resp.status_code}")
                 if resp.status_code != 200:

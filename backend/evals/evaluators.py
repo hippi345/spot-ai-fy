@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic_evals.evaluators import Evaluator, EvaluatorContext
+from pydantic_evals.evaluators import EvaluationReason, Evaluator, EvaluatorContext
 
 from evals.types import AgentTurnResult, EvalCaseMetadata
 from spot_backend.reply_grounding import (
@@ -131,13 +132,168 @@ class ToolErrorHandled(Evaluator):
         if not meta.expect_tool_error:
             return True
         out = _output(ctx)
-        low = (out.reply or "").lower()
-        if not low:
+        parts = [out.reply or ""]
+        parts.extend(tc.result or "" for tc in out.tool_calls)
+        low = "\n".join(parts).lower()
+        if not low.strip():
             return bool(out.tool_calls)
         success_claims = ("now playing", "added to", "queued", "playing ")
         if any(s in low for s in success_claims):
             return False
-        return any(w in low for w in ("rate", "limit", "error", "couldn't", "could not", "unable", "device"))
+        return any(
+            w in low
+            for w in (
+                "rate",
+                "limit",
+                "error",
+                "couldn't",
+                "could not",
+                "unable",
+                "device",
+                "429",
+                "forbidden",
+                "must be set",
+            )
+        )
+
+
+@dataclass
+class ToolJsonValid(Evaluator):
+    """Tool results should be JSON objects when present (schema sanity)."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        out = _output(ctx)
+        for tc in out.tool_calls:
+            raw = (tc.result or "").strip()
+            if not raw:
+                continue
+            if raw[0] not in "{[":
+                # Live agent events store truncated previews, not full JSON payloads.
+                continue
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                if os.environ.get("EVAL_JUDGE_MODEL"):
+                    continue
+                return False
+            if not isinstance(data, dict):
+                return False
+        return True
+
+
+@dataclass
+class MoodIntentJudge(Evaluator):
+    """LLM mood rubric only for cases with metadata.mood_request=true (live+judge runs)."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool | EvaluationReason:
+        meta = _meta(ctx)
+        if not meta.mood_request:
+            return True
+        if not (os.environ.get("EVAL_JUDGE_MODEL") or os.environ.get("EVAL_MOOD_JUDGE") == "1"):
+            return EvaluationReason(
+                value="skipped",
+                reason="no EVAL_JUDGE_MODEL configured",
+            )
+        from evals.judges import _judge_passed, _run_judge_eval_sync, mood_intent_judge
+
+        return _judge_passed(_run_judge_eval_sync(mood_intent_judge(), ctx))
+
+
+@dataclass
+class BlankTrackTitleRejected(Evaluator):
+    """Playback tools must reject blank track or artist titles (no silent catalog guesses)."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        out = _output(ctx)
+        for tc in out.tool_calls:
+            if tc.name not in (
+                "spotify_play_track",
+                "spotify_add_to_queue",
+                "spotify_play_next",
+            ):
+                continue
+            args = tc.arguments or {}
+            title = str(args.get("track_name") or args.get("title") or "").strip()
+            artist = str(args.get("artist_name") or args.get("artist") or "").strip()
+            if title == "" and artist == "":
+                continue
+            raw = tc.result or ""
+            if title == "" or artist == "":
+                if "is required" not in raw and '"error"' in raw:
+                    return False
+        return True
+
+
+@dataclass
+class LibraryOnlyActs(Evaluator):
+    """Canonical SAMPLE cases: played URIs must exist in the committed fixture library."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        if not meta.canonical_library and not meta.library_only:
+            return True
+        from evals.eval_library_fixture import all_track_uris
+
+        allowed = all_track_uris()
+        out = _output(ctx)
+        if not out.acted_uris:
+            return True
+        return all(u in allowed for u in out.acted_uris)
+
+
+@dataclass
+class LovedPickShare(Evaluator):
+    """Share of acted URIs from top-loved tier (canonical SAMPLE sunset suite)."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        if not meta.canonical_library:
+            return True
+        from evals.eval_library_fixture import loved_pick_share
+
+        out = _output(ctx)
+        share = loved_pick_share(out.acted_uris)
+        return share >= 0.15
+
+
+@dataclass
+class CanonicalVibeJudge(Evaluator):
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        if not meta.canonical_library:
+            return True
+        if not (os.environ.get("EVAL_JUDGE_MODEL") or os.environ.get("EVAL_MOOD_JUDGE") == "1"):
+            return True
+        from evals.judges import _judge_passed, _run_judge_eval_sync, canonical_fits_vibe_judge
+
+        return _judge_passed(_run_judge_eval_sync(canonical_fits_vibe_judge(), ctx))
+
+
+@dataclass
+class CanonicalTasteJudge(Evaluator):
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        if not meta.canonical_library:
+            return True
+        if not (os.environ.get("EVAL_JUDGE_MODEL") or os.environ.get("EVAL_MOOD_JUDGE") == "1"):
+            return True
+        from evals.judges import _judge_passed, _run_judge_eval_sync, canonical_fits_taste_judge
+
+        return _judge_passed(_run_judge_eval_sync(canonical_fits_taste_judge(), ctx))
+
+
+@dataclass
+class NoMockHttpLeakInReply(Evaluator):
+    """Fail when respx AllMockedAssertionError text leaks into the user-visible reply."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        out = _output(ctx)
+        blob = (out.reply or "") + "\n".join((tc.result or "") for tc in out.tool_calls)
+        if "AllMockedAssertionError" in blob:
+            return False
+        if "RESPX:" in blob and "not mocked" in blob:
+            return False
+        return True
 
 
 @dataclass
@@ -152,6 +308,9 @@ class MockScriptRan(Evaluator):
         out = _output(ctx)
         if script_len == 0:
             return True
+        mode = inp.get("mode") if isinstance(inp, dict) else None
+        if mode == "live":
+            return True
         return len(out.tool_calls) >= 1
 
 
@@ -165,6 +324,14 @@ CUSTOM_EVALUATOR_TYPES: list[type[Evaluator]] = [
     ReplyGrounding,
     ToolErrorHandled,
     MockScriptRan,
+    MoodIntentJudge,
+    BlankTrackTitleRejected,
+    ToolJsonValid,
+    LibraryOnlyActs,
+    LovedPickShare,
+    CanonicalVibeJudge,
+    CanonicalTasteJudge,
+    NoMockHttpLeakInReply,
 ]
 
 
@@ -184,6 +351,14 @@ def dataset_evaluators(include_judges: bool = True) -> list[Any]:
         ReplyGrounding(),
         ToolErrorHandled(),
         MockScriptRan(),
+        MoodIntentJudge(),
+        BlankTrackTitleRejected(),
+        ToolJsonValid(),
+        LibraryOnlyActs(),
+        LovedPickShare(),
+        CanonicalVibeJudge(),
+        CanonicalTasteJudge(),
+        NoMockHttpLeakInReply(),
     ]
     if include_judges:
         evals.extend(qualitative_judges())

@@ -1,0 +1,16 @@
+title = "spot-ai-fy gitleaks config"
+
+[allowlist]
+description = "Deterministic test doubles only — never allow real API key material"
+regexes = [
+  '''AIzaSyMock[A-Za-z0-9_-]+''',
+  '''AIzaSyMustNotAppear[A-Za-z0-9_-]+''',
+  '''AIzaSySecretKeyThatMustNotAppear[A-Za-z0-9_-]+''',
+  '''AIzaSyRespxNotMocked[A-Za-z0-9_-]+''',
+  '''AIzaSyEvalReportJson[A-Za-z0-9_-]+''',
+  '''AIzaSyTestKey[A-Za-z0-9_-]+''',
+  '''AIzaSyMockGeminiEvalTestKey[A-Za-z0-9_-]+''',
+  '''gemini-test-key-''',
+  '''sk-test-''',
+  '''sk-ant-test-''',
+]

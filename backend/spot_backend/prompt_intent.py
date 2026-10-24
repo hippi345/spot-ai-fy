@@ -38,6 +38,7 @@ SPOTIFY_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
         "spotify_get_queue",
         "spotify_devices",
         "spotify_playback_state",
+        "search_my_library",
     }
 )
 
