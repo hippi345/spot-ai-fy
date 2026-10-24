@@ -1,0 +1,7 @@
+{
+  "passed": 0,
+  "failed": 0,
+  "crashed": true,
+  "crash_detail": "AllMockedAssertionError: RESPX: <Request('POST', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=AIzaSyDIjLK-M8OSkgll7lkIp3W7dFmDL1upjcs')> not mocked!",
+  "turns": []
+}
