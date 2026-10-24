@@ -75,8 +75,17 @@ class Settings(BaseSettings):
 
     agent_max_steps: int = 16
 
+    # Local library semantic index (search_my_library). Env: SPOT_LIBRARY_INDEX=on|off (default off).
+    spot_library_index: str = "off"
+    ollama_embed_model: str = "nomic-embed-text"
+    library_index_refresh_hours: float = 6.0
+
     # Optional path to a markdown file appended to the Spot-AI-fy system prompt (Ollama + Gemini).
     agent_context_file: str = ""
+
+    @property
+    def library_index_enabled(self) -> bool:
+        return (self.spot_library_index or "").strip().lower() in ("on", "1", "true", "yes")
 
     @property
     def resolved_token_path(self) -> Path:

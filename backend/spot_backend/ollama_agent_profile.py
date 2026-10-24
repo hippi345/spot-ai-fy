@@ -36,6 +36,7 @@ SMALL_MODEL_TOOL_NAMES: frozenset[str] = frozenset(
         "spotify_library_contains",
         "spotify_user_saved_shows",
         "spotify_play_show_latest_episode",
+        "search_my_library",
     }
 )
 
