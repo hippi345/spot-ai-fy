@@ -1,0 +1,76 @@
+name: spot_agent_evals
+cases:
+  - name: multturn_add_then_shuffle
+    inputs:
+      prompt: add SZA to my playlist then shuffle on
+      mode: mock
+      history:
+        - {role: user, content: list my playlists}
+        - {role: assistant, content: You have RNB2025.}
+      mock_script:
+        - name: spotify_add_tracks_by_query
+          args: {playlist_id: "4444444444444444444444", query: SZA, count: 1}
+        - name: spotify_set_shuffle
+          args: {state: true}
+    metadata:
+      feature: multi_turn
+      group: multi_step
+      check_type: deterministic
+      ci: true
+      expected_tools: [spotify_add_tracks_by_query, spotify_set_shuffle]
+
+  - name: mood_energetic_workout
+    inputs:
+      prompt: play something high energy for a workout from my likes
+      mode: mock
+      eval_fixture:
+        reply: "Queued a high-energy track from your likes."
+        tool_calls:
+          - name: search_my_library
+            arguments: {query: workout energy, kind: track}
+            result: '{"available":true,"mode":"semantic","results":[{"kind":"track","name":"Pump It","artists":"Artist","uri":"spotify:track:2222222222222222222222"}]}'
+    metadata:
+      feature: mood
+      group: library_mood
+      mood_request: true
+      check_type: judge
+      live: true
+      expect_grounded: true
+
+  - name: mood_sad_acoustic
+    inputs:
+      prompt: I'm feeling sad, play gentle acoustic from my library
+      mode: mock
+      eval_fixture:
+        reply: "Found a gentle acoustic song in your library."
+        tool_calls:
+          - name: search_my_library
+            arguments: {query: sad acoustic gentle, kind: track}
+            result: '{"available":true,"mode":"semantic","results":[{"kind":"track","name":"Soft Rain","artists":"Singer","uri":"spotify:track:3333333333333333333333"}]}'
+    metadata:
+      feature: mood
+      group: library_mood
+      mood_request: true
+      check_type: judge
+      live: true
+      expect_grounded: true
+
+  - name: live_play_track_prompt
+    inputs:
+      prompt: play Down by Jay Sean
+      mode: live
+    metadata:
+      feature: play
+      group: search_and_play
+      check_type: judge
+      live: true
+
+  - name: live_pause_prompt
+    inputs:
+      prompt: pause the music
+      mode: live
+    metadata:
+      feature: transport
+      group: transport_controls
+      check_type: judge
+      live: true

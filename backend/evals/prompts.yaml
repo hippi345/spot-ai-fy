@@ -1,0 +1,63 @@
+# Library-index benefit eval prompts (20). Joel: fill accepted_answers (1–3 URIs or "any of these") before running the gate.
+version: 1
+prompts:
+  - id: lib_01
+    prompt: queue something rainy-day from my liked songs
+    accepted_answers: []
+  - id: lib_02
+    prompt: which of my playlists is best for a workout?
+    accepted_answers: []
+  - id: lib_03
+    prompt: play that sad acoustic one I liked last month
+    accepted_answers: []
+  - id: lib_04
+    prompt: something like my RNB2025 playlist but slower
+    accepted_answers: []
+  - id: lib_05
+    prompt: any jazz in my likes?
+    accepted_answers: []
+  - id: lib_06
+    prompt: pick a chill track from my library for the drive home
+    accepted_answers: []
+  - id: lib_07
+    prompt: from my stuff, something upbeat for cleaning
+    accepted_answers: []
+  - id: lib_08
+    prompt: one of my playlists for studying, nothing with lyrics
+    accepted_answers: []
+  - id: lib_09
+    prompt: find me a playlist I made about summer vibes
+    accepted_answers: []
+  - id: lib_10
+    prompt: any SZA in my liked songs?
+    accepted_answers: []
+  - id: lib_11
+    prompt: moody electronic from my likes
+    accepted_answers: []
+  - id: lib_12
+    prompt: play something from my library that feels like a rainy window
+    accepted_answers: []
+  - id: lib_13
+    prompt: which followed artist matches indie folk?
+    accepted_answers: []
+  - id: lib_14
+    prompt: queue a slow R&B track from my saves
+    accepted_answers: []
+  - id: lib_15
+    prompt: suggest one of my playlists for a dinner party
+    accepted_answers: []
+  - id: lib_16
+    prompt: anything Latin in my liked tracks?
+    accepted_answers: []
+  - id: lib_17
+    prompt: from my playlists, the most hype one
+    accepted_answers: []
+  - id: lib_18
+    prompt: soft piano from my library
+    accepted_answers: []
+  - id: lib_19
+    prompt: match my 'late night' playlist energy from my likes
+    accepted_answers: []
+  - id: lib_20
+    prompt: any acoustic guitar in my liked songs?
+    accepted_answers: []

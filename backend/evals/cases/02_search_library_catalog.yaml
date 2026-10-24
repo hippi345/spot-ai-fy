@@ -1,0 +1,96 @@
+name: spot_agent_evals
+cases:
+  - name: catalog_search_track
+    inputs:
+      prompt: search for jazz tracks
+      mode: mock
+      mock_script:
+        - name: spotify_search
+          args: {query: jazz, types: track, limit: 5}
+    metadata:
+      feature: search
+      group: search_and_play
+      check_type: deterministic
+      ci: true
+      expected_tools: [spotify_search]
+
+  - name: catalog_search_playlist
+    inputs:
+      prompt: find workout playlists
+      mode: mock
+      mock_script:
+        - name: spotify_search_playlists
+          args: {query: workout, limit: 5}
+    metadata:
+      feature: search
+      group: search_and_play
+      check_type: deterministic
+      expected_tools: [spotify_search_playlists]
+
+  - name: get_track_metadata
+    inputs:
+      prompt: tell me about track 1111111111111111111111
+      mode: mock
+      mock_script:
+        - name: spotify_get_track
+          args: {track_id: "1111111111111111111111"}
+    metadata:
+      feature: search
+      group: search_and_play
+      check_type: deterministic
+      expected_tools: [spotify_get_track]
+
+  - name: library_index_on_semantic_hit
+    inputs:
+      prompt: fuzzy chill from my likes
+      mode: mock
+      library_index_arm: "on"
+      eval_fixture:
+        reply: "Playing Chill Wave from your likes."
+        tool_calls:
+          - name: search_my_library
+            arguments: {query: chill, kind: track}
+            result: '{"available":true,"mode":"semantic","results":[{"kind":"track","name":"Chill Wave","artists":"LoFi","uri":"spotify:track:1111111111111111111111"}]}'
+    metadata:
+      feature: library_search
+      group: library_index
+      library_index_arm: "on"
+      check_type: deterministic
+      ci: true
+      expect_grounded: true
+
+  - name: library_index_off_uses_catalog_search
+    inputs:
+      prompt: find chill in spotify catalog
+      mode: mock
+      library_index_arm: "off"
+      mock_script:
+        - name: spotify_search
+          args: {query: chill, types: track, limit: 5}
+    metadata:
+      feature: library_search
+      group: library_index
+      library_index_arm: "off"
+      check_type: deterministic
+      ci: true
+      expected_tools: [spotify_search]
+
+  - name: library_index_on_empty_no_invented_title
+    inputs:
+      prompt: any polka in my library?
+      mode: mock
+      library_index_arm: "on"
+      eval_fixture:
+        reply: "I couldn't find polka in your library."
+        tool_calls:
+          - name: search_my_library
+            arguments: {query: polka, kind: track}
+            result: '{"available":true,"mode":"semantic","results":[]}'
+    metadata:
+      feature: library_search
+      group: library_index
+      library_index_arm: "on"
+      mood_request: true
+      check_type: deterministic
+      ci: true
+      expect_grounded: true

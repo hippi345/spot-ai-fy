@@ -35,20 +35,12 @@ from evals.report_json import evaluation_report_to_json
 from evals.evaluators import CUSTOM_EVALUATOR_TYPES, dataset_evaluators
 from spot_backend.config import get_settings
 
+from evals.case_loader import load_dataset
 from evals.task import _ensure_eval_tokens, eval_task
 
-CASES_PATH = Path(__file__).with_name("cases.yaml")
 
-
-def _load_dataset() -> Dataset:
-    ds = Dataset.from_file(
-        CASES_PATH,
-        custom_evaluator_types=CUSTOM_EVALUATOR_TYPES,
-    )
-    for ev in dataset_evaluators(include_judges=False):
-        if ev not in ds.evaluators:
-            ds.evaluators.append(ev)
-    return ds
+def _load_dataset(*, include_judges: bool = False) -> Dataset:
+    return load_dataset(include_judges=include_judges)
 
 
 def _providers_to_run(requested: str) -> list[str]:
@@ -92,16 +84,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=None, help="JSON report path")
     parser.add_argument("--report-json", type=Path, default=None, help="Write pydantic-evals report JSON")
     parser.add_argument("--report-md", type=Path, default=None, help="Write regression markdown summary")
+    parser.add_argument(
+        "--case",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Run only case(s) with this name (repeatable)",
+    )
     args = parser.parse_args(argv)
 
     if args.judge:
         os.environ["EVAL_JUDGE_MODEL"] = args.judge
 
-    dataset = _load_dataset()
+    dataset = _load_dataset(include_judges=bool(args.judge))
     if args.judge:
         for ev in dataset_evaluators(include_judges=True):
             if ev not in dataset.evaluators:
                 dataset.evaluators.append(ev)
+
+    if args.mode == "live":
+        dataset = Dataset(
+            name=dataset.name,
+            cases=[
+                c
+                for c in dataset.cases
+                if isinstance(c.metadata, dict) and c.metadata.get("live")
+            ],
+            evaluators=dataset.evaluators,
+            report_evaluators=dataset.report_evaluators,
+        )
 
     if args.ci:
         dataset = Dataset(
@@ -110,6 +121,18 @@ def main(argv: list[str] | None = None) -> int:
             evaluators=dataset.evaluators,
             report_evaluators=dataset.report_evaluators,
         )
+
+    if args.case:
+        want = {n.strip() for n in args.case if (n or "").strip()}
+        dataset = Dataset(
+            name=dataset.name,
+            cases=[c for c in dataset.cases if c.name in want],
+            evaluators=dataset.evaluators,
+            report_evaluators=dataset.report_evaluators,
+        )
+        if not dataset.cases:
+            print(f"No cases matched --case {sorted(want)}", file=sys.stderr)
+            return 2
 
     force_mock = args.mode == "mock"
     providers = _providers_to_run(args.provider)

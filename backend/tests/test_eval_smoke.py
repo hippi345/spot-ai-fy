@@ -8,16 +8,13 @@ import pytest
 import respx
 from pydantic_evals import Dataset
 
-from evals.evaluators import CUSTOM_EVALUATOR_TYPES, dataset_evaluators
+from evals.case_loader import load_dataset
 from evals.task import eval_task
-
-CASES_PATH = Path(__file__).resolve().parents[1] / "evals" / "cases.yaml"
 
 
 @pytest.fixture
 def ci_dataset(data_dir) -> Dataset:
-    ds = Dataset.from_file(CASES_PATH, custom_evaluator_types=CUSTOM_EVALUATOR_TYPES)
-    ds.evaluators = [ev for ev in dataset_evaluators(include_judges=False) if ev]
+    ds = load_dataset(include_judges=False)
     ci_cases = [c for c in ds.cases if isinstance(c.metadata, dict) and c.metadata.get("ci")]
     return Dataset(name=f"{ds.name}_ci", cases=ci_cases, evaluators=ds.evaluators)
 

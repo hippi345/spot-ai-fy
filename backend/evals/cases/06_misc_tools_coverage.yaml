@@ -1,0 +1,133 @@
+name: spot_agent_evals
+cases:
+  - name: who_am_i
+    inputs:
+      prompt: who am I on spotify?
+      mode: mock
+      mock_script:
+        - name: spotify_me
+          args: {}
+    metadata:
+      feature: profile
+      group: search_and_play
+      check_type: deterministic
+      ci: true
+      expected_tools: [spotify_me]
+
+  - name: artist_albums_list
+    inputs:
+      prompt: list SZA albums
+      mode: mock
+      mock_script:
+        - name: spotify_artist_albums
+          args: {artist_id: "3333333333333333333333"}
+    metadata:
+      feature: search
+      group: search_and_play
+      check_type: deterministic
+      expected_tools: [spotify_artist_albums]
+
+  - name: play_artist_popular
+    inputs:
+      prompt: play SZA most popular song
+      mode: mock
+      mock_script:
+        - name: spotify_play_artist_popular_track
+          args: {artist_name: SZA}
+    metadata:
+      feature: play
+      group: search_and_play
+      check_type: deterministic
+      expected_tools: [spotify_play_artist_popular_track]
+
+  - name: play_playlist_by_name
+    inputs:
+      prompt: play my RNB2025 playlist
+      mode: mock
+      mock_script:
+        - name: spotify_play_playlist
+          args: {playlist_id: "4444444444444444444444"}
+    metadata:
+      feature: play
+      group: search_and_play
+      check_type: deterministic
+      ci: true
+      expected_tools: [spotify_play_playlist]
+
+  - name: transfer_playback_device
+    inputs:
+      prompt: move playback to Eval Speaker
+      mode: mock
+      mock_script:
+        - name: spotify_transfer_playback
+          args: {device_id: evaldevice0000000001}
+    metadata:
+      feature: transport
+      group: transport_controls
+      check_type: deterministic
+      expected_tools: [spotify_transfer_playback]
+
+  - name: unfollow_playlist
+    inputs:
+      prompt: unfollow playlist 4444444444444444444444
+      mode: mock
+      mock_script:
+        - name: spotify_unfollow_playlist
+          args: {playlist_id: "4444444444444444444444"}
+    metadata:
+      feature: playlist
+      group: playlist_create_rename
+      check_type: deterministic
+      expected_tools: [spotify_unfollow_playlist]
+
+  - name: reorder_playlist
+    inputs:
+      prompt: move track 2 to position 1 in RNB2025
+      mode: mock
+      mock_script:
+        - name: spotify_reorder_playlist_tracks
+          args: {playlist_id: "4444444444444444444444", range_start: 1, insert_before: 0}
+    metadata:
+      feature: playlist
+      group: playlist_create_rename
+      check_type: deterministic
+      expected_tools: [spotify_reorder_playlist_tracks]
+
+  - name: public_playlists_search
+    inputs:
+      prompt: search public playlists for 90s rock
+      mode: mock
+      mock_script:
+        - name: spotify_user_public_playlists
+          args: {query: 90s rock, limit: 5}
+    metadata:
+      feature: search
+      group: search_and_play
+      check_type: deterministic
+      expected_tools: [spotify_user_public_playlists]
+
+  - name: follow_artist
+    inputs:
+      prompt: follow artist SZA
+      mode: mock
+      mock_script:
+        - name: spotify_follow_artist
+          args: {artist_id: "3333333333333333333333"}
+    metadata:
+      feature: library_ops
+      group: library_ops
+      check_type: deterministic
+      expected_tools: [spotify_follow_artist]
+
+  - name: save_album
+    inputs:
+      prompt: save album bbbbccccdddddddddddddd
+      mode: mock
+      mock_script:
+        - name: spotify_save_albums
+          args: {album_ids: [bbbbccccdddddddddddddd]}
+    metadata:
+      feature: library_ops
+      group: library_ops
+      check_type: deterministic
+      expected_tools: [spotify_save_albums]

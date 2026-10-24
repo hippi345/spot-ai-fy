@@ -1,0 +1,109 @@
+name: spot_agent_evals
+cases:
+  - name: pause_playback
+    inputs:
+      prompt: pause
+      mode: mock
+      mock_script:
+        - name: spotify_pause
+          args: {}
+    metadata:
+      feature: transport
+      group: transport_controls
+      check_type: deterministic
+      ci: true
+      expected_tools: [spotify_pause]
+
+  - name: resume_playback
+    inputs:
+      prompt: resume
+      mode: mock
+      mock_script:
+        - name: spotify_start_resume_playback
+          args: {}
+    metadata:
+      feature: transport
+      group: transport_controls
+      check_type: deterministic
+      ci: true
+      expected_tools: [spotify_start_resume_playback]
+
+  - name: skip_previous
+    inputs:
+      prompt: previous track
+      mode: mock
+      expect_shortcut: true
+      forbid_llm: true
+    metadata:
+      feature: transport
+      group: transport_controls
+      check_type: deterministic
+      ci: true
+      expect_shortcut: true
+      expected_tools: [spotify_skip_previous]
+
+  - name: playback_state_query
+    inputs:
+      prompt: what is playing right now?
+      mode: mock
+      mock_script:
+        - name: spotify_playback_state
+          args: {}
+    metadata:
+      feature: transport
+      group: transport_controls
+      check_type: deterministic
+      ci: true
+      expected_tools: [spotify_playback_state]
+
+  - name: list_devices
+    inputs:
+      prompt: which speakers are available?
+      mode: mock
+      mock_script:
+        - name: spotify_devices
+          args: {}
+    metadata:
+      feature: transport
+      group: transport_controls
+      check_type: deterministic
+      expected_tools: [spotify_devices]
+
+  - name: seek_track
+    inputs:
+      prompt: skip to 30 seconds in this song
+      mode: mock
+      mock_script:
+        - name: spotify_seek
+          args: {position_ms: 30000}
+    metadata:
+      feature: transport
+      group: transport_controls
+      check_type: deterministic
+      expected_tools: [spotify_seek]
+
+  - name: get_queue
+    inputs:
+      prompt: show my queue
+      mode: mock
+      mock_script:
+        - name: spotify_get_queue
+          args: {}
+    metadata:
+      feature: queue
+      group: transport_controls
+      check_type: deterministic
+      expected_tools: [spotify_get_queue]
+
+  - name: play_next_insert
+    inputs:
+      prompt: play Down next
+      mode: mock
+      mock_script:
+        - name: spotify_play_next
+          args: {track_name: Down, artist_name: Jay Sean}
+    metadata:
+      feature: queue
+      group: transport_controls
+      check_type: deterministic
+      expected_tools: [spotify_play_next]
