@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import httpx
 
+from spot_backend.gemini_http import gemini_rest_headers
+
 
 def ollama_model_names_from_tags_payload(data: dict) -> list[str]:
     return [
@@ -54,7 +56,8 @@ def fetch_gemini_chat_model_names(
 ) -> list[str]:
     r = httpx.get(
         "https://generativelanguage.googleapis.com/v1beta/models",
-        params={"key": api_key, "pageSize": page_size},
+        params={"pageSize": page_size},
+        headers=gemini_rest_headers(api_key),
         timeout=timeout,
     )
     r.raise_for_status()

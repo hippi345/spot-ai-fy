@@ -1,5 +1,6 @@
 name: agent-eval-live-gemini
 
+# PAUSED: Gemini API key rotation after leak report — re-enable when LIVE_GEMINI_EVAL_ENABLED=true.
 on:
   pull_request:
     paths:
@@ -25,70 +26,47 @@ concurrency:
 
 jobs:
   live-eval-gemini:
+    if: false # DISABLED: live Gemini eval paused until rotated GEMINI_API_KEY is confirmed in repo secrets.
     name: live-eval-gemini
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reject fork pull requests
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        run: |
-          echo "::error::Live Gemini eval cannot run on fork PRs (repository secrets are not available)."
-          exit 1
-
-      - name: Require GEMINI_API_KEY secret
+      - name: Register secret masking (when re-enabled)
+        if: false
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          if [ -z "${GEMINI_API_KEY:-}" ]; then
-            echo "::error::Repository secret GEMINI_API_KEY is required for live-eval-gemini."
-            exit 1
+          if [ -n "${GEMINI_API_KEY:-}" ]; then
+            echo "::add-mask::${GEMINI_API_KEY}"
           fi
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            backend/requirements.txt
-            backend/requirements-dev.txt
+      - name: Reject fork pull requests
+        if: false
+        run: echo "disabled"
 
-      - name: Install backend dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements-dev.txt
-
-      - name: Run live Gemini eval suite (mock Spotify per case)
+      - name: Require GEMINI_API_KEY secret
+        if: false
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          DATA_DIR: /tmp/spot-live-eval
-          REPORT_DIR: /tmp/spot-live-eval-reports
-          SPOTIFY_CLIENT_ID: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-          LLM_EVAL_PROVIDER: gemini
-          LLM_PROVIDER: gemini
-          EVAL_JUDGE_REPEAT: "2"
-        run: ./scripts/run-live-evals.sh
+        run: echo "disabled"
 
-      - name: Scan reports for API key leaks
-        run: |
-          python3 <<'PY'
-          import sys
-          from pathlib import Path
-          sys.path.insert(0, "backend")
-          from evals.key_leak_scan import find_key_leaks
-          hits = []
-          for p in Path("/tmp/spot-live-eval-reports").glob("*"):
-              if p.is_file():
-                  hits.extend(find_key_leaks(p.read_text(encoding="utf-8", errors="replace")))
-          if hits:
-              print("Key leak patterns found")
-              sys.exit(1)
-          print("Key leak scan: clean")
-          PY
+      - uses: actions/setup-python@v5
+        if: false
+        with:
+          python-version: "3.12"
+
+      - name: Run live Gemini eval suite (mock Spotify per case)
+        if: false
+        run: echo "live eval disabled"
+
+      - name: Scan artifacts before upload
+        if: false
+        run: python3 scripts/ci_scan_artifacts_for_secrets.py /tmp/spot-live-eval-reports
 
       - name: Upload live eval reports
-        if: always()
+        if: false # DISABLED: no live-eval artifacts until leak remediation complete.
         uses: actions/upload-artifact@v4
         with:
           name: agent-eval-live-gemini-report

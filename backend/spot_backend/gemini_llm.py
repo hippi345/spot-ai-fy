@@ -558,7 +558,9 @@ def run_chat_turn_gemini(
     spotify_intent_blob = " ".join([user_text] + [t["content"] for t in hist[-10:]])
 
     url = f"{_GEMINI_REST}/models/{model}:generateContent"
-    gemini_headers = {"x-goog-api-key": key}
+    from spot_backend.gemini_http import gemini_rest_headers
+
+    gemini_headers = gemini_rest_headers(key)
 
     loop_state = ToolLoopState()
     had_tool_results = False

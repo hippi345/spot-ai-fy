@@ -71,3 +71,25 @@ def test_gemini_generate_content_uses_header_not_query_key() -> None:
         )
     assert "key=" not in seen_url
     assert "AIzaSy" not in seen_url
+
+
+@respx.mock
+def test_gemini_list_models_uses_header_not_query_key() -> None:
+    from spot_backend.llm_provider_lists import fetch_gemini_chat_model_names
+
+    seen_url = ""
+    seen_headers: dict[str, str] = {}
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_url
+        seen_url = str(request.url)
+        seen_headers.update(dict(request.headers))
+        return httpx.Response(200, json={"models": []})
+
+    respx.get(url__regex=r"https://generativelanguage\.googleapis\.com/v1beta/models.*").mock(
+        side_effect=capture
+    )
+    fetch_gemini_chat_model_names("AIzaSyTestKey1234567890", page_size=10, timeout=5.0)
+    assert "key=" not in seen_url
+    assert "AIzaSy" not in seen_url
+    assert "x-goog-api-key" in {k.lower() for k in seen_headers}
