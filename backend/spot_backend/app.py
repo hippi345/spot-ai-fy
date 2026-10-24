@@ -219,6 +219,43 @@ def logout() -> dict[str, str]:
     for p in (s.resolved_token_path, s.resolved_device_path):
         if p.is_file():
             p.unlink()
+    from spot_backend.library_index import LibraryIndex, library_index_enabled
+
+    if library_index_enabled(s):
+        LibraryIndex(settings=s).delete_index_file()
+    return {"ok": "true"}
+
+
+@app.on_event("startup")
+def _library_index_startup() -> None:
+    from spot_backend.library_index import library_index_enabled, start_background_build
+
+    s = get_settings()
+    if library_index_enabled(s):
+        start_background_build(s)
+
+
+@app.post("/api/library-index/rebuild")
+def api_library_index_rebuild() -> dict[str, str]:
+    from spot_backend.library_index import LibraryIndex, library_index_enabled
+
+    s = get_settings()
+    if not library_index_enabled(s):
+        raise HTTPException(status_code=400, detail="Library index is disabled (SPOT_LIBRARY_INDEX=off)")
+    from spot_backend.library_index import start_background_build
+
+    start_background_build(s)
+    return {"ok": "true", "status": "building"}
+
+
+@app.delete("/api/library-index")
+def api_library_index_delete() -> dict[str, str]:
+    from spot_backend.library_index import LibraryIndex, library_index_enabled
+
+    s = get_settings()
+    if not library_index_enabled(s):
+        raise HTTPException(status_code=400, detail="Library index is disabled (SPOT_LIBRARY_INDEX=off)")
+    LibraryIndex(settings=s).delete_index_file()
     return {"ok": "true"}
 
 

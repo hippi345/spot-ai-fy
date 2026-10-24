@@ -723,6 +723,15 @@ def spotify_play_show_latest_episode(show_id: str, device_id: str = "") -> str:
     return _runner.run("spotify_play_show_latest_episode", args)
 
 
+@mcp.tool()
+def search_my_library(query: str, kind: str = "any", limit: int = 10) -> str:
+    """Semantic search over the user's own liked tracks, playlists, and followed artists."""
+    return _runner.run(
+        "search_my_library",
+        {"query": query, "kind": kind, "limit": limit},
+    )
+
+
 def main() -> None:
     mcp.run()
 

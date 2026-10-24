@@ -222,7 +222,43 @@ flowchart TB
   Task -.->|live only| API
 ```
 
-**Branch protection (PR 1):** mark these GitHub checks as required: **`pytest / test`**, **`agent-eval-mock / mock-eval-regression`** (plus your existing `pylint` / frontend jobs if you already require them).
+**Branch protection:** mark these GitHub checks as required: **`pytest / test`**, **`agent-eval-mock / mock-eval-regression`** (plus your existing `pylint` / frontend jobs if you already require them).
+
+### Vector search (`search_my_library`)
+
+Optional **local semantic index** of the signed-in user’s library (off by default until the benefit gate passes).
+
+| Topic | Detail |
+|-------|--------|
+| **What’s indexed** | Liked tracks, owned/followed playlists, followed artists — one text document per item (title, artists, album/year, genres where available). |
+| **Embeddings** | [Ollama](https://ollama.com/) `nomic-embed-text` (768-d) via `POST /api/embed`; document/query prefixes `search_document:` / `search_query:`; batched 64 at a time. |
+| **Storage** | `{DATA_DIR}/library_index.sqlite` — `sqlite3` table + **numpy** cosine search (~5k vectors); **FTS5** BM25 fallback if Ollama is down. |
+| **Flag** | `SPOT_LIBRARY_INDEX=on` (default **off**). When off, the tool is not registered and no sync runs. |
+| **Refresh** | Background build after login/startup; incremental sync at most every **6h** on tool use (liked tracks newest-first, playlist `snapshot_id` skip). |
+| **Privacy** | Library text and vectors stay on disk locally; embeddings never go to cloud LLM providers — only slim tool JSON in chat turns. |
+| **Setup** | `ollama pull nomic-embed-text`; API: `POST /api/library-index/rebuild`, `DELETE /api/library-index` (also removed on logout). |
+
+### RAG (honest naming)
+
+This is **not** full retrieval-augmented generation (no extra context injected into the system prompt). It is **tool-retrieval grounding**:
+
+1. The model calls `search_my_library` when the user asks about *their* library in fuzzy/mood language.
+2. The tool returns a **small JSON list** (`kind`, `name`, `artists`, `uri`, `score`, `why`) under ~1.5 KB.
+3. The LLM uses those URIs/names for follow-up Spotify tools (`spotify_play_track`, `spotify_play_playlist`, etc.).
+
+Deterministic shortcuts (e.g. “play something chill”) are unchanged — they never hit the index.
+
+```mermaid
+flowchart TB
+  User[User prompt] --> LLM[LLM chat turn]
+  LLM -->|fuzzy my-library intent| LibTool[search_my_library]
+  LibTool --> Idx[(library_index.sqlite)]
+  Idx --> Emb[Ollama nomic-embed-text]
+  Idx --> FTS[FTS5 fallback]
+  LibTool -->|slim JSON hits| LLM
+  LLM --> PlayTools[spotify_play_* / queue / playlist tools]
+  PlayTools --> SP[Spotify Web API]
+```
 
 Optional real-Gemini replay eval (Spotify HTTP mocked; skipped when `GEMINI_API_KEY` is unset):
 

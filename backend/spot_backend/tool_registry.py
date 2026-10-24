@@ -5,7 +5,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from spot_backend.spotify_tools import OLLAMA_TOOLS
+from spot_backend.config import get_settings
+from spot_backend.spotify_tools import ollama_tools_for_agent
 
 # Intentional differences between agent-exposed tools and MCP stdio tools.
 MCP_AGENT_TOOL_ALLOWLIST_DIFF: frozenset[str] = frozenset()
@@ -15,7 +16,7 @@ _MCP_SERVER_PATH = Path(__file__).with_name("mcp_server.py")
 
 def agent_tool_names() -> set[str]:
     names: set[str] = set()
-    for entry in OLLAMA_TOOLS:
+    for entry in ollama_tools_for_agent(get_settings()):
         fn = entry.get("function") if isinstance(entry, dict) else None
         if isinstance(fn, dict) and isinstance(fn.get("name"), str):
             names.add(fn["name"])
