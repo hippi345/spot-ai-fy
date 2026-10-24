@@ -185,7 +185,7 @@ Fast pytest mirror: `pytest backend/tests/test_eval_smoke.py backend/tests/test_
 
 | Workflow | Trigger | Role |
 |----------|---------|------|
-| [`agent-eval-mock`](.github/workflows/agent-eval-mock.yml) | Every PR | **Required gate** — mocked subset vs `backend/evals/baseline.json` |
+| [`agent-eval-mock`](.github/workflows/agent-eval-mock.yml) | Every PR | **Required gate** — mocked subset vs `backend/evals/baseline-ci.json` |
 | [`agent-eval-live`](.github/workflows/agent-eval-live.yml) | `workflow_dispatch` + weekly | Full live suite; **skips cleanly** if Gemini/Ollama/Spotify secrets are unset; uploads JSON/Markdown artifacts |
 
 **Baseline gates:**
@@ -242,7 +242,7 @@ Optional **local semantic index** of the signed-in user’s library (off by defa
 | **Embeddings** | [Ollama](https://ollama.com/) `nomic-embed-text` (768-d) via `POST /api/embed`; document/query prefixes `search_document:` / `search_query:`; batched 64 at a time. |
 | **Storage** | `{DATA_DIR}/library_index.sqlite` — `sqlite3` table + **numpy** cosine search (~5k vectors); **FTS5** BM25 fallback if Ollama is down. |
 | **Flag** | `SPOT_LIBRARY_INDEX=on` (default **off**). When off, the tool is not registered and no sync runs. |
-| **Refresh** | Background build after login/startup; incremental sync at most every **6h** on tool use (liked tracks newest-first, playlist `snapshot_id` skip). |
+| **Refresh** | Background build after login/startup; incremental sync on a **background timer** (stale reads OK on `search_my_library`, at most every **6h**). |
 | **Privacy** | Library text and vectors stay on disk locally; embeddings never go to cloud LLM providers — only slim tool JSON in chat turns. |
 | **Setup** | `ollama pull nomic-embed-text`; API: `POST /api/library-index/rebuild`, `DELETE /api/library-index` (also removed on logout). |
 
