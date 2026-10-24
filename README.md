@@ -282,6 +282,38 @@ Optional **local semantic index** of the signed-in user’s library (off by defa
 | **Privacy** | Library text and vectors stay on disk locally; embeddings never go to cloud LLM providers — only slim tool JSON in chat turns. |
 | **Setup** | `ollama pull nomic-embed-text`; API: `POST /api/library-index/rebuild`, `DELETE /api/library-index` (also removed on logout). |
 
+#### SAMPLE catalog (local dev / demo — not your Spotify library)
+
+Evals and local demos share one **committed fictional catalog** (`backend/evals/fixtures/eval_library.json`, ~3.6k **SAMPLE** tracks with moods/tempo/tags, play counts, and 50 planted “sunset loved” tracks). Regenerate with:
+
+```bash
+python3 scripts/generate_eval_library_fixture.py
+```
+
+**Seed the index without any Spotify account** (writes `{DATA_DIR}/library_index.sqlite` + `{DATA_DIR}/sample_library_catalog.json`):
+
+```bash
+make seed-library
+# optional: DATA_DIR=/tmp/spot-demo make seed-library
+```
+
+**Remove the SAMPLE index and marker:**
+
+```bash
+make reset-library
+```
+
+Try **“play sunset vibes from songs I've loved over the years”** locally, index **ON vs OFF**:
+
+1. **SAMPLE seed** (once): `make seed-library` — uses committed embeddings; no Spotify login required for the index itself.
+2. **Backend** (from `backend/`): set `SPOT_LIBRARY_INDEX=on`, start the API as you usually do for local dev.
+3. **Chat** with your LLM provider configured; ask: `play sunset vibes from songs I've loved over the years`.
+   - **Index ON** (`SPOT_LIBRARY_INDEX=on`): agent can call `search_my_library` against the **SAMPLE** index; picks should stay within the fictional catalog (planted sunset tracks rank highly).
+4. Stop the server, set `SPOT_LIBRARY_INDEX=off` (or unset), restart, and repeat the same prompt — tool is unavailable; behavior falls back to catalog search / other tools (compare grounding and whether picks stay in-library).
+5. When finished: `make reset-library` to drop the **SAMPLE** sqlite file and marker.
+
+Everything above is **SAMPLE_DATA** for development and evals only.
+
 ### RAG (honest naming)
 
 This is **not** full retrieval-augmented generation (no extra context injected into the system prompt). It is **tool-retrieval grounding**:

@@ -38,4 +38,8 @@ python3 -m evals.run \
   --report-md "$REPORT_DIR/agent-eval-live-report.md" \
   --save-live-baseline
 
-echo "Reports: $REPORT_DIR/agent-eval-live-report.{json,md}"
+echo "Reports:"
+echo "  $REPORT_DIR/agent-eval-live-report_lib_off.json (threshold-gated OFF arm)"
+echo "  $REPORT_DIR/agent-eval-live-report_lib_on.json (ON arm + grounding/schema vs OFF)"
+echo "  $REPORT_DIR/agent-eval-live-report_library_comparison.{json,md}"
+echo "  $REPORT_DIR/agent-eval-live-report.md (combined summary)"

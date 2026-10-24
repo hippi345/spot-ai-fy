@@ -16,6 +16,7 @@ Environment variables (never commit values):
 | `EVAL_JUDGE_MODEL` | e.g. `ollama:qwen2.5:7b` — enables LLM judges on live runs |
 | `EVAL_JUDGE_OLLAMA_MODEL` | Shorthand model name when using Ollama OpenAI-compatible `/v1` |
 | `SPOT_LIBRARY_INDEX` | Default **off**; eval cases may set `library_index_arm: "on"` / `"off"` on inputs |
+| SAMPLE library seed | `make seed-library` / `make reset-library` — **SAMPLE_DATA** fictional catalog → `{DATA_DIR}/library_index.sqlite` (no Spotify account). See repo README. |
 
 Common commands (run from `backend/`):
 

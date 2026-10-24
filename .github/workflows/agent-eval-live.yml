@@ -93,5 +93,8 @@ jobs:
         with:
           name: agent-eval-live-gemini-report
           path: |
-            /tmp/spot-live-eval-reports/agent-eval-live-report.json
+            /tmp/spot-live-eval-reports/agent-eval-live-report_lib_off.json
+            /tmp/spot-live-eval-reports/agent-eval-live-report_lib_on.json
+            /tmp/spot-live-eval-reports/agent-eval-live-report_library_comparison.json
+            /tmp/spot-live-eval-reports/agent-eval-live-report_library_comparison.md
             /tmp/spot-live-eval-reports/agent-eval-live-report.md

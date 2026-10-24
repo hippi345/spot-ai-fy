@@ -67,6 +67,9 @@ def install_profile(profile: str = "default") -> None:
     if profile == "empty_search":
         _install_empty_search()
         return
+    if profile == "canonical_library":
+        _install_canonical_library()
+        return
     _install_default()
 
 
@@ -165,6 +168,23 @@ def _install_default() -> None:
         return_value=httpx.Response(200, json={"id": "meuser", "display_name": "Eval User"})
     )
     _install_library_sync_mocks()
+
+
+def _install_canonical_library() -> None:
+    """Large saved-tracks library for vector-search live evals."""
+    from evals.eval_library_fixture import spotify_saved_tracks_page, spotify_top_tracks
+
+    _install_default()
+
+    def _tracks_handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params.get("offset") or 0)
+        limit = int(request.url.params.get("limit") or 50)
+        return httpx.Response(200, json=spotify_saved_tracks_page(offset, limit))
+
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/tracks.*").mock(side_effect=_tracks_handler)
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/top/tracks.*").mock(
+        return_value=httpx.Response(200, json=spotify_top_tracks(50))
+    )
 
 
 def _install_library_sync_mocks() -> None:

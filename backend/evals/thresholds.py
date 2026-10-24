@@ -71,16 +71,30 @@ def _add_row(result: ThresholdResult, check: str, target: str, actual: Any, ok: 
         result.failures.append(f"{check}: actual {actual} vs target {target}")
 
 
+def _threshold_section(thresholds: dict[str, Any], mode: str) -> dict[str, Any]:
+    if mode == "mock":
+        section = thresholds.get("mock_ci")
+    elif mode in ("live", "live_off"):
+        section = thresholds.get("live_off") or thresholds.get("live")
+    elif mode == "live_on":
+        section = thresholds.get("live_on")
+    else:
+        section = thresholds.get(mode)
+    if not isinstance(section, dict):
+        raise ValueError(f"No thresholds for mode={mode!r}")
+    return section
+
+
 def check_thresholds(
     report: EvaluationReport,
     thresholds: dict[str, Any],
     *,
     mode: str,
     report_text: str = "",
+    extra_rows: list[ThresholdRow] | None = None,
+    extra_failures: list[str] | None = None,
 ) -> ThresholdResult:
-    section = thresholds.get("mock_ci") if mode == "mock" else thresholds.get("live")
-    if not isinstance(section, dict):
-        raise ValueError(f"No thresholds for mode={mode!r}")
+    section = _threshold_section(thresholds, mode)
     result = ThresholdResult(ok=True)
     agg = _aggregate_report(report)
     expected = section.get("expected_case_count")
@@ -104,6 +118,11 @@ def check_thresholds(
         diff = regression_diff(report, BASELINE_LIVE_PATH, score_tolerance=float(reg.get("score_tolerance", 0.08)))
         regressions = [r for r in (diff.get("regressions") or []) if not str(r).startswith("case_count mismatch")]
         _add_row(result, "live_baseline_regression", f"tol={reg.get('score_tolerance')}", regressions or "(none)", not regressions)
+    if extra_rows:
+        result.rows.extend(extra_rows)
+    if extra_failures:
+        for msg in extra_failures:
+            _add_row(result, "on_arm_regression", "none", msg, False)
     result.ok = all(r.ok for r in result.rows)
     return result
 

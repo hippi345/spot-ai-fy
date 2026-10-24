@@ -60,3 +60,5 @@ class EvalCaseMetadata(BaseModel):
     expect_tool_error: bool = False
     mood_request: bool = False
     library_index_arm: str = ""  # "on" | "off" | "" (unset)
+    canonical_library: bool = False
+    library_only: bool = False

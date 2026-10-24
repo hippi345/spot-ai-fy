@@ -22,7 +22,8 @@ mock_ci:
       ToolJsonValid: 1.0
     key_leak_scan: false
 
-live:
+# Default live gate: library index OFF (production default).
+live_off:
   expected_case_count: 6
   hard_gates:
     assertion_pass_rate_min:
@@ -47,3 +48,12 @@ live:
       no_false_claims_score: 0.70
   regression_vs_live_baseline:
     enabled: false
+
+# Library index ON arm: must finish; rubrics informational unless grounding/schema regresses vs OFF.
+live_on:
+  expected_case_count: 6
+  hard_gates:
+    key_leak_scan: true
+  regression_vs_off_arm:
+    hard_regression_tolerance: 0.05
+    compare_assertions: [ReplyGrounding, ToolJsonValid]

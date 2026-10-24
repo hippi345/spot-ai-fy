@@ -84,6 +84,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             text TEXT NOT NULL,
             text_hash TEXT NOT NULL,
             vec BLOB,
+            boost REAL NOT NULL DEFAULT 1.0,
             updated_at REAL NOT NULL
         );
         CREATE TABLE IF NOT EXISTS meta (
@@ -96,6 +97,11 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
+    try:
+        conn.execute("ALTER TABLE items ADD COLUMN boost REAL NOT NULL DEFAULT 1.0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
 
 def _meta_get(conn: sqlite3.Connection, key: str) -> str | None:
@@ -150,7 +156,7 @@ class LibraryIndex:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def _cosine_search(self, conn: sqlite3.Connection, query_vec: np.ndarray, kind: Kind, limit: int) -> list[LibraryHit]:
-        rows = conn.execute("SELECT id, kind, uri, text, vec FROM items WHERE vec IS NOT NULL").fetchall()
+        rows = conn.execute("SELECT id, kind, uri, text, vec, boost FROM items WHERE vec IS NOT NULL").fetchall()
         if not rows:
             return []
         ids: list[str] = []
@@ -158,6 +164,7 @@ class LibraryIndex:
         uris: list[str] = []
         texts: list[str] = []
         mat: list[np.ndarray] = []
+        boosts: list[float] = []
         for row in rows:
             if kind != "any" and row["kind"] != kind:
                 continue
@@ -172,6 +179,10 @@ class LibraryIndex:
             uris.append(row["uri"])
             texts.append(row["text"])
             mat.append(vec)
+            try:
+                boosts.append(float(row["boost"] or 1.0))
+            except (KeyError, TypeError, ValueError):
+                boosts.append(1.0)
         if not mat:
             return []
         matrix = np.vstack(mat)
@@ -179,7 +190,7 @@ class LibraryIndex:
         qn = np.linalg.norm(q) or 1.0
         mn = np.linalg.norm(matrix, axis=1)
         mn = np.where(mn == 0, 1.0, mn)
-        scores = (matrix @ q) / (mn * qn)
+        scores = (matrix @ q) / (mn * qn) * np.array(boosts, dtype=np.float32)
         order = np.argsort(-scores)[:limit]
         hits: list[LibraryHit] = []
         for idx in order:
@@ -252,6 +263,23 @@ class LibraryIndex:
                 return {"available": True, "mode": "keyword", "results": []}
             return {"available": True, "mode": "keyword", "results": [_hit_dict(h) for h in hits]}
 
+    def sync_from_documents(self, docs: list[dict[str, Any]], *, embedder: Embedder | None = None) -> None:
+        """Populate the index from in-memory documents (SAMPLE fixture seed; no Spotify API)."""
+        if embedder is not None:
+            self.embedder = embedder
+        lock = data_dir_lock(self.settings.data_dir)
+        with lock:
+            conn = self._ensure_db()
+            try:
+                self._upsert_documents(conn, docs)
+                _meta_set(conn, "embed_model", self.embedder.model_name)
+                _meta_set(conn, "embed_dim", str(self.embedder.dimensions))
+                _meta_set(conn, "last_sync", str(time.time()))
+                _meta_set(conn, "sample_catalog", "true")
+                conn.commit()
+            finally:
+                conn.close()
+
     def sync_full(self, *, embedder: Embedder | None = None) -> None:
         global _indexing
         with _refresh_guard:
@@ -300,8 +328,12 @@ class LibraryIndex:
         docs.extend(self._artist_docs())
         return docs
 
-    def _liked_tracks_docs(self) -> list[dict[str, str]]:
-        out: list[dict[str, str]] = []
+    def _liked_tracks_docs(self) -> list[dict[str, Any]]:
+        import math
+
+        from evals.fixture_index_text import library_index_document_text
+
+        out: list[dict[str, Any]] = []
         offset = 0
         while True:
             try:
@@ -319,13 +351,19 @@ class LibraryIndex:
                 uri = track.get("uri") or (f"spotify:track:{tid}" if tid else "")
                 if not uri:
                     continue
-                artists = ", ".join(
-                    a.get("name", "") for a in (track.get("artists") or []) if isinstance(a, dict)
+                added_at = row.get("added_at") if isinstance(row, dict) else None
+                text = library_index_document_text(track, added_at=str(added_at or ""))
+                play = int(track.get("eval_play_count") or 1)
+                boost = 1.0 + math.log1p(max(0, play)) * 0.06
+                out.append(
+                    {
+                        "id": f"track:{tid}",
+                        "kind": "track",
+                        "uri": uri,
+                        "text": text,
+                        "boost": boost,
+                    }
                 )
-                album = track.get("album") if isinstance(track.get("album"), dict) else {}
-                year = (album.get("release_date") or "")[:4]
-                text = f"{track.get('name', '')} — {artists} · album {album.get('name', '')} · {year}"
-                out.append({"id": f"track:{tid}", "kind": "track", "uri": uri, "text": text})
             if len(items) < 50:
                 break
             offset += 50
@@ -420,7 +458,7 @@ class LibraryIndex:
                     out[str(artist["id"])] = list(artist.get("genres") or [])
         return out
 
-    def _upsert_documents(self, conn: sqlite3.Connection, docs: list[dict[str, str]]) -> None:
+    def _upsert_documents(self, conn: sqlite3.Connection, docs: list[dict[str, Any]]) -> None:
         existing = {row["id"]: row for row in conn.execute("SELECT id, text_hash, uri FROM items").fetchall()}
         seen: set[str] = set()
         to_embed: list[tuple[str, dict[str, str]]] = []
@@ -445,12 +483,22 @@ class LibraryIndex:
             blob = None
             if vec is not None:
                 blob = np.array(vec, dtype=np.float32).tobytes()
+            boost = float(doc.get("boost") or 1.0)
             conn.execute(
-                "INSERT INTO items(id, kind, uri, text, text_hash, vec, updated_at) "
-                "VALUES(?,?,?,?,?,?,?) "
+                "INSERT INTO items(id, kind, uri, text, text_hash, vec, boost, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, uri=excluded.uri, text=excluded.text, "
-                "text_hash=excluded.text_hash, vec=excluded.vec, updated_at=excluded.updated_at",
-                (did, doc["kind"], doc["uri"], doc["text"], self._text_hash(doc["text"]), blob, time.time()),
+                "text_hash=excluded.text_hash, vec=excluded.vec, boost=excluded.boost, updated_at=excluded.updated_at",
+                (
+                    did,
+                    doc["kind"],
+                    doc["uri"],
+                    doc["text"],
+                    self._text_hash(doc["text"]),
+                    blob,
+                    boost,
+                    time.time(),
+                ),
             )
             conn.execute("DELETE FROM items_fts WHERE id = ?", (did,))
             conn.execute("INSERT INTO items_fts(id, kind, uri, text) VALUES(?,?,?,?)", (did, doc["kind"], doc["uri"], doc["text"]))
