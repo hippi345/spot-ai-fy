@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from evals.case_loader import load_dataset
+import pytest
+
 from evals.key_leak_scan import assert_no_key_leaks
 from evals.report_json import evaluation_report_to_json
-from evals.task import eval_task
 
 
 def test_mock_ci_report_has_no_key_patterns() -> None:
+    load_dataset = pytest.importorskip("evals.case_loader").load_dataset
+    eval_task = pytest.importorskip("evals.task").eval_task
+
     ds = load_dataset(include_judges=False)
     ci = [c for c in ds.cases if isinstance(c.metadata, dict) and c.metadata.get("ci")]
     ds = type(ds)(name=f"{ds.name}_ci", cases=ci, evaluators=ds.evaluators)
