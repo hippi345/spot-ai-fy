@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "suite": "spot_agent_evals",
+  "scope": "full",
+  "metrics": {
+    "case_count": 13,
+    "assertion_pass_rate": {
+      "MaxDuration": 1.0,
+      "ToolSequenceMatch": 1.0,
+      "ToolSequencePrefix": 1.0,
+      "ForbiddenTools": 1.0,
+      "ShortcutRouting": 1.0,
+      "HitAt1": 1.0,
+      "CaseMaxLatency": 1.0,
+      "ReplyGrounding": 1.0,
+      "ToolErrorHandled": 1.0,
+      "MockScriptRan": 1.0
+    },
+    "score_means": {}
+  }
+}

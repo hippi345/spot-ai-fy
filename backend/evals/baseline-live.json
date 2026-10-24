@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "suite": "spot_agent_evals_live",
+  "metrics": {
+    "case_count": 0,
+    "assertion_pass_rate": {},
+    "score_means": {}
+  },
+  "_comment": "Populated by agent-eval-live workflow when secrets are set and --save-live-baseline runs."
+}
