@@ -42,7 +42,7 @@ from spot_backend.llm_tool_loop import (
     finalize_assistant_text,
     run_library_save_fallback_if_needed,
 )
-from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
+from spot_backend.spotify_tools import SpotifyToolRunner, ollama_tools_for_agent
 from spot_backend.tool_server_enforcement import (
     enforce_tool_arguments_for_turn,
     rewrite_tool_call_for_turn,
@@ -526,7 +526,7 @@ def run_chat_turn_gemini(
     from spot_backend.llm_prefs import read_effective_gemini_model
 
     model = read_effective_gemini_model(settings.data_dir, settings.gemini_model) or _DEFAULT_GEMINI_MODEL
-    declarations = _openai_tools_to_gemini_declarations(OLLAMA_TOOLS)
+    declarations = _openai_tools_to_gemini_declarations(ollama_tools_for_agent(settings))
     runner = SpotifyToolRunner(settings=settings, conversation_id=conversation_id)
     hist = _coerce_chat_history(history)
     seed_runner_from_chat_history(runner, hist, conversation_id=conversation_id)
