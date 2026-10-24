@@ -324,9 +324,18 @@ def run_multiturn_gemini_eval(settings: Settings) -> EvalReport:
     return report
 
 
-def format_eval_table(report: EvalReport) -> str:
-    lines = ["Gemini eval (multi-turn)", f"passed={report.passed} failed={report.failed} crashed={report.crashed}"]
+def format_eval_table(report: EvalReport, *, secrets: tuple[str, ...] = ()) -> str:
+    from tests.gemini_eval_sanitize import redact_text
+
+    lines = [
+        "Gemini eval (multi-turn)",
+        f"passed={report.passed} failed={report.failed} crashed={report.crashed}",
+    ]
+    if report.crash_detail:
+        lines.append(f"crash={redact_text(report.crash_detail, secrets)}")
     for i, row in enumerate(report.turns, 1):
         mark = "PASS" if row.get("pass") else "FAIL"
-        lines.append(f"{i:02d} {mark} | {row['prompt'][:48]} | {row.get('note', '')}")
+        prompt = redact_text(str(row.get("prompt") or ""), secrets)[:48]
+        note = redact_text(str(row.get("note") or ""), secrets)
+        lines.append(f"{i:02d} {mark} | {prompt} | {note}")
     return "\n".join(lines)
