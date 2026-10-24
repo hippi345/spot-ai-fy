@@ -29,7 +29,6 @@ def _judge_model() -> str:
     if (os.environ.get("GEMINI_API_KEY") or "").strip():
         return "google:gemini-2.5-flash"
     host = (os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434").rstrip("/")
-    # OpenAI-compatible Ollama endpoint for pydantic-ai
     model_name = (os.environ.get("EVAL_JUDGE_OLLAMA_MODEL") or "qwen2.5:7b").strip()
     os.environ.setdefault("OPENAI_BASE_URL", f"{host}/v1")
     os.environ.setdefault("OPENAI_API_KEY", "ollama")
@@ -64,6 +63,17 @@ def _run_judge_eval_sync(judge: LLMJudge, ctx: EvaluatorContext) -> Any:
         return asyncio.run(coro)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(asyncio.run, coro).result()
+
+
+def _judge_passed(result: Any) -> bool:
+    if isinstance(result, bool):
+        return result
+    if hasattr(result, "value"):
+        try:
+            return bool(result.value)
+        except (TypeError, ValueError):
+            return False
+    return bool(result)
 
 
 @dataclass

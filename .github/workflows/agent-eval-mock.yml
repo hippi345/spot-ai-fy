@@ -31,7 +31,7 @@ jobs:
           SPOTIFY_CLIENT_ID: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         working-directory: backend
         run: |
-          python -m evals.run --mode mock --ci --regression-report \
+          python -m evals.run --mode mock --ci --regression-report --thresholds \
             --report-json /tmp/agent-eval-mock-report.json \
             --report-md /tmp/agent-eval-mock-report.md
 

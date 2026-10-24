@@ -180,12 +180,12 @@ def run_live_case(
 
     import respx
 
+    prov = (provider or os.environ.get("LLM_PROVIDER") or "ollama").strip().lower()
     _apply_library_index_arm(case_input.library_index_arm)
-    data_root = Path(tempfile.mkdtemp(prefix="spot-eval-live-"))
-    settings = Settings(data_dir=data_root)
     if provider:
-        os.environ["LLM_PROVIDER"] = provider
-    prov = (provider or settings.llm_provider or "ollama").strip().lower()
+        os.environ["LLM_PROVIDER"] = prov
+    data_root = Path(tempfile.mkdtemp(prefix="spot-eval-live-"))
+    settings = Settings(data_dir=data_root, llm_provider=prov)
     conv_id = f"{case_input.conversation_id}-{os.getpid()}-{time.time_ns()}"
     t0 = time.perf_counter()
     tool_calls: list[ToolCallRecord] = []
@@ -219,8 +219,6 @@ def run_live_case(
             et = ev.get("type")
             if et == "llm_delta":
                 saw_llm = True
-            if et in ("tool_start", "tool_done"):
-                saw_llm = True
             if et == "tool_done":
                 name = str(ev.get("name") or "")
                 preview = str(ev.get("preview") or "")
@@ -228,8 +226,6 @@ def run_live_case(
                 tool_results.append(preview)
             if et == "final":
                 reply = str(ev.get("text") or "")
-                if reply.strip():
-                    saw_llm = True
     duration = time.perf_counter() - t0
     shortcut = not saw_llm and bool(tool_calls)
     return AgentTurnResult(

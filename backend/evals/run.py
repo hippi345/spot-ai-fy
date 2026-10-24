@@ -81,6 +81,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--regression-report", action="store_true", help="Exit 1 if metrics regress vs baseline")
     parser.add_argument("--judge", default="", help="Enable LLM judges (e.g. ollama:qwen2.5:7b)")
+    parser.add_argument("--judge-repeat", type=int, default=0, help="Repeat LLM judge calls per rubric")
+    parser.add_argument(
+        "--thresholds",
+        nargs="?",
+        const="bundled",
+        default=None,
+        metavar="PATH",
+        help="Check thresholds.yaml",
+    )
     parser.add_argument("--output", type=Path, default=None, help="JSON report path")
     parser.add_argument("--report-json", type=Path, default=None, help="Write pydantic-evals report JSON")
     parser.add_argument("--report-md", type=Path, default=None, help="Write regression markdown summary")
@@ -95,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.judge:
         os.environ["EVAL_JUDGE_MODEL"] = args.judge
+    if args.judge_repeat and args.judge_repeat > 0:
+        os.environ["EVAL_JUDGE_REPEAT"] = str(args.judge_repeat)
 
     dataset = _load_dataset(include_judges=bool(args.judge))
     if args.judge:
@@ -145,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
             baseline_report = None
 
     if force_mock:
+        os.environ.setdefault("SPOTIFY_CLIENT_ID", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         _ensure_eval_tokens(get_settings())
 
     mock_ctx = respx.mock if force_mock else nullcontext
@@ -195,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         path = save_live_baseline(last_report)
         print(f"Wrote live baseline to {path}")
 
+    exit_code = 0
     if args.regression_report:
         bl_path = BASELINE_CI_PATH if args.ci else BASELINE_PATH
         diff = regression_diff(
@@ -203,11 +216,31 @@ def main(argv: list[str] | None = None) -> int:
             expect_scope="ci" if args.ci else "full",
         )
         print(json.dumps(diff, indent=2))
-        if args.report_md:
+        if args.report_md and args.thresholds is None:
             args.report_md.write_text(format_regression_markdown(diff), encoding="utf-8")
-        return 0 if diff["ok"] else 1
+        if not diff["ok"]:
+            exit_code = 1
 
-    return 0
+    if args.thresholds is not None:
+        from evals.thresholds import THRESHOLDS_PATH, check_thresholds_file, format_threshold_table
+
+        th_path = THRESHOLDS_PATH if args.thresholds == "bundled" else Path(args.thresholds)
+        tr = check_thresholds_file(
+            last_report,
+            mode=args.mode,
+            thresholds_path=th_path,
+            report_json_path=args.report_json,
+            report_md_path=args.report_md,
+        )
+        table = format_threshold_table(tr)
+        print("\n" + table)
+        if args.report_md:
+            prior = args.report_md.read_text(encoding="utf-8") if args.report_md.is_file() else ""
+            args.report_md.write_text(prior + "\n\n" + table, encoding="utf-8")
+        if not tr.ok:
+            exit_code = 1
+
+    return exit_code
 
 
 if __name__ == "__main__":

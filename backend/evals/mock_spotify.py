@@ -39,6 +39,8 @@ def allow_eval_llm_passthrough() -> None:
     respx.route(url__regex=r"https://api\.openai\.com/.*").pass_through()
     respx.route(url__regex=r"https://api\.anthropic\.com/.*").pass_through()
     respx.route(url__regex=r"https://api\.x\.ai/.*").pass_through()
+    respx.route(url__regex=r"http://127\.0\.0\.1:\d+/.*").pass_through()
+    respx.route(url__regex=r"http://localhost:\d+/.*").pass_through()
 
 
 def install_profile(profile: str = "default") -> None:
@@ -212,6 +214,9 @@ def _install_library_sync_mocks() -> None:
     )
     respx.get(url__regex=r"https://api\.spotify\.com/v1/me/following.*").mock(
         return_value=httpx.Response(200, json={"artists": {"items": [], "total": 0}})
+    )
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/playlists/[^/]+/tracks.*").mock(
+        return_value=httpx.Response(200, json={"items": [], "total": 0})
     )
 
 
