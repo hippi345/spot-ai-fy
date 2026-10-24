@@ -1026,13 +1026,24 @@ def iter_gemini_chat_events(
 
     yield {"type": "status", "message": "Calling Gemini…"}
     try:
+        llm_activity_emitted = False
+
+        def _emit_with_llm_mark(ev: dict[str, Any]) -> None:
+            nonlocal llm_activity_emitted
+            if ev.get("type") in ("tool_start", "tool_done") and not llm_activity_emitted:
+                llm_activity_emitted = True
+                events.append({"type": "llm_delta", "text": ""})
+            events.append(ev)
+
         text = run_chat_turn_gemini(
             user_text,
             settings,
             history=history,
-            emit=_emit,
+            emit=_emit_with_llm_mark,
             conversation_id=conversation_id,
         )
+        if not llm_activity_emitted and (text or "").strip():
+            yield {"type": "llm_delta", "text": ""}
         for ev in events:
             yield ev
         visible = (text or "").strip()

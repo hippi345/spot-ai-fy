@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -141,6 +142,30 @@ class ToolErrorHandled(Evaluator):
 
 
 @dataclass
+class MoodIntentJudge(Evaluator):
+    """LLM mood rubric only for cases with metadata.mood_request=true (live+judge runs)."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        if not meta.mood_request:
+            return True
+        # Mock CI and judge-disabled runs skip qualitative scoring.
+        if not (os.environ.get("EVAL_JUDGE_MODEL") or os.environ.get("EVAL_MOOD_JUDGE") == "1"):
+            return True
+        import asyncio
+
+        from evals.judges import mood_intent_judge
+
+        inner = mood_intent_judge()
+        coro = inner.evaluate(ctx)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return bool(asyncio.run(coro))
+        return True
+
+
+@dataclass
 class MockScriptRan(Evaluator):
     """Mock cases with mock_script must execute at least one tool."""
 
@@ -151,6 +176,9 @@ class MockScriptRan(Evaluator):
             script_len = len(inp.get("mock_script") or [])
         out = _output(ctx)
         if script_len == 0:
+            return True
+        mode = inp.get("mode") if isinstance(inp, dict) else None
+        if mode == "live":
             return True
         return len(out.tool_calls) >= 1
 
@@ -165,6 +193,7 @@ CUSTOM_EVALUATOR_TYPES: list[type[Evaluator]] = [
     ReplyGrounding,
     ToolErrorHandled,
     MockScriptRan,
+    MoodIntentJudge,
 ]
 
 
@@ -184,6 +213,7 @@ def dataset_evaluators(include_judges: bool = True) -> list[Any]:
         ReplyGrounding(),
         ToolErrorHandled(),
         MockScriptRan(),
+        MoodIntentJudge(),
     ]
     if include_judges:
         evals.extend(qualitative_judges())

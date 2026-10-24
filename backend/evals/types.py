@@ -57,3 +57,5 @@ class EvalCaseMetadata(BaseModel):
     mock_spotify_profile: str = "default"
     expect_grounded: bool = False
     expect_tool_error: bool = False
+    mood_request: bool = False
+    library_index_arm: str = ""  # "on" | "off" | "" (unset)

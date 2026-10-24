@@ -28,11 +28,23 @@ def _judge_settings() -> ModelSettings:
     return ModelSettings(temperature=0.0)
 
 
+def mood_intent_judge() -> LLMJudge:
+    model = _judge_model()
+    settings = _judge_settings()
+    return LLMJudge(
+        rubric="The reply matches the requested mood or intent.",
+        model=model,
+        include_input=True,
+        model_settings=settings,
+        score={"evaluation_name": "mood_intent_score", "include_reason": True},
+        assertion={"evaluation_name": "mood_intent_pass", "include_reason": True},
+    )
+
+
 def qualitative_judges() -> list[LLMJudge]:
     model = _judge_model()
     settings = _judge_settings()
     rubrics = [
-        ("mood_intent", "The reply matches the requested mood or intent."),
         ("accurate_summary", "The summary accurately describes what was actually done."),
         ("concise_friendly", "The reply is concise and friendly."),
         ("no_false_claims", "Nothing is claimed that did not happen (no hallucinated playback or library changes)."),
