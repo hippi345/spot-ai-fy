@@ -38,6 +38,7 @@ class EvalCaseInput(BaseModel):
     expect_shortcut: bool = False
     forbid_llm: bool = False
     eval_fixture: dict[str, Any] | None = None
+    library_index_arm: str = ""
 
 
 class EvalCaseMetadata(BaseModel):

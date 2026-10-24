@@ -142,6 +142,25 @@ class ToolErrorHandled(Evaluator):
 
 
 @dataclass
+class ToolJsonValid(Evaluator):
+    """Tool results should be JSON objects when present (schema sanity)."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        out = _output(ctx)
+        for tc in out.tool_calls:
+            raw = (tc.result or "").strip()
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return False
+            if not isinstance(data, dict):
+                return False
+        return True
+
+
+@dataclass
 class MoodIntentJudge(Evaluator):
     """LLM mood rubric only for cases with metadata.mood_request=true (live+judge runs)."""
 
@@ -194,6 +213,7 @@ CUSTOM_EVALUATOR_TYPES: list[type[Evaluator]] = [
     ToolErrorHandled,
     MockScriptRan,
     MoodIntentJudge,
+    ToolJsonValid,
 ]
 
 
@@ -214,6 +234,7 @@ def dataset_evaluators(include_judges: bool = True) -> list[Any]:
         ToolErrorHandled(),
         MockScriptRan(),
         MoodIntentJudge(),
+        ToolJsonValid(),
     ]
     if include_judges:
         evals.extend(qualitative_judges())

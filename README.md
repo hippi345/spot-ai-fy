@@ -155,7 +155,9 @@ Optional: set `SPOT_DEBUG_BUILDER_Q=1` when running backend tests or a local ser
 
 Dev-only suite in `backend/evals/` that regression-tests **current agent behavior** before you ship prompt or tool changes. It uses **[pydantic-evals 2.61.0](https://pypi.org/project/pydantic-evals/)** with **[pydantic-ai-slim 2.61.0](https://pypi.org/project/pydantic-ai-slim/)** for `LLMJudge` (see [multi-run `repeat`](https://pydantic.dev/docs/ai/evals/how-to/multi-run/), [`MaxDuration`](https://pydantic.dev/docs/ai/evals/evaluators/built-in/), [`report.print(baseline=…)`](https://pydantic.dev/docs/ai/api/pydantic_evals/reporting/), [LLM judge](https://pydantic.dev/docs/ai/evals/evaluators/llm-judge/)).
 
-**Case groups** (in `backend/evals/cases.yaml`): search/play, playlist add with dedupe, create/rename playlist, queue/repeat/shuffle/volume, multi-step flows, deterministic-shortcut routing, ambiguous artists, refusals/errors (no device, 429, empty search), and reply grounding.
+Full catalog, env vars, and **annotated example cases**: [backend/evals/README.md](backend/evals/README.md).
+
+**Case groups** (in `backend/evals/cases/*.yaml`): search/play, playlist add with dedupe, create/rename playlist, queue/repeat/shuffle/volume, multi-step flows, deterministic-shortcut routing, ambiguous artists, refusals/errors (no device, 429, empty search), and reply grounding.
 
 **Deterministic evaluators** (`backend/evals/evaluators.py`): tool-sequence match, forbidden tools, shortcut routing (no LLM), Hit@1, per-case latency, reply grounding (reuses `reply_grounding.py`), and tool-error handling. Dataset-level `MaxDuration` caps runaway tasks.
 
@@ -181,7 +183,37 @@ Dev-only suite in `backend/evals/` that regression-tests **current agent behavio
 
 One-shot live run (same flags as [`agent-eval-live`](.github/workflows/agent-eval-live.yml)): from the repo root, set `SPOTIFY_CLIENT_ID`, `SPOTIFY_REFRESH_TOKEN`, and at least one LLM credential (or `OLLAMA_HOST`), then `./scripts/run-live-evals.sh`. Reports land in `/tmp/spot-live-eval-reports/` by default.
 
-Fast pytest mirror: `pytest backend/tests/test_eval_smoke.py backend/tests/test_eval_evaluators.py`.
+Fast pytest mirror: `pytest backend/tests/test_eval_smoke.py backend/tests/test_eval_evaluators.py backend/tests/test_eval_key_leak_guard.py`.
+
+**Case catalog (68 cases in `backend/evals/cases/*.yaml`)**
+
+| Feature | Cases | CI | Check type | Mode |
+|---|---:|---:|---|---|
+| ambiguous | 2 | 0 | deterministic | mock |
+| ambiguous_artist | 1 | 1 | deterministic | mock |
+| deterministic_shortcut | 3 | 3 | deterministic | mock |
+| grounding | 2 | 2 | deterministic | mock |
+| library_mood | 2 | 2 | deterministic | mock |
+| library_ops | 7 | 0 | deterministic | mock |
+| library_search | 3 | 3 | deterministic | mock |
+| mood | 2 | 0 | judge | mock |
+| multi_step | 1 | 1 | deterministic | mock |
+| multi_turn | 1 | 1 | deterministic | mock |
+| play | 3 | 1 | deterministic, judge | live, mock |
+| playlist | 7 | 0 | deterministic | mock |
+| playlist_add_dedupe | 1 | 1 | deterministic | mock |
+| playlist_create_rename | 2 | 1 | deterministic, judge | mock |
+| podcasts | 1 | 0 | deterministic | mock |
+| profile | 1 | 1 | deterministic | mock |
+| queue | 2 | 0 | deterministic | mock |
+| refusals | 1 | 1 | deterministic | mock |
+| refusals_errors | 3 | 2 | deterministic, judge | mock |
+| safety | 4 | 3 | deterministic | mock |
+| search | 5 | 1 | deterministic | mock |
+| search_and_play | 2 | 2 | deterministic | mock |
+| transport | 8 | 4 | deterministic, judge | live, mock |
+
+Mock CI (`metadata.ci: true`, 31 cases) gates deterministic evaluators (tool sequence, grounding, JSON tool payloads, errors). Live scheduled runs use `metadata.live: true` cases with LLM judges; **mood** rubric applies only when `metadata.mood_request` is set. Library index eval arms use `library_index_arm: "on"|"off"` (`SPOT_LIBRARY_INDEX` stays **off** by default). Secret hygiene: `backend/tests/test_eval_key_leak_guard.py` and the [`gitleaks`](.github/workflows/gitleaks.yml) workflow.
 
 **CI workflows**
 

@@ -14,8 +14,9 @@ from evals.task import eval_task
 
 
 def test_evaluation_report_to_json_roundtrip() -> None:
-    cases_path = Path(__file__).resolve().parents[1] / "evals" / "cases.yaml"
-    ds = Dataset.from_file(cases_path, custom_evaluator_types=CUSTOM_EVALUATOR_TYPES)
+    from evals.case_loader import load_dataset
+
+    ds = load_dataset(include_judges=False)
     ds.evaluators = [ev for ev in dataset_evaluators(include_judges=False) if ev]
     ci = [c for c in ds.cases if isinstance(c.metadata, dict) and c.metadata.get("ci")][:1]
     ds = Dataset(name="one_case", cases=ci, evaluators=ds.evaluators)
