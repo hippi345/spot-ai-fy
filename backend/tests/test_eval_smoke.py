@@ -22,13 +22,13 @@ def ci_dataset(data_dir) -> Dataset:
     return Dataset(name=f"{ds.name}_ci", cases=ci_cases, evaluators=ds.evaluators)
 
 
-@respx.mock
 def test_ci_mock_eval_suite_passes(ci_dataset: Dataset) -> None:
-    report = ci_dataset.evaluate_sync(
-        lambda inputs: eval_task(inputs, force_mock=True),
-        name="ci_mock_smoke",
-        progress=False,
-    )
+    with respx.mock:
+        report = ci_dataset.evaluate_sync(
+            lambda inputs: eval_task(inputs, force_mock=True),
+            name="ci_mock_smoke",
+            progress=False,
+        )
     failures = []
     for case in report.cases:
         for name, res in (case.assertions or {}).items():

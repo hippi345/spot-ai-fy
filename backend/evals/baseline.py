@@ -9,6 +9,8 @@ from typing import Any
 from pydantic_evals.reporting import EvaluationReport
 
 BASELINE_PATH = Path(__file__).with_name("baseline.json")
+BASELINE_CI_PATH = Path(__file__).with_name("baseline-ci.json")
+BASELINE_LIVE_PATH = Path(__file__).with_name("baseline-live.json")
 
 
 def _aggregate_report(report: EvaluationReport) -> dict[str, Any]:
@@ -33,13 +35,39 @@ def _aggregate_report(report: EvaluationReport) -> dict[str, Any]:
     }
 
 
-def save_baseline(report: EvaluationReport, path: Path | None = None) -> Path:
-    path = path or BASELINE_PATH
+def save_baseline(
+    report: EvaluationReport,
+    path: Path | None = None,
+    *,
+    scope: str = "full",
+) -> Path:
+    path = path or (BASELINE_CI_PATH if scope == "ci" else BASELINE_PATH)
     payload = {
         "version": 1,
         "suite": "spot_agent_evals",
+        "scope": scope,
         "metrics": _aggregate_report(report),
     }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def save_live_baseline(report: EvaluationReport, path: Path | None = None) -> Path:
+    """Append/update qualitative score means from a live eval run (LLMJudge enabled)."""
+    path = path or BASELINE_LIVE_PATH
+    metrics = _aggregate_report(report)
+    payload: dict[str, Any] = {
+        "version": 1,
+        "suite": "spot_agent_evals_live",
+        "metrics": metrics,
+    }
+    if path.is_file():
+        try:
+            prior = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(prior, dict) and prior.get("metrics"):
+                payload["prior_runs"] = prior.get("prior_runs", []) + [prior.get("metrics")]
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
 
@@ -69,12 +97,21 @@ def regression_diff(
     baseline_path: Path | None = None,
     *,
     score_tolerance: float = 0.05,
+    expect_scope: str | None = None,
 ) -> dict[str, Any]:
     base = load_baseline(baseline_path)
     cand = _aggregate_report(candidate)
+    regressions: list[str] = []
+    base_scope = base.get("scope")
+    if expect_scope and base_scope and base_scope != expect_scope:
+        regressions.append(f"baseline scope {base_scope!r} != expected {expect_scope!r}")
+    base_count = base.get("metrics", {}).get("case_count")
+    if base_count is not None and int(base_count) != int(cand.get("case_count", 0)):
+        regressions.append(
+            f"case_count mismatch: ran {cand.get('case_count')} cases, baseline expects {base_count}"
+        )
     base_assert = base.get("metrics", {}).get("assertion_pass_rate", {})
     cand_assert = cand.get("assertion_pass_rate", {})
-    regressions: list[str] = []
     for name, rate in base_assert.items():
         cur = cand_assert.get(name, 0.0)
         if cur + 1e-9 < float(rate):

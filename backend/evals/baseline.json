@@ -1,6 +1,7 @@
 {
   "version": 1,
   "suite": "spot_agent_evals",
+  "scope": "full",
   "metrics": {
     "case_count": 13,
     "assertion_pass_rate": {

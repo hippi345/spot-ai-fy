@@ -211,6 +211,21 @@ cases:
       group: refusals_errors
       expected_tools: [spotify_search]
 
+  - name: empty_library_search_no_invented_track
+    inputs:
+      prompt: any jazz in my likes?
+      mode: mock
+      eval_fixture:
+        reply: "I couldn't find any jazz in your liked songs."
+        tool_calls:
+          - name: search_my_library
+            arguments: {query: jazz, kind: track}
+            result: '{"available":true,"mode":"semantic","results":[]}'
+    metadata:
+      group: grounding
+      ci: true
+      expect_grounded: true
+
   - name: grounding_no_hallucinated_credit
     inputs:
       prompt: what did you play?

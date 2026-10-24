@@ -20,6 +20,7 @@ from evals.types import AgentTurnResult, EvalCaseInput, ToolCallRecord
 
 def _ensure_eval_tokens(settings: Settings) -> None:
     path = settings.resolved_token_path
+    path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
         return
     save_tokens(
@@ -77,6 +78,25 @@ def run_mock_case(
     settings: Settings | None = None,
 ) -> AgentTurnResult:
     settings = settings or get_settings()
+    if case_input.eval_fixture:
+        fix = case_input.eval_fixture
+        tcs = []
+        for row in fix.get("tool_calls") or []:
+            if isinstance(row, dict):
+                tcs.append(
+                    ToolCallRecord(
+                        name=str(row.get("name") or ""),
+                        arguments=dict(row.get("arguments") or {}),
+                        result=str(row.get("result") or ""),
+                    )
+                )
+        return AgentTurnResult(
+            reply=str(fix.get("reply") or ""),
+            tool_calls=tcs,
+            duration_s=float(fix.get("duration_s") or 0.01),
+            shortcut=bool(fix.get("shortcut")),
+            llm_invoked=bool(fix.get("llm_invoked")),
+        )
     _ensure_eval_tokens(settings)
     install_profile(case_input.mock_spotify_profile)
     t0 = time.perf_counter()

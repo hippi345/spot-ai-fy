@@ -159,7 +159,7 @@ Dev-only suite in `backend/evals/` that regression-tests **current agent behavio
 
 **Deterministic evaluators** (`backend/evals/evaluators.py`): tool-sequence match, forbidden tools, shortcut routing (no LLM), Hit@1, per-case latency, reply grounding (reuses `reply_grounding.py`), and tool-error handling. Dataset-level `MaxDuration` caps runaway tasks.
 
-**LLM-judge rubrics** (`backend/evals/judges.py`): mood/intent fit, accurate summary of actions, concise tone, and no false claims. Each rubric emits a **score** (0–1) and **pass/fail assertion**. Judges are off in CI; enable with `--judge` for local live runs.
+**LLM-judge rubrics** (`backend/evals/judges.py`): mood/intent fit, accurate summary of actions, concise tone, and no false claims. Each rubric emits a **score** (0–1) and **pass/fail assertion**. **Mock CI never runs LLMJudge** — it gates **deterministic assertions only** (`backend/evals/baseline-ci.json`). Qualitative **score means** are recorded in **`baseline-live.json`** when the **live** workflow runs with `--judge` (not on every PR).
 
 **Judge model config** (env vars, never committed):
 
@@ -177,7 +177,7 @@ Dev-only suite in `backend/evals/` that regression-tests **current agent behavio
 |------|---------|--------|
 | Mock (CI) | `python -m evals.run --mode mock --ci --regression-report` | No Spotify/LLM; respx fixtures |
 | Mock (full) | `python -m evals.run --mode mock --regression-report` | Same |
-| Live | `python -m evals.run --mode live --provider all --judge ollama:qwen2.5:7b` | Tokens + at least one LLM provider |
+| Live | `python -m evals.run --mode live --provider all --judge ollama:qwen2.5:7b` | Tokens + at least one LLM provider; **`--provider all` is live-only** (mock CI always uses the respx task) |
 
 Fast pytest mirror: `pytest backend/tests/test_eval_smoke.py backend/tests/test_eval_evaluators.py`.
 
@@ -185,15 +185,23 @@ Fast pytest mirror: `pytest backend/tests/test_eval_smoke.py backend/tests/test_
 
 | Workflow | Trigger | Role |
 |----------|---------|------|
-| [`agent-eval-mock`](.github/workflows/agent-eval-mock.yml) | Every PR | **Required gate** — mocked subset vs `backend/evals/baseline.json` |
+| [`agent-eval-mock`](.github/workflows/agent-eval-mock.yml) | Every PR | **Required gate** — mocked subset vs `backend/evals/baseline-ci.json` |
 | [`agent-eval-live`](.github/workflows/agent-eval-live.yml) | `workflow_dispatch` + weekly | Full live suite; **skips cleanly** if Gemini/Ollama/Spotify secrets are unset; uploads JSON/Markdown artifacts |
 
-**Baseline gate:** `backend/evals/baseline.json` stores aggregate assertion pass rates from the mock CI subset. PRs fail when `python -m evals.run --mode mock --ci --regression-report` detects a drop (see `backend/evals/baseline.py`). **Update baseline** only when you intentionally change expected behavior:
+**Baseline gates:**
+
+| File | Used by | What it checks |
+|------|---------|----------------|
+| `baseline-ci.json` | PR check `agent-eval-mock` | Deterministic assertion pass rates for `metadata.ci` cases; **case_count must match** |
+| `baseline.json` | Local full mock runs | Full mocked dataset (optional) |
+| `baseline-live.json` | Weekly / manual live job | LLMJudge **score means** when judges run |
+
+PRs fail when `python -m evals.run --mode mock --ci --regression-report` regresses vs `baseline-ci.json` (assertions or case count). **Update CI baseline** only when you intentionally change mocked behavior:
 
 ```bash
 cd backend
 python -m evals.run --mode mock --ci --save-baseline
-# commit backend/evals/baseline.json with the behavior change
+# commits backend/evals/baseline-ci.json (scope=ci)
 ```
 
 ```bash
@@ -222,7 +230,7 @@ flowchart TB
   Task -.->|live only| API
 ```
 
-**Branch protection (PR 1):** mark these GitHub checks as required: **`pytest / test`**, **`agent-eval-mock / mock-eval-regression`** (plus your existing `pylint` / frontend jobs if you already require them).
+**Branch protection:** mark these GitHub checks as required: **`pytest / test`**, **`agent-eval-mock / mock-eval-regression`** (plus your existing `pylint` / frontend jobs if you already require them).
 
 Optional real-Gemini replay eval (Spotify HTTP mocked; skipped when `GEMINI_API_KEY` is unset):
 
