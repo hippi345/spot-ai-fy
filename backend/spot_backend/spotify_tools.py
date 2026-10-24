@@ -6238,7 +6238,7 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         label = query.strip()
         mode = self._bare_play_mode(label, market)
         if mode == "track":
-            inner = self._play_track({"track_name": label, "artist_name": ""})
+            inner = self._play_track({"track_name": label})
             return self._finish_play_bare(label, "track", inner)
         resolved = self._resolve_artist_search_query(label, market)
         if not resolved:
@@ -6289,9 +6289,7 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             and not _looks_like_spotify_catalog_id(str(raw_ref).strip())
         ):
             if self._bare_play_mode(str(raw_ref).strip(), market) == "track":
-                return self._play_track(
-                    {"track_name": str(raw_ref).strip(), "artist_name": ""}
-                )
+                return self._play_track({"track_name": str(raw_ref).strip()})
         artist_id_arg = _pick_arg(arguments, "artist_id", "id")
         parsed = _parse_spotify_context_ref(str(raw_ref))
         if (
@@ -6758,6 +6756,8 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             )
         if not track_name.strip():
             return json.dumps({"ok": False, "error": "track_name is required"})
+        if ("artist_name" in arguments or "artist" in arguments) and not artist_name.strip():
+            return json.dumps({"ok": False, "error": "artist_name is required"})
         uri, track_match, err = self._resolve_track_for_queue(
             track_name=track_name,
             artist_name=artist_name,

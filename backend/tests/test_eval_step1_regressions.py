@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 import httpx
 import respx
 
-from evals.evaluators import MoodIntentJudge, NoMockHttpLeakInReply
-from evals.types import AgentTurnResult
+from evals.evaluators import BlankTrackTitleRejected, MoodIntentJudge, NoMockHttpLeakInReply
+from evals.types import AgentTurnResult, ToolCallRecord
 from pydantic_evals.evaluators import EvaluatorContext
 from spot_backend.config import Settings
 from spot_backend.spotify_tools import SpotifyToolRunner
@@ -48,6 +48,38 @@ def test_mood_intent_judge_can_fail() -> None:
     with patch.dict("os.environ", {"EVAL_JUDGE_MODEL": "openai:test"}):
         with patch("evals.judges._run_judge_eval_sync", return_value=False):
             assert ev.evaluate(ctx) is False
+
+
+def test_blank_track_title_rejected_evaluator() -> None:
+    ev = BlankTrackTitleRejected()
+    ctx = _ctx(
+        AgentTurnResult(
+            reply="",
+            tool_calls=[
+                ToolCallRecord(
+                    name="spotify_play_track",
+                    arguments={"track_name": "  ", "artist_name": "Jay Sean"},
+                    result='{"error": "track_name is required"}',
+                )
+            ],
+        ),
+        {},
+    )
+    assert ev.evaluate(ctx) is True
+    bad = _ctx(
+        AgentTurnResult(
+            reply="",
+            tool_calls=[
+                ToolCallRecord(
+                    name="spotify_play_track",
+                    arguments={"track_name": "  ", "artist_name": "Jay Sean"},
+                    result='{"error": "ok"}',
+                )
+            ],
+        ),
+        {},
+    )
+    assert ev.evaluate(bad) is False
 
 
 def test_mood_intent_judge_skipped_without_judge_model() -> None:
