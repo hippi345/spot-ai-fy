@@ -33,6 +33,9 @@ DATA_DIR=/tmp/spot-live-eval SPOTIFY_CLIENT_ID=... SPOTIFY_REFRESH_TOKEN=... \
   OLLAMA_HOST=http://127.0.0.1:11434 EVAL_JUDGE_MODEL=ollama:qwen2.5:7b \
   python -m evals.run --mode live --provider ollama --judge ollama:qwen2.5:7b \
   --case mood_sad_acoustic --save-live-baseline
+
+# Full live suite (repo root; mirrors agent-eval-live workflow)
+./scripts/run-live-evals.sh
 ```
 
 Pytest mirrors:
