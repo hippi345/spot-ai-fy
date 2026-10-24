@@ -73,11 +73,18 @@ def _extract_acted_uris(tool_calls: list[ToolCallRecord]) -> list[str]:
     return uris
 
 
+def _apply_library_index_arm(arm: str) -> None:
+    a = (arm or "").strip().lower()
+    if a in ("on", "off"):
+        os.environ["SPOT_LIBRARY_INDEX"] = a
+
+
 def run_mock_case(
     case_input: EvalCaseInput,
     *,
     settings: Settings | None = None,
 ) -> AgentTurnResult:
+    _apply_library_index_arm(case_input.library_index_arm)
     settings = settings or get_settings()
     if case_input.eval_fixture:
         fix = case_input.eval_fixture
@@ -173,6 +180,7 @@ def run_live_case(
 
     import respx
 
+    _apply_library_index_arm(case_input.library_index_arm)
     data_root = Path(tempfile.mkdtemp(prefix="spot-eval-live-"))
     settings = Settings(data_dir=data_root)
     if provider:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from spot_backend.tool_registry import (
     MCP_AGENT_TOOL_ALLOWLIST_DIFF,
     agent_tool_names,
@@ -7,7 +9,8 @@ from spot_backend.tool_registry import (
 )
 
 
-def test_agent_and_mcp_tool_sets_match() -> None:
+def test_agent_and_mcp_tool_sets_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SPOT_LIBRARY_INDEX", "on")
     agent = agent_tool_names()
     mcp = mcp_tool_names()
     missing_from_mcp = agent - mcp - MCP_AGENT_TOOL_ALLOWLIST_DIFF

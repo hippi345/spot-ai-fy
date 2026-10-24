@@ -33,10 +33,13 @@ def test_small_model_auto_and_override(data_dir) -> None:
     assert use_small_model_mode(settings, "qwen3:70b-instruct") is True
 
 
-def test_small_model_tool_subset() -> None:
+def test_small_model_tool_subset(monkeypatch: pytest.MonkeyPatch) -> None:
     from spot_backend.ollama_agent_profile import SMALL_MODEL_TOOL_NAMES
+    from spot_backend.spotify_tools import ollama_tools_for_agent
 
-    small = filter_ollama_tools(OLLAMA_TOOLS, small=True)
+    monkeypatch.setenv("SPOT_LIBRARY_INDEX", "on")
+    tools = ollama_tools_for_agent(Settings())
+    small = filter_ollama_tools(tools, small=True)
     names = {t["function"]["name"] for t in small}
     assert names == set(SMALL_MODEL_TOOL_NAMES)
 
