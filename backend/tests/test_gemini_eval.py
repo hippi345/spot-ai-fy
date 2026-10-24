@@ -68,5 +68,7 @@ def test_gemini_multiturn_laptop_script(gemini_eval_settings) -> None:
     artifact_text = _ARTIFACT.read_text(encoding="utf-8")
     assert_no_secrets_in_text(artifact_text, secrets)
     if report.crashed:
-        detail = report.crash_detail or "gemini eval crashed"
+        from tests.gemini_eval_sanitize import redact_text
+
+        detail = redact_text(report.crash_detail or "gemini eval crashed", secrets)
         raise AssertionError(format_eval_table(report, secrets=secrets) + "\n" + detail[:500])

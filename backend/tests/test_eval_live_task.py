@@ -18,7 +18,7 @@ def test_eval_task_uses_live_path_when_not_force_mock() -> None:
         assert out.llm_invoked
 
 
-def test_run_live_case_sets_llm_invoked_on_gemini_tool_events() -> None:
+def test_run_live_case_llm_invoked_only_on_llm_delta() -> None:
     events = [
         {"type": "tool_start", "name": "spotify_me"},
         {"type": "tool_done", "name": "spotify_me", "preview": "{}"},
@@ -30,8 +30,34 @@ def test_run_live_case_sets_llm_invoked_on_gemini_tool_events() -> None:
 
     with patch("evals.task.iter_chat_events", fake_iter):
         result = run_live_case(EvalCaseInput(prompt="who am i"), provider="gemini")
-    assert result.llm_invoked
+    assert result.llm_invoked is False
     assert result.provider == "gemini"
+
+
+def test_run_live_case_llm_invoked_true_when_model_streams() -> None:
+    events = [
+        {"type": "llm_delta", "text": "Hi"},
+        {"type": "final", "text": "Hi there"},
+    ]
+
+    def fake_iter(*_a, **_k):
+        yield from events
+
+    with patch("evals.task.iter_chat_events", fake_iter):
+        result = run_live_case(EvalCaseInput(prompt="hello"), provider="gemini")
+    assert result.llm_invoked is True
+
+
+def test_run_live_case_provider_before_settings() -> None:
+    captured: list[str] = []
+
+    def fake_iter(_prompt, settings, **_k):
+        captured.append(settings.llm_provider)
+        yield {"type": "final", "text": "ok"}
+
+    with patch("evals.task.iter_chat_events", fake_iter):
+        run_live_case(EvalCaseInput(prompt="hi"), provider="gemini")
+    assert captured == ["gemini"]
 
 
 def test_item09_gemini_iter_marks_llm_invoked(data_dir, signed_in_tokens) -> None:
@@ -42,11 +68,9 @@ def test_item09_gemini_iter_marks_llm_invoked(data_dir, signed_in_tokens) -> Non
 
     def fake_gemini(user_text, settings, history=None, *, emit=None, conversation_id=None):
         if emit:
-            emit({"type": "tool_start", "name": "spotify_me"})
-            emit({"type": "tool_done", "name": "spotify_me", "preview": "{}"})
+            emit({"type": "llm_delta", "text": "ok"})
         return "ok"
 
     with patch("spot_backend.gemini_llm.run_chat_turn_gemini", fake_gemini):
         types = [e["type"] for e in iter_gemini_chat_events("who am i", settings)]
     assert "llm_delta" in types
-

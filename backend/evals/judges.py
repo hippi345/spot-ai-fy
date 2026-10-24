@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from pydantic_ai import ModelSettings
 from pydantic_evals.evaluators import LLMJudge
@@ -39,6 +40,33 @@ def mood_intent_judge() -> LLMJudge:
         score={"evaluation_name": "mood_intent_score", "include_reason": True},
         assertion={"evaluation_name": "mood_intent_pass", "include_reason": True},
     )
+
+
+def _run_judge_eval_sync(judge: LLMJudge, ctx: Any) -> Any:
+    import asyncio
+    import concurrent.futures
+
+    def _once() -> Any:
+        coro = judge.evaluate(ctx)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+
+    return _once()
+
+
+def _judge_passed(result: Any) -> bool:
+    if isinstance(result, bool):
+        return result
+    if hasattr(result, "value"):
+        try:
+            return bool(result.value)
+        except (TypeError, ValueError):
+            return False
+    return bool(result)
 
 
 def qualitative_judges() -> list[LLMJudge]:

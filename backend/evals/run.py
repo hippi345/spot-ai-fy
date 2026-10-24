@@ -122,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             baseline_report = None
 
     if force_mock:
+        os.environ.setdefault("SPOTIFY_CLIENT_ID", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         _ensure_eval_tokens(get_settings())
 
     mock_ctx = respx.mock if force_mock else nullcontext

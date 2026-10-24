@@ -6741,6 +6741,8 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             )
         if not track_name.strip():
             return json.dumps({"ok": False, "error": "track_name is required"})
+        if not artist_name.strip():
+            return json.dumps({"ok": False, "error": "artist_name is required"})
         uri, track_match, err = self._resolve_track_for_queue(
             track_name=track_name,
             artist_name=artist_name,

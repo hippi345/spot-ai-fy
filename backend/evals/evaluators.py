@@ -152,16 +152,22 @@ class MoodIntentJudge(Evaluator):
         # Mock CI and judge-disabled runs skip qualitative scoring.
         if not (os.environ.get("EVAL_JUDGE_MODEL") or os.environ.get("EVAL_MOOD_JUDGE") == "1"):
             return True
-        import asyncio
+        from evals.judges import _judge_passed, _run_judge_eval_sync, mood_intent_judge
 
-        from evals.judges import mood_intent_judge
+        return _judge_passed(_run_judge_eval_sync(mood_intent_judge(), ctx))
 
-        inner = mood_intent_judge()
-        coro = inner.evaluate(ctx)
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return bool(asyncio.run(coro))
+
+@dataclass
+class NoMockHttpLeakInReply(Evaluator):
+    """Fail when respx AllMockedAssertionError text leaks into the user-visible reply."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        out = _output(ctx)
+        blob = (out.reply or "") + "\n".join((tc.result or "") for tc in out.tool_calls)
+        if "AllMockedAssertionError" in blob:
+            return False
+        if "RESPX:" in blob and "not mocked" in blob:
+            return False
         return True
 
 
@@ -194,6 +200,7 @@ CUSTOM_EVALUATOR_TYPES: list[type[Evaluator]] = [
     ToolErrorHandled,
     MockScriptRan,
     MoodIntentJudge,
+    NoMockHttpLeakInReply,
 ]
 
 
@@ -214,6 +221,7 @@ def dataset_evaluators(include_judges: bool = True) -> list[Any]:
         ToolErrorHandled(),
         MockScriptRan(),
         MoodIntentJudge(),
+        NoMockHttpLeakInReply(),
     ]
     if include_judges:
         evals.extend(qualitative_judges())

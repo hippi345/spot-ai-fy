@@ -64,7 +64,7 @@ def _gemini_post_with_retry(
     client: httpx.Client,
     url: str,
     *,
-    params: dict[str, Any],
+    headers: dict[str, str],
     json_body: dict[str, Any],
 ) -> httpx.Response:
     """POST to Gemini with exponential backoff on 503 / 429.
@@ -75,13 +75,13 @@ def _gemini_post_with_retry(
     """
     last: httpx.Response | None = None
     for attempt in range(_GEMINI_RETRY_ATTEMPTS):
-        resp = client.post(url, params=params, json=json_body)
+        resp = client.post(url, headers=headers, json=json_body)
         last = resp
         if resp.status_code not in _GEMINI_RETRY_STATUSES:
             if resp.status_code == 400:
                 logger.warning(
                     "gemini_http_400 body=%s",
-                    redact_known_api_keys((resp.text or "")[:2000], [params.get("key", "")]),
+                    redact_known_api_keys((resp.text or "")[:2000], [headers.get("x-goog-api-key", "")]),
                 )
             resp.raise_for_status()
             return resp
@@ -558,7 +558,7 @@ def run_chat_turn_gemini(
     spotify_intent_blob = " ".join([user_text] + [t["content"] for t in hist[-10:]])
 
     url = f"{_GEMINI_REST}/models/{model}:generateContent"
-    params = {"key": key}
+    gemini_headers = {"x-goog-api-key": key}
 
     loop_state = ToolLoopState()
     had_tool_results = False
@@ -623,7 +623,7 @@ def run_chat_turn_gemini(
                         history_errors[:8],
                     )
 
-                resp = _gemini_post_with_retry(client, url, params=params, json_body=body)
+                resp = _gemini_post_with_retry(client, url, headers=gemini_headers, json_body=body)
                 data = resp.json()
 
                 cands = data.get("candidates")
@@ -1055,7 +1055,11 @@ def iter_gemini_chat_events(
             )
         yield {"type": "final", "text": visible}
     except Exception as e:
-        logger.warning("gemini_sse_turn_error err=%s user_text=%s", e, user_text[:120])
+        logger.warning(
+            "gemini_sse_turn_error err=%s user_text=%s",
+            redact_known_api_keys(str(e), [key]),
+            user_text[:120],
+        )
         yield {
             "type": "error",
             "message": (
