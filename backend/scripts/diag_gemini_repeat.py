@@ -73,7 +73,9 @@ def main() -> int:
                         decls=declarations,
                         fc_mode=mode,
                     )
-                    resp = client.post(url, params={"key": key}, json=body)
+                    from spot_backend.gemini_http import gemini_rest_headers
+
+                    resp = client.post(url, headers=gemini_rest_headers(key), json=body)
                     if resp.status_code != 200:
                         print(f"   trial {trial}: HTTP {resp.status_code} {resp.text[:200]}")
                         tot["other"] += 1
