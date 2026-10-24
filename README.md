@@ -179,6 +179,8 @@ Dev-only suite in `backend/evals/` that regression-tests **current agent behavio
 | Mock (full) | `python -m evals.run --mode mock --regression-report` | Same |
 | Live | `python -m evals.run --mode live --provider all --judge ollama:qwen2.5:7b` | Tokens + at least one LLM provider; **`--provider all` is live-only** (mock CI always uses the respx task) |
 
+One-shot live run (same flags as [`agent-eval-live`](.github/workflows/agent-eval-live.yml)): from the repo root, set `SPOTIFY_CLIENT_ID`, `SPOTIFY_REFRESH_TOKEN`, and at least one LLM credential (or `OLLAMA_HOST`), then `./scripts/run-live-evals.sh`. Reports land in `/tmp/spot-live-eval-reports/` by default.
+
 Fast pytest mirror: `pytest backend/tests/test_eval_smoke.py backend/tests/test_eval_evaluators.py`.
 
 **CI workflows**
