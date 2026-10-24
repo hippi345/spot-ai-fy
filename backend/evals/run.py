@@ -68,6 +68,11 @@ def _report_has_failing_assertions(report: Any) -> bool:
     return False
 
 
+def _report_has_task_failures(report: Any) -> bool:
+    failures = getattr(report, "failures", None)
+    return bool(failures)
+
+
 def _make_task(provider: str, *, force_mock: bool):
     def task(inputs: Any) -> Any:
         return eval_task(inputs, provider=provider, force_mock=force_mock)
@@ -362,6 +367,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.report_md.write_text(prior + "\n\n" + table, encoding="utf-8")
             if not tr.ok:
                 exit_code = 1
+        if _report_has_task_failures(last_report):
+            print("At least one case failed during task execution.", file=sys.stderr)
+            exit_code = 1
         if _report_has_failing_assertions(last_report):
             print("At least one case has a failing assertion.", file=sys.stderr)
             exit_code = 1
