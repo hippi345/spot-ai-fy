@@ -35,6 +35,13 @@ jobs:
             --report-json /tmp/agent-eval-mock-report.json \
             --report-md /tmp/agent-eval-mock-report.md
 
+      - name: Redact and scan mock eval artifacts
+        if: always()
+        run: |
+          python3 scripts/ci_scan_artifacts_for_secrets.py \
+            /tmp/agent-eval-mock-report.json \
+            /tmp/agent-eval-mock-report.md
+
       - name: Upload mock eval reports
         if: always()
         uses: actions/upload-artifact@v4
