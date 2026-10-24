@@ -84,6 +84,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=None, help="JSON report path")
     parser.add_argument("--report-json", type=Path, default=None, help="Write pydantic-evals report JSON")
     parser.add_argument("--report-md", type=Path, default=None, help="Write regression markdown summary")
+    parser.add_argument(
+        "--case",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Run only case(s) with this name (repeatable)",
+    )
     args = parser.parse_args(argv)
 
     if args.judge:
@@ -114,6 +121,18 @@ def main(argv: list[str] | None = None) -> int:
             evaluators=dataset.evaluators,
             report_evaluators=dataset.report_evaluators,
         )
+
+    if args.case:
+        want = {n.strip() for n in args.case if (n or "").strip()}
+        dataset = Dataset(
+            name=dataset.name,
+            cases=[c for c in dataset.cases if c.name in want],
+            evaluators=dataset.evaluators,
+            report_evaluators=dataset.report_evaluators,
+        )
+        if not dataset.cases:
+            print(f"No cases matched --case {sorted(want)}", file=sys.stderr)
+            return 2
 
     force_mock = args.mode == "mock"
     providers = _providers_to_run(args.provider)

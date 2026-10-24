@@ -153,6 +153,8 @@ Optional: set `SPOT_DEBUG_BUILDER_Q=1` when running backend tests or a local ser
 
 ### Qualitative testing and agent evals (pydantic-evals)
 
+Full catalog, env vars, and **annotated example cases**: [backend/evals/README.md](backend/evals/README.md).
+
 Dev-only suite in `backend/evals/` that regression-tests **current agent behavior** before you ship prompt or tool changes. It uses **[pydantic-evals 2.61.0](https://pypi.org/project/pydantic-evals/)** with **[pydantic-ai-slim 2.61.0](https://pypi.org/project/pydantic-ai-slim/)** for `LLMJudge` (see [multi-run `repeat`](https://pydantic.dev/docs/ai/evals/how-to/multi-run/), [`MaxDuration`](https://pydantic.dev/docs/ai/evals/evaluators/built-in/), [`report.print(baseline=…)`](https://pydantic.dev/docs/ai/api/pydantic_evals/reporting/), [LLM judge](https://pydantic.dev/docs/ai/evals/evaluators/llm-judge/)).
 
 Full catalog, env vars, and **annotated example cases**: [backend/evals/README.md](backend/evals/README.md).
