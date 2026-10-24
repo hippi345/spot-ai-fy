@@ -1,0 +1,121 @@
+name: agent-eval-live
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 12 * * 0"
+
+jobs:
+  live-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements-dev.txt
+
+      - name: Check live eval prerequisites
+        id: gate
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          OLLAMA_HOST: ${{ secrets.OLLAMA_HOST }}
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+          has_llm=false
+          if [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${XAI_API_KEY:-}" ]; then
+            has_llm=true
+          fi
+          if [ -n "${OLLAMA_HOST:-}" ]; then
+            has_llm=true
+          fi
+          has_spotify=false
+          if [ -n "${SPOTIFY_CLIENT_ID:-}" ] && [ -n "${SPOTIFY_REFRESH_TOKEN:-}" ]; then
+            has_spotify=true
+          fi
+          if [ "$has_llm" = true ] && [ "$has_spotify" = true ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Live eval prerequisites satisfied." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Live agent eval — skipped"
+              echo ""
+              echo "Missing secrets. Need at least one LLM credential (Gemini/OpenAI/Anthropic/xAI or \`OLLAMA_HOST\`) **and** Spotify (\`SPOTIFY_CLIENT_ID\` + \`SPOTIFY_REFRESH_TOKEN\`)."
+              echo ""
+              echo "| Check | Present |"
+              echo "|-------|---------|"
+              echo "| LLM (cloud or Ollama host) | $has_llm |"
+              echo "| Spotify refresh | $has_spotify |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Prepare Spotify token file
+        if: steps.gate.outputs.run == 'true'
+        env:
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+        run: |
+          mkdir -p /tmp/spot-live-eval
+          python3 <<'PY'
+          import json, os, time
+          from pathlib import Path
+          p = Path("/tmp/spot-live-eval/tokens.json")
+          p.write_text(json.dumps({
+            "access_token": "live-eval-placeholder",
+            "refresh_token": os.environ["SPOTIFY_REFRESH_TOKEN"],
+            "expires_at": time.time() + 3600,
+            "scope": "user-read-playback-state user-read-email playlist-read-private user-library-read",
+          }), encoding="utf-8")
+          PY
+
+      - name: Run live agent eval suite
+        if: steps.gate.outputs.run == 'true'
+        env:
+          DATA_DIR: /tmp/spot-live-eval
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          OLLAMA_HOST: ${{ secrets.OLLAMA_HOST }}
+          LLM_PROVIDER: ollama
+        working-directory: backend
+        run: |
+          python -m evals.run --mode live --provider all --repeat 1 \
+            --report-json /tmp/agent-eval-live-report.json \
+            --report-md /tmp/agent-eval-live-report.md \
+            --regression-report || true
+
+      - name: Upload live eval reports
+        if: always() && steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval-live-report
+          path: |
+            /tmp/agent-eval-live-report.json
+            /tmp/agent-eval-live-report.md
+
+      - name: Live eval job summary
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          echo "## Live agent eval" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f /tmp/agent-eval-live-report.md ]; then
+            cat /tmp/agent-eval-live-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No markdown report produced." >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -151,6 +151,28 @@ pytest backend/tests
 
 Optional: set `SPOT_DEBUG_BUILDER_Q=1` when running backend tests or a local server to log each playlist-builder Spotify search query at warning level and append a `q` field (no chat text) to `DATA_DIR/chat_tool_traces.jsonl` under tool `playlist_builder_search`.
 
+### Agent eval suite (pydantic-evals)
+
+Reusable regression suite under `backend/evals/` (mocked Spotify + optional live LLM). Verified against **pydantic-evals 2.61.0** / **pydantic-ai-slim 2.61.0** ([multi-run `repeat`](https://pydantic.dev/docs/ai/evals/how-to/multi-run/), [`MaxDuration`](https://pydantic.dev/docs/ai/evals/evaluators/built-in/), [`report.print(baseline=...)`](https://pydantic.dev/docs/ai/evals/evaluators/built-in/), [`LLMJudge`](https://pydantic.dev/docs/ai/evals/evaluators/llm-judge/) via `pydantic-ai-slim[openai]`).
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+
+# Fast mocked run (same subset as CI)
+python -m evals.run --mode mock --ci
+
+# Full mocked dataset + save/compare baseline
+python -m evals.run --mode mock --save-baseline
+python -m evals.run --mode mock --regression-report
+
+# Live providers (Ollama default; cloud only when the matching API key env is set)
+python -m evals.run --mode live --provider ollama
+python -m evals.run --mode live --provider all --judge ollama:qwen2.5:7b
+```
+
+Environment: `EVAL_JUDGE_MODEL` (default local Ollama via OpenAI-compatible `/v1`), `EVAL_JUDGE_OLLAMA_MODEL`, `DATA_DIR`, provider keys (`GEMINI_API_KEY`, etc.). No secrets in the repo.
+
 Optional real-Gemini replay eval (Spotify HTTP mocked; skipped when `GEMINI_API_KEY` is unset):
 
 ```bash

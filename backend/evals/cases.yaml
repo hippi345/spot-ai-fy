@@ -1,0 +1,229 @@
+name: spot_agent_evals
+cases:
+  - name: play_track_by_title
+    inputs:
+      prompt: play Down by Jay Sean
+      mode: mock
+      mock_script:
+        - name: spotify_play_track
+          args: {track_name: Down, artist_name: Jay Sean}
+    metadata:
+      group: search_and_play
+      ci: true
+      expected_tools: [spotify_play_track]
+
+  - name: search_then_play_artist
+    inputs:
+      prompt: play SZA
+      mode: mock
+      mock_script:
+        - name: spotify_play_artist
+          args: {artist_name: SZA}
+    metadata:
+      group: search_and_play
+      ci: true
+      expected_tools: [spotify_play_artist]
+
+  - name: add_track_with_dedupe
+    inputs:
+      prompt: add Kill Bill to RNB2025
+      mode: mock
+      mock_script:
+        - name: spotify_user_playlists
+          args: {limit: 50}
+        - name: spotify_add_tracks_by_query
+          args: {playlist_id: "4444444444444444444444", query: Kill Bill SZA, count: 1}
+    metadata:
+      group: playlist_add_dedupe
+      ci: true
+      expected_tool_prefix: [spotify_user_playlists, spotify_add_tracks_by_query]
+
+  - name: create_playlist
+    inputs:
+      prompt: create a playlist called Chill Mix
+      mode: mock
+      mock_script:
+        - name: spotify_create_playlist
+          args: {name: Chill Mix, public: false}
+    metadata:
+      group: playlist_create_rename
+      ci: true
+      expected_tools: [spotify_create_playlist]
+
+  - name: rename_playlist
+    inputs:
+      prompt: rename RNB2025 to RNB 2025
+      mode: mock
+      mock_script:
+        - name: spotify_user_playlists
+          args: {limit: 50}
+        - name: spotify_update_playlist
+          args: {playlist_id: "4444444444444444444444", name: "RNB 2025"}
+    metadata:
+      group: playlist_create_rename
+      expected_tool_prefix: [spotify_user_playlists, spotify_update_playlist]
+
+  - name: queue_track
+    inputs:
+      prompt: queue Down by Jay Sean next
+      mode: mock
+      mock_script:
+        - name: spotify_add_to_queue
+          args: {track_name: Down, artist_name: Jay Sean}
+    metadata:
+      group: transport_controls
+      ci: true
+      expected_tools: [spotify_add_to_queue]
+
+  - name: set_repeat_context
+    inputs:
+      prompt: repeat this playlist
+      mode: mock
+      mock_script:
+        - name: spotify_set_repeat
+          args: {state: context}
+    metadata:
+      group: transport_controls
+      ci: true
+      expected_tools: [spotify_set_repeat]
+
+  - name: shuffle_on
+    inputs:
+      prompt: turn shuffle on
+      mode: mock
+      mock_script:
+        - name: spotify_set_shuffle
+          args: {state: true}
+    metadata:
+      group: transport_controls
+      expected_tools: [spotify_set_shuffle]
+
+  - name: volume_down
+    inputs:
+      prompt: set volume to 30 percent
+      mode: mock
+      mock_script:
+        - name: spotify_set_volume
+          args: {volume_percent: 30}
+    metadata:
+      group: transport_controls
+      expected_tools: [spotify_set_volume]
+
+  - name: multi_step_sza_rnb_repeat
+    inputs:
+      prompt: add SZA to RNB2025 and turn repeat on
+      mode: mock
+      mock_script:
+        - name: spotify_add_tracks_by_query
+          args: {playlist_id: "4444444444444444444444", query: SZA, count: 3}
+        - name: spotify_set_repeat
+          args: {state: context}
+    metadata:
+      group: multi_step
+      ci: true
+      expected_tools: [spotify_add_tracks_by_query, spotify_set_repeat]
+
+  - name: shortcut_whats_playing
+    inputs:
+      prompt: what's playing?
+      mode: mock
+      expect_shortcut: true
+      forbid_llm: true
+    metadata:
+      group: deterministic_shortcut
+      ci: true
+      expect_shortcut: true
+      expected_tools: [spotify_playback_state]
+
+  - name: shortcut_skip
+    inputs:
+      prompt: skip
+      mode: mock
+      expect_shortcut: true
+      forbid_llm: true
+    metadata:
+      group: deterministic_shortcut
+      ci: true
+      expect_shortcut: true
+      expected_tools: [spotify_skip_next]
+
+  - name: shortcut_must_not_llm_chill
+    inputs:
+      prompt: play something chill
+      mode: mock
+      expect_shortcut: true
+      forbid_llm: true
+    metadata:
+      group: deterministic_shortcut
+      ci: true
+      expect_shortcut: true
+
+  - name: ambiguous_artist_empty
+    inputs:
+      prompt: play UnknownZZZ artist
+      mode: mock
+      mock_spotify_profile: default
+      mock_script:
+        - name: spotify_play_artist
+          args: {artist_name: UnknownZZZ}
+    metadata:
+      group: ambiguous_artist
+      ci: true
+      expected_tools: [spotify_play_artist]
+
+  - name: no_active_device_play
+    inputs:
+      prompt: play Down by Jay Sean
+      mode: mock
+      mock_spotify_profile: no_device
+      mock_script:
+        - name: spotify_play_track
+          args: {track_name: Down, artist_name: Jay Sean}
+    metadata:
+      group: refusals_errors
+      ci: true
+      expect_tool_error: true
+      expected_tools: [spotify_play_track]
+
+  - name: spotify_429_search
+    inputs:
+      prompt: find jazz tracks
+      mode: mock
+      mock_spotify_profile: rate_limited
+      mock_script:
+        - name: spotify_search
+          args: {query: jazz, types: track, limit: 5}
+    metadata:
+      group: refusals_errors
+      ci: true
+      expect_tool_error: true
+      expected_tools: [spotify_search]
+
+  - name: empty_search_results
+    inputs:
+      prompt: search for xyzzyempty track
+      mode: mock
+      mock_spotify_profile: empty_search
+      mock_script:
+        - name: spotify_search
+          args: {query: xyzzyempty, types: track, limit: 5}
+    metadata:
+      group: refusals_errors
+      expected_tools: [spotify_search]
+
+  - name: grounding_no_hallucinated_credit
+    inputs:
+      prompt: what did you play?
+      mode: mock
+      mock_script:
+        - name: spotify_playback_state
+          args: {}
+    metadata:
+      group: grounding
+      ci: true
+      expect_grounded: true
+      expected_tools: [spotify_playback_state]
+
+evaluators:
+  - MaxDuration:
+      seconds: 120.0

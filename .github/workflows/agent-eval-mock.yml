@@ -1,0 +1,57 @@
+name: agent-eval-mock
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  mock-eval-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements-dev.txt
+
+      - name: Mocked agent eval vs baseline.json
+        env:
+          DATA_DIR: /tmp/spot-agent-eval
+          SPOTIFY_CLIENT_ID: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        working-directory: backend
+        run: |
+          python -m evals.run --mode mock --ci --regression-report \
+            --report-json /tmp/agent-eval-mock-report.json \
+            --report-md /tmp/agent-eval-mock-report.md
+
+      - name: Upload mock eval reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval-mock-report
+          path: |
+            /tmp/agent-eval-mock-report.json
+            /tmp/agent-eval-mock-report.md
+            backend/evals/baseline.json
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## Mock agent eval" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f /tmp/agent-eval-mock-report.md ]; then
+            cat /tmp/agent-eval-mock-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Report not generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
