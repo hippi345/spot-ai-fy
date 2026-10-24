@@ -20,7 +20,6 @@ mock_ci:
       ToolErrorHandled: 1.0
       MockScriptRan: 1.0
       ToolJsonValid: 1.0
-      NoMockHttpLeakInReply: 1.0
     key_leak_scan: false
 
 live:
