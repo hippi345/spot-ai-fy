@@ -122,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             baseline_report = None
 
     if force_mock:
+        os.environ.setdefault("SPOTIFY_CLIENT_ID", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         _ensure_eval_tokens(get_settings())
 
     mock_ctx = respx.mock if force_mock else nullcontext
@@ -133,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
                 name=f"{dataset.name}_{provider}_{args.mode}",
                 repeat=max(1, int(args.repeat)),
                 progress=True,
-                max_concurrency=1 if force_mock else None,
+                max_concurrency=1,
             )
         if force_mock:
             respx.stop()

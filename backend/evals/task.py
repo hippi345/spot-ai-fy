@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 from spot_backend.agent import iter_chat_events
@@ -14,7 +15,7 @@ from spot_backend.spotify_tools import SpotifyToolRunner
 from spot_backend.token_store import TokenBundle, save_tokens
 from spot_backend.spotify_client import DEFAULT_SCOPES
 
-from evals.mock_spotify import install_profile
+from evals.mock_spotify import allow_eval_llm_passthrough, install_profile
 from evals.types import AgentTurnResult, EvalCaseInput, ToolCallRecord
 
 
@@ -168,33 +169,41 @@ def run_live_case(
     settings: Settings | None = None,
     provider: str | None = None,
 ) -> AgentTurnResult:
-    settings = settings or get_settings()
-    _ensure_eval_tokens(settings)
-    install_profile(case_input.mock_spotify_profile)
+    import tempfile
+
+    import respx
+
+    prov = (provider or os.environ.get("LLM_PROVIDER") or "ollama").strip().lower()
     if provider:
-        os.environ["LLM_PROVIDER"] = provider
-    prov = (provider or settings.llm_provider or "ollama").strip().lower()
+        os.environ["LLM_PROVIDER"] = prov
+    data_root = Path(tempfile.mkdtemp(prefix="spot-eval-live-"))
+    settings = Settings(data_dir=data_root, llm_provider=prov)
+    conv_id = f"{case_input.conversation_id}-{os.getpid()}-{time.time_ns()}"
     t0 = time.perf_counter()
     tool_calls: list[ToolCallRecord] = []
     tool_results: list[str] = []
     reply = ""
     saw_llm = False
-    for ev in iter_chat_events(
-        case_input.prompt,
-        settings,
-        history=case_input.history or None,
-        conversation_id=case_input.conversation_id,
-    ):
-        et = ev.get("type")
-        if et == "llm_delta":
-            saw_llm = True
-        if et == "tool_done":
-            name = str(ev.get("name") or "")
-            preview = str(ev.get("preview") or "")
-            tool_calls.append(ToolCallRecord(name=name, arguments={}, result=preview))
-            tool_results.append(preview)
-        if et == "final":
-            reply = str(ev.get("text") or "")
+    with respx.mock:
+        _ensure_eval_tokens(settings)
+        install_profile(case_input.mock_spotify_profile)
+        allow_eval_llm_passthrough()
+        for ev in iter_chat_events(
+            case_input.prompt,
+            settings,
+            history=case_input.history or None,
+            conversation_id=conv_id,
+        ):
+            et = ev.get("type")
+            if et == "llm_delta":
+                saw_llm = True
+            if et == "tool_done":
+                name = str(ev.get("name") or "")
+                preview = str(ev.get("preview") or "")
+                tool_calls.append(ToolCallRecord(name=name, arguments={}, result=preview))
+                tool_results.append(preview)
+            if et == "final":
+                reply = str(ev.get("text") or "")
     duration = time.perf_counter() - t0
     shortcut = not saw_llm and bool(tool_calls)
     return AgentTurnResult(
@@ -212,6 +221,6 @@ def run_live_case(
 def eval_task(raw_input: Any, *, provider: str | None = None, force_mock: bool = False) -> AgentTurnResult:
     """Dataset task entrypoint."""
     case_input = _parse_input(raw_input)
-    if force_mock or case_input.mode == "mock":
+    if force_mock:
         return run_mock_case(case_input)
     return run_live_case(case_input, provider=provider)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -141,6 +142,36 @@ class ToolErrorHandled(Evaluator):
 
 
 @dataclass
+class MoodIntentJudge(Evaluator):
+    """LLM mood rubric only for cases with metadata.mood_request=true (live+judge runs)."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        if not meta.mood_request:
+            return True
+        # Mock CI and judge-disabled runs skip qualitative scoring.
+        if not (os.environ.get("EVAL_JUDGE_MODEL") or os.environ.get("EVAL_MOOD_JUDGE") == "1"):
+            return True
+        from evals.judges import _judge_passed, _run_judge_eval_sync, mood_intent_judge
+
+        return _judge_passed(_run_judge_eval_sync(mood_intent_judge(), ctx))
+
+
+@dataclass
+class NoMockHttpLeakInReply(Evaluator):
+    """Fail when respx AllMockedAssertionError text leaks into the user-visible reply."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        out = _output(ctx)
+        blob = (out.reply or "") + "\n".join((tc.result or "") for tc in out.tool_calls)
+        if "AllMockedAssertionError" in blob:
+            return False
+        if "RESPX:" in blob and "not mocked" in blob:
+            return False
+        return True
+
+
+@dataclass
 class MockScriptRan(Evaluator):
     """Mock cases with mock_script must execute at least one tool."""
 
@@ -151,6 +182,9 @@ class MockScriptRan(Evaluator):
             script_len = len(inp.get("mock_script") or [])
         out = _output(ctx)
         if script_len == 0:
+            return True
+        mode = inp.get("mode") if isinstance(inp, dict) else None
+        if mode == "live":
             return True
         return len(out.tool_calls) >= 1
 
@@ -165,6 +199,8 @@ CUSTOM_EVALUATOR_TYPES: list[type[Evaluator]] = [
     ReplyGrounding,
     ToolErrorHandled,
     MockScriptRan,
+    MoodIntentJudge,
+    NoMockHttpLeakInReply,
 ]
 
 
@@ -184,6 +220,8 @@ def dataset_evaluators(include_judges: bool = True) -> list[Any]:
         ReplyGrounding(),
         ToolErrorHandled(),
         MockScriptRan(),
+        MoodIntentJudge(),
+        NoMockHttpLeakInReply(),
     ]
     if include_judges:
         evals.extend(qualitative_judges())
