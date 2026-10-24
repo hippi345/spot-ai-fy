@@ -118,7 +118,7 @@ def main() -> int:
                 )
                 from spot_backend.gemini_http import gemini_rest_headers
 
-        resp = client.post(url, headers=gemini_rest_headers(key), json=body)
+                resp = client.post(url, headers=gemini_rest_headers(key), json=body)
                 print(f"\n>>> prompt: {prompt!r}")
                 print(f"    status: {resp.status_code}")
                 if resp.status_code != 200:

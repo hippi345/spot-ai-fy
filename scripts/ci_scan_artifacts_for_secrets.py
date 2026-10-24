@@ -15,8 +15,9 @@ from evals.key_leak_scan import find_key_leaks
 from spot_backend.llm_secret_safety import redact_known_api_keys
 
 _REDACT_PATTERNS = (
+    re.compile(r"AIza[0-9A-Za-z_-]{35}"),
     re.compile(r"AIza[0-9A-Za-z\-_]{8,}"),
-    re.compile(r"key=[A-Za-z0-9_\-]{16,}", re.I),
+    re.compile(r"key=[^&\s'\"]+", re.I),
 )
 
 

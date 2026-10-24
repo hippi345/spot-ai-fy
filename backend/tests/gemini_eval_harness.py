@@ -35,14 +35,19 @@ class EvalReport:
     crashed: bool = False
     crash_detail: str | None = None
 
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "passed": self.passed,
-            "failed": self.failed,
-            "crashed": self.crashed,
-            "crash_detail": self.crash_detail,
-            "turns": self.turns,
-        }
+    def to_json(self, *, secrets: tuple[str, ...] = ()) -> dict[str, Any]:
+        from tests.gemini_eval_sanitize import sanitize_eval_report_dict
+
+        return sanitize_eval_report_dict(
+            {
+                "passed": self.passed,
+                "failed": self.failed,
+                "crashed": self.crashed,
+                "crash_detail": self.crash_detail,
+                "turns": self.turns,
+            },
+            secrets,
+        )
 
 
 def _install_spotify_mocks() -> None:

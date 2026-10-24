@@ -9,3 +9,4 @@ desktop/release/
 __pycache__/
 *.pyc
 .DS_Store
+backend/tests/artifacts/
