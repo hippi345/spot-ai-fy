@@ -45,7 +45,8 @@ def allow_eval_llm_passthrough() -> None:
 
 def install_profile(profile: str = "default") -> None:
     """Register Spotify API mocks for the given profile name."""
-    respx.reset()
+    # Clear prior routes without respx.reset(), which can detach the active mock router.
+    respx.routes.clear()
     respx.post("https://accounts.spotify.com/api/token").mock(
         return_value=httpx.Response(
             200,
@@ -120,10 +121,16 @@ def _install_default() -> None:
             },
         )
     )
-    respx.get(url__regex=r"https://api\.spotify\.com/v1/playlists/[^/]+$").mock(
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/playlists/[^/?]+").mock(
         return_value=httpx.Response(
             200,
-            json={"id": PL_RNB, "name": "RNB2025", "snapshot_id": "snap1", "public": True},
+            json={
+                "id": PL_RNB,
+                "name": "RNB2025",
+                "snapshot_id": "snap1",
+                "public": True,
+                "owner": {"id": "meuser", "display_name": "Eval User"},
+            },
         )
     )
     respx.get(url__regex=r"https://api\.spotify\.com/v1/playlists/.*/items").mock(
@@ -296,7 +303,8 @@ def _search_router(request: httpx.Request) -> httpx.Response:
 
 
 def _install_no_active_device() -> None:
-    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player").mock(
+    _install_default()
+    respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player(?:\?.*)?$").mock(
         return_value=httpx.Response(204, text="")
     )
     respx.get(url__regex=r"https://api\.spotify\.com/v1/me/player/devices").mock(

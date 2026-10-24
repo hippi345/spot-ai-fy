@@ -107,68 +107,72 @@ def run_mock_case(
         )
     _ensure_eval_tokens(settings)
     os.environ.setdefault("SPOTIFY_CLIENT_ID", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    install_profile(case_input.mock_spotify_profile)
-    t0 = time.perf_counter()
-    runner = SpotifyToolRunner(settings=settings, conversation_id=case_input.conversation_id)
 
-    if case_input.expect_shortcut or case_input.forbid_llm:
-        outcome = resolve_deterministic_chat_outcome(
-            case_input.prompt,
-            runner,
-            conversation_id=case_input.conversation_id,
-        )
-        runner.close()
-        duration = time.perf_counter() - t0
-        if outcome is None:
+    import respx
+
+    with respx.mock:
+        install_profile(case_input.mock_spotify_profile)
+        t0 = time.perf_counter()
+        runner = SpotifyToolRunner(settings=settings, conversation_id=case_input.conversation_id)
+
+        if case_input.expect_shortcut or case_input.forbid_llm:
+            outcome = resolve_deterministic_chat_outcome(
+                case_input.prompt,
+                runner,
+                conversation_id=case_input.conversation_id,
+            )
+            runner.close()
+            duration = time.perf_counter() - t0
+            if outcome is None:
+                return AgentTurnResult(
+                    reply="",
+                    shortcut=False,
+                    llm_invoked=False,
+                    duration_s=duration,
+                    extra={"error": "expected deterministic shortcut but none matched"},
+                )
+            steps = outcome.tool_steps
+            tool_calls = _tool_calls_from_steps(steps)
             return AgentTurnResult(
-                reply="",
-                shortcut=False,
+                reply=(outcome.reply or "").strip(),
+                tool_calls=tool_calls,
+                shortcut=True,
                 llm_invoked=False,
                 duration_s=duration,
-                extra={"error": "expected deterministic shortcut but none matched"},
+                acted_uris=_extract_acted_uris(tool_calls),
             )
-        steps = outcome.tool_steps
-        tool_calls = _tool_calls_from_steps(steps)
+
+        tool_calls: list[ToolCallRecord] = []
+        reply = ""
+        for step in case_input.mock_script:
+            name = str(step.get("name") or "")
+            args = step.get("args") if isinstance(step.get("args"), dict) else {}
+            raw = runner.run(name, dict(args))
+            tool_calls.append(ToolCallRecord(name=name, arguments=dict(args), result=raw))
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                data = {}
+            if isinstance(data, dict):
+                reply = str(
+                    data.get("user_message")
+                    or data.get("message")
+                    or data.get("preview_text")
+                    or data.get("error")
+                    or data.get("reconnect_spotify_message")
+                    or data.get("spotify_api_message")
+                    or reply
+                )
+        runner.close()
+        duration = time.perf_counter() - t0
         return AgentTurnResult(
-            reply=(outcome.reply or "").strip(),
+            reply=reply.strip(),
             tool_calls=tool_calls,
-            shortcut=True,
+            shortcut=False,
             llm_invoked=False,
             duration_s=duration,
             acted_uris=_extract_acted_uris(tool_calls),
         )
-
-    tool_calls: list[ToolCallRecord] = []
-    reply = ""
-    for step in case_input.mock_script:
-        name = str(step.get("name") or "")
-        args = step.get("args") if isinstance(step.get("args"), dict) else {}
-        raw = runner.run(name, dict(args))
-        tool_calls.append(ToolCallRecord(name=name, arguments=dict(args), result=raw))
-        try:
-            data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            data = {}
-        if isinstance(data, dict):
-            reply = str(
-                data.get("user_message")
-                or data.get("message")
-                or data.get("preview_text")
-                or data.get("error")
-                or data.get("reconnect_spotify_message")
-                or data.get("spotify_api_message")
-                or reply
-            )
-    runner.close()
-    duration = time.perf_counter() - t0
-    return AgentTurnResult(
-        reply=reply.strip(),
-        tool_calls=tool_calls,
-        shortcut=False,
-        llm_invoked=False,
-        duration_s=duration,
-        acted_uris=_extract_acted_uris(tool_calls),
-    )
 
 
 def run_live_case(

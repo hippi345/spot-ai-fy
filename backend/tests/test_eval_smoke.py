@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import respx
 from pydantic_evals import Dataset
 
 from evals.case_loader import load_dataset
@@ -20,13 +19,12 @@ def ci_dataset(data_dir) -> Dataset:
 
 
 def test_ci_mock_eval_suite_passes(ci_dataset: Dataset) -> None:
-    with respx.mock:
-        report = ci_dataset.evaluate_sync(
-            lambda inputs: eval_task(inputs, force_mock=True),
-            name="ci_mock_smoke",
-            progress=False,
-            max_concurrency=1,
-        )
+    report = ci_dataset.evaluate_sync(
+        lambda inputs: eval_task(inputs, force_mock=True),
+        name="ci_mock_smoke",
+        progress=False,
+        max_concurrency=1,
+    )
     failures = []
     for case in report.cases:
         for name, res in (case.assertions or {}).items():

@@ -3,7 +3,7 @@
   "suite": "spot_agent_evals",
   "scope": "ci",
   "metrics": {
-    "case_count": 31,
+    "case_count": 32,
     "assertion_pass_rate": {
       "MaxDuration": 1.0,
       "ToolSequenceMatch": 1.0,
@@ -16,7 +16,9 @@
       "ToolErrorHandled": 1.0,
       "MockScriptRan": 1.0,
       "MoodIntentJudge": 1.0,
-      "ToolJsonValid": 1.0
+      "BlankTrackTitleRejected": 1.0,
+      "ToolJsonValid": 1.0,
+      "NoMockHttpLeakInReply": 1.0
     },
     "score_means": {}
   }

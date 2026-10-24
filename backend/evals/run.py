@@ -182,7 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.setdefault("SPOTIFY_CLIENT_ID", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         _ensure_eval_tokens(get_settings())
 
-    mock_ctx = respx.mock if force_mock else nullcontext
+    # Mock HTTP is activated inside run_mock_case; avoid nested respx.mock here.
+    mock_ctx = nullcontext
 
     def _evaluate(ds: Dataset, provider: str, label: str) -> Any:
         task = _make_task(provider, force_mock=force_mock)
@@ -194,8 +195,6 @@ def main(argv: list[str] | None = None) -> int:
                 progress=True,
                 max_concurrency=1,
             )
-        if force_mock:
-            respx.stop()
         return rep
 
     for provider in providers:
