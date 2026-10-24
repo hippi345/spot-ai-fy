@@ -27,7 +27,9 @@ def mcp_tool_names() -> set[str]:
     """Parse mcp_server.py so tests do not import the MCP runtime (optional dep version)."""
     tree = ast.parse(_MCP_SERVER_PATH.read_text(encoding="utf-8"))
     names: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("spotify_"):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and (
+            node.name.startswith("spotify_") or node.name == "search_my_library"
+        ):
             names.add(node.name)
     return names

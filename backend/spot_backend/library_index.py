@@ -23,6 +23,26 @@ logger = logging.getLogger(__name__)
 
 Kind = Literal["track", "playlist", "artist", "any"]
 
+
+def format_fts_match_query(user_query: str) -> str:
+    """Tokenize user text for FTS5 MATCH (quoted tokens joined with OR)."""
+    import re
+
+    text = (user_query or "").strip().replace("/", " ")
+    if not text:
+        return '""'
+    tokens = re.findall(r"[\w']+", text, flags=re.UNICODE)
+    if not tokens:
+        return '""'
+    parts: list[str] = []
+    for tok in tokens:
+        clean = tok.replace('"', "").strip()
+        if clean:
+            parts.append(f'"{clean}"')
+    if not parts:
+        return '""'
+    return " OR ".join(parts)
+
 _refresh_guard = threading.Lock()
 _last_refresh_at: float = 0.0
 _indexing = False
@@ -184,7 +204,7 @@ class LibraryIndex:
             "FROM items_fts JOIN items i ON items_fts.id = i.id "
             "WHERE items_fts MATCH ? "
         )
-        params: list[Any] = [query.replace('"', " ")]
+        params: list[Any] = [format_fts_match_query(query)]
         if kind != "any":
             sql += "AND i.kind = ? "
             params.append(kind)
@@ -474,14 +494,29 @@ def search_my_library_tool(
     settings = settings or get_settings()
     if not library_index_enabled(settings):
         return {"available": False, "reason": "disabled"}
+    schedule_incremental_sync(settings)
     idx = LibraryIndex(settings=settings)
-    idx.sync_incremental()
     k: Kind = kind if kind in ("track", "playlist", "artist", "any") else "any"
     payload = idx.search(query, kind=k, limit=limit)
     raw = json.dumps(payload, ensure_ascii=False)
     if len(raw) > 1500:
         payload["results"] = (payload.get("results") or [])[: max(1, limit // 2)]
     return payload
+
+
+def schedule_incremental_sync(settings: Settings | None = None) -> None:
+    """Fire-and-forget incremental sync (stale reads are OK on the tool path)."""
+    settings = settings or get_settings()
+    if not library_index_enabled(settings):
+        return
+
+    def _worker() -> None:
+        try:
+            LibraryIndex(settings=settings).sync_incremental()
+        except Exception:
+            logger.exception("library index incremental sync failed")
+
+    threading.Thread(target=_worker, name="library-index-incremental", daemon=True).start()
 
 
 def start_background_build(settings: Settings | None = None) -> None:

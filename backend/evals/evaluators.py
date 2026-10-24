@@ -9,7 +9,10 @@ from typing import Any
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 
 from evals.types import AgentTurnResult, EvalCaseMetadata
-from spot_backend.reply_grounding import reply_mentions_artists_outside_tool_data
+from spot_backend.reply_grounding import (
+    reply_mentions_artists_outside_tool_data,
+    reply_mentions_catalog_outside_tool_data,
+)
 
 
 def _meta(ctx: EvaluatorContext) -> EvalCaseMetadata:
@@ -115,6 +118,7 @@ class ReplyGrounding(Evaluator):
         out = _output(ctx)
         results = [tc.result for tc in out.tool_calls if tc.result]
         bad = reply_mentions_artists_outside_tool_data(out.reply, results)
+        bad.extend(reply_mentions_catalog_outside_tool_data(out.reply, results))
         return len(bad) == 0
 
 

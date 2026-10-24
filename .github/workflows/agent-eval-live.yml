@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 12 * * 0"
+  pull_request:
 
 jobs:
   live-eval:
@@ -96,10 +97,10 @@ jobs:
           LLM_PROVIDER: ollama
         working-directory: backend
         run: |
-          python -m evals.run --mode live --provider all --repeat 1 \
+          python -m evals.run --mode live --provider all --repeat 1 --judge ollama:qwen2.5:7b \
             --report-json /tmp/agent-eval-live-report.json \
             --report-md /tmp/agent-eval-live-report.md \
-            --regression-report || true
+            --save-live-baseline || true
 
       - name: Upload live eval reports
         if: always() && steps.gate.outputs.run == 'true'

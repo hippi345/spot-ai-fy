@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   mock-eval-regression:
@@ -26,7 +25,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements-dev.txt
 
-      - name: Mocked agent eval vs baseline.json
+      - name: Mocked agent eval vs baseline-ci.json
         env:
           DATA_DIR: /tmp/spot-agent-eval
           SPOTIFY_CLIENT_ID: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -44,7 +43,7 @@ jobs:
           path: |
             /tmp/agent-eval-mock-report.json
             /tmp/agent-eval-mock-report.md
-            backend/evals/baseline.json
+            backend/evals/baseline-ci.json
 
       - name: Job summary
         if: always()

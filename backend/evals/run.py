@@ -23,14 +23,19 @@ import respx
 from pydantic_evals import Dataset
 
 from evals.baseline import (
+    BASELINE_CI_PATH,
     BASELINE_PATH,
     format_regression_markdown,
     load_baseline,
     regression_diff,
     save_baseline,
+    save_live_baseline,
 )
+from evals.report_json import evaluation_report_to_json
 from evals.evaluators import CUSTOM_EVALUATOR_TYPES, dataset_evaluators
-from evals.task import eval_task
+from spot_backend.config import get_settings
+
+from evals.task import _ensure_eval_tokens, eval_task
 
 CASES_PATH = Path(__file__).with_name("cases.yaml")
 
@@ -77,6 +82,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ci", action="store_true", help="Only cases with metadata.ci=true")
     parser.add_argument("--compare", action="store_true", help="Diff against baseline.json")
     parser.add_argument("--save-baseline", action="store_true", help="Write baseline.json from this run")
+    parser.add_argument(
+        "--save-live-baseline",
+        action="store_true",
+        help="Write baseline-live.json (qualitative score means from a judge-enabled live run)",
+    )
     parser.add_argument("--regression-report", action="store_true", help="Exit 1 if metrics regress vs baseline")
     parser.add_argument("--judge", default="", help="Enable LLM judges (e.g. ollama:qwen2.5:7b)")
     parser.add_argument("--output", type=Path, default=None, help="JSON report path")
@@ -111,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, json.JSONDecodeError):
             baseline_report = None
 
+    if force_mock:
+        _ensure_eval_tokens(get_settings())
+
     mock_ctx = respx.mock if force_mock else nullcontext
     for provider in providers:
         task = _make_task(provider, force_mock=force_mock)
@@ -120,7 +133,10 @@ def main(argv: list[str] | None = None) -> int:
                 name=f"{dataset.name}_{provider}_{args.mode}",
                 repeat=max(1, int(args.repeat)),
                 progress=True,
+                max_concurrency=1 if force_mock else None,
             )
+        if force_mock:
+            respx.stop()
         last_report = report
         print(f"\n=== {provider} ({args.mode}) ===")
         if baseline_report and args.compare:
@@ -136,23 +152,33 @@ def main(argv: list[str] | None = None) -> int:
             out_path = args.output if len(providers) == 1 else args.output.with_stem(
                 f"{args.output.stem}_{provider}"
             )
-            out_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+            out_path.write_text(evaluation_report_to_json(report), encoding="utf-8")
         if args.report_json:
             rj = args.report_json if len(providers) == 1 else args.report_json.with_stem(
                 f"{args.report_json.stem}_{provider}"
             )
-            rj.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+            rj.write_text(evaluation_report_to_json(report), encoding="utf-8")
 
     if last_report is None:
         print("No cases to run.", file=sys.stderr)
         return 2
 
     if args.save_baseline:
-        path = save_baseline(last_report)
+        scope = "ci" if args.ci else "full"
+        path = save_baseline(last_report, scope=scope)
         print(f"Wrote baseline to {path}")
 
+    if args.save_live_baseline:
+        path = save_live_baseline(last_report)
+        print(f"Wrote live baseline to {path}")
+
     if args.regression_report:
-        diff = regression_diff(last_report)
+        bl_path = BASELINE_CI_PATH if args.ci else BASELINE_PATH
+        diff = regression_diff(
+            last_report,
+            bl_path,
+            expect_scope="ci" if args.ci else "full",
+        )
         print(json.dumps(diff, indent=2))
         if args.report_md:
             args.report_md.write_text(format_regression_markdown(diff), encoding="utf-8")

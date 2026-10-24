@@ -231,8 +231,14 @@ def _library_index_startup() -> None:
     from spot_backend.library_index import library_index_enabled, start_background_build
 
     s = get_settings()
-    if library_index_enabled(s):
-        start_background_build(s)
+    if not library_index_enabled(s):
+        return
+    from spot_backend.token_store import load_tokens
+
+    bundle = load_tokens(s.resolved_token_path)
+    if not bundle or not bundle.access_token:
+        return
+    start_background_build(s)
 
 
 @app.post("/api/library-index/rebuild")

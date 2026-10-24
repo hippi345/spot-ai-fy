@@ -37,6 +37,7 @@ class EvalCaseInput(BaseModel):
     mock_spotify_profile: str = "default"
     expect_shortcut: bool = False
     forbid_llm: bool = False
+    eval_fixture: dict[str, Any] | None = None
 
 
 class EvalCaseMetadata(BaseModel):
