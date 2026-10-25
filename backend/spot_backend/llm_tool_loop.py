@@ -27,6 +27,7 @@ from spot_backend.prompt_intent import (
     refused_mutating_tool_result,
     spotify_tool_is_mutating,
 )
+from spot_backend.chat_tool_events import tool_done_event
 from spot_backend.reply_tool_trace import (
     append_tool_trace_record,
     summarize_tool_args,
@@ -101,7 +102,7 @@ def run_tool_calls(
             if emit:
                 emit({"type": "tool_start", "name": name})
                 preview = result[:240] + ("…" if len(result) > 240 else "")
-                emit({"type": "tool_done", "name": name, "preview": preview})
+                emit(tool_done_event(name, preview, args))
             content = result[:tool_result_cap] if tool_result_cap > 0 else result
             tool_messages.append(
                 {
@@ -160,7 +161,7 @@ def run_tool_calls(
             record_successful_tool(state.successful_tools, name, result)
         if emit:
             preview = result[:240] + ("…" if len(result) > 240 else "")
-            emit({"type": "tool_done", "name": name, "preview": preview})
+            emit(tool_done_event(name, preview, args))
         content = result[:tool_result_cap] if tool_result_cap > 0 else result
         tool_messages.append(
             {

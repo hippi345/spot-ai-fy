@@ -241,7 +241,11 @@ def run_live_case(
             if et == "tool_done":
                 name = str(ev.get("name") or "")
                 preview = str(ev.get("preview") or "")
-                tool_calls.append(ToolCallRecord(name=name, arguments={}, result=preview))
+                raw_args = ev.get("arguments")
+                arguments = dict(raw_args) if isinstance(raw_args, dict) else {}
+                tool_calls.append(
+                    ToolCallRecord(name=name, arguments=arguments, result=preview)
+                )
                 tool_results.append(preview)
             if et == "final":
                 reply = str(ev.get("text") or "")

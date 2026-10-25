@@ -40,6 +40,7 @@ from spot_backend.prompt_intent import (
     spotify_tool_is_mutating,
     turn_needs_vague_playlist_play_nudge,
 )
+from spot_backend.chat_tool_events import tool_done_event
 from spot_backend.reply_tool_trace import (
     append_tool_trace_record,
     summarize_tool_args,
@@ -903,7 +904,7 @@ def iter_ollama_chat_events(
                             result=result,
                         )
                         preview = result[:240] + ("…" if len(result) > 240 else "")
-                        yield {"type": "tool_done", "name": name, "preview": preview}
+                        yield tool_done_event(name, preview, args)
                         turn_tool_calls.append((name, result))
                         tool_results.append(result)
                         if native_tools:
@@ -921,7 +922,7 @@ def iter_ollama_chat_events(
                         result = deduped_tool_results[dedupe_key]
                         yield {"type": "tool_start", "name": name}
                         preview = result[:240] + ("…" if len(result) > 240 else "")
-                        yield {"type": "tool_done", "name": name, "preview": preview}
+                        yield tool_done_event(name, preview, args)
                         result_chat = _cap_tool_result_for_chat(result, max_len=tool_result_cap)
                         if native_tools:
                             messages.append({"role": "tool", "name": name, "content": result_chat})
@@ -952,7 +953,7 @@ def iter_ollama_chat_events(
                     record_successful_tool(successful_tools, name, result)
                     tool_results.append(result)
                     preview = result[:240] + ("…" if len(result) > 240 else "")
-                    yield {"type": "tool_done", "name": name, "preview": preview}
+                    yield tool_done_event(name, preview, args)
                     result_chat = _cap_tool_result_for_chat(result, max_len=tool_result_cap)
                     if native_tools:
                         messages.append({"role": "tool", "name": name, "content": result_chat})

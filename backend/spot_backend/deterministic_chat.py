@@ -15,6 +15,7 @@ from spot_backend.chat_shortcuts import (
 )
 from spot_backend.capability_replies import try_capability_question_reply
 from spot_backend.deterministic_chat_types import DeterministicChatResult
+from spot_backend.chat_tool_events import tool_done_event
 from spot_backend.spotify_tools import SpotifyToolRunner
 
 
@@ -66,10 +67,10 @@ def persist_deterministic_shortcut_traces(
 def iter_deterministic_shortcut_events(
     outcome: DeterministicChatResult,
 ) -> Iterator[dict[str, Any]]:
-    for name, _, raw in outcome.tool_steps:
+    for name, args, raw in outcome.tool_steps:
         preview = raw[:240] + ("…" if len(raw) > 240 else "")
         yield {"type": "tool_start", "name": name}
-        yield {"type": "tool_done", "name": name, "preview": preview}
+        yield tool_done_event(name, preview, args)
     yield {
         "type": "final",
         "text": prepare_user_visible_reply(outcome.reply, outcome.tool_raw_results()),

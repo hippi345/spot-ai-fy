@@ -148,29 +148,38 @@ _LIVE_PLAY_TRACK_PREVIEW = (
 
 
 @pytest.mark.parametrize(
-    "case_name,preview",
+    "case_name,trace_args,preview",
     [
-        ("live_play_track_prompt", _LIVE_PLAY_TRACK_PREVIEW),
+        (
+            "live_play_track_prompt",
+            {"track_name": "Down", "artist_name": "Jay Sean", "uri": "spotify:track:111"},
+            _LIVE_PLAY_TRACK_PREVIEW,
+        ),
         (
             "library_index_on_semantic_hit",
+            {"track_name": "Chill Vibes", "uri": "spotify:track:222"},
             '{"ok": true, "playback_verified": true, "requested_track": "Chill Vibes", "uri": "spotify:track:222"}',
         ),
         (
             "mood_energetic_workout",
-            '{"ok": true, "playback_verified": true, "requested_track": "Power", "requested_artist": "", "uri": "spotify:track:333"}',
+            {"track_name": "Power", "uri": "spotify:track:333"},
+            '{"ok": true, "playback_verified": true, "requested_track": "Power", "uri": "spotify:track:333"}',
         ),
         (
             "sample_loved_2022_upbeat",
+            {"track_name": "Good 4 U", "uri": "spotify:track:444"},
             '{"ok": true, "playback_verified": true, "requested_track": "Good 4 U", "uri": "spotify:track:444"}',
         ),
         (
             "sample_sunday_morning_loved",
+            {"track_name": "Sunday Morning", "uri": "spotify:track:555"},
             '{"ok": true, "playback_verified": true, "requested_track": "Sunday Morning", "uri": "spotify:track:555"}',
         ),
     ],
 )
-def test_blank_track_title_evaluator_skips_live_eval_tool_trace(case_name: str, preview: str) -> None:
-    """Live eval task stores tool_done previews only (arguments={})."""
+def test_blank_track_title_evaluator_accepts_live_eval_tool_trace(
+    case_name: str, trace_args: dict, preview: str
+) -> None:
     ev = BlankTrackTitleRejected()
     ctx = _ctx(
         AgentTurnResult(
@@ -178,7 +187,7 @@ def test_blank_track_title_evaluator_skips_live_eval_tool_trace(case_name: str, 
             tool_calls=[
                 ToolCallRecord(
                     name="spotify_play_track",
-                    arguments={},
+                    arguments=trace_args,
                     result=preview,
                 )
             ],
@@ -186,6 +195,43 @@ def test_blank_track_title_evaluator_skips_live_eval_tool_trace(case_name: str, 
         {},
     )
     assert ev.evaluate(ctx) is True
+
+
+def test_blank_track_title_evaluator_skips_live_eval_tool_trace_without_args() -> None:
+    """Fallback when tool_done has no play identity fields (legacy traces)."""
+    ev = BlankTrackTitleRejected()
+    ctx = _ctx(
+        AgentTurnResult(
+            reply="ok",
+            tool_calls=[
+                ToolCallRecord(
+                    name="spotify_play_track",
+                    arguments={},
+                    result='{"ok": true, "playback_verified": true}',
+                )
+            ],
+        ),
+        {},
+    )
+    assert ev.evaluate(ctx) is True
+
+
+def test_blank_track_title_evaluator_fails_live_trace_blank_title_success() -> None:
+    ev = BlankTrackTitleRejected()
+    ctx = _ctx(
+        AgentTurnResult(
+            reply="Playing",
+            tool_calls=[
+                ToolCallRecord(
+                    name="spotify_play_track",
+                    arguments={"track_name": "   ", "artist_name": "Jay Sean"},
+                    result='{"ok": true, "playback_verified": true}',
+                )
+            ],
+        ),
+        {},
+    )
+    assert ev.evaluate(ctx) is False
 
 
 def test_thresholds_live_expected_case_count_matches_live_metadata_cases() -> None:
