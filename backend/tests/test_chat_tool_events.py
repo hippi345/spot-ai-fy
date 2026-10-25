@@ -9,7 +9,7 @@ def test_play_tool_trace_includes_title_artist_uri_only() -> None:
         "artist_name": "Jay Sean",
         "uri": "spotify:track:abc",
         "access_token": "must-not-appear",
-        "api_key": "AIzaSySecretKeyMustNotAppearInTrace12345",
+        "api_key": "AIzaSyMustNotAppearInPlayTrace12345",
     }
     out = play_tool_arguments_for_event_trace("spotify_play_track", args)
     assert out == {
