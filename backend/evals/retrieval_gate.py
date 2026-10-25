@@ -52,6 +52,7 @@ class GateCaseResult:
     margin_recall: float
     margin_ndcg: float
     vector_wins: bool
+    reported_only: bool = False
 
 
 @dataclass
@@ -85,34 +86,51 @@ def summarize_arm(results: list[GateCaseResult], corpus: str) -> GateArmSummary:
     )
 
 
+def _format_gate_case_line(r: GateCaseResult) -> str:
+    tag = " reported-only" if r.reported_only else ""
+    return (
+        f"  [{r.corpus}{tag}] {r.name}: {r.query!r}\n"
+        f"    vector  recall@{r.k}={r.vector.recall_at_k:.4f} "
+        f"prec@{r.k}={r.vector.precision_at_k:.4f} nDCG@{r.k}={r.vector.ndcg_at_k:.4f} "
+        f"win={r.vector_wins}\n"
+        f"    bm25    recall@{r.k}={r.bm25.recall_at_k:.4f} "
+        f"prec@{r.k}={r.bm25.precision_at_k:.4f} nDCG@{r.k}={r.bm25.ndcg_at_k:.4f}"
+    )
+
+
 def format_gate_report(
     results: list[GateCaseResult],
     *,
     library_relevant: int,
     play_relevant: int,
+    gating_results: list[GateCaseResult] | None = None,
 ) -> str:
+    gating = gating_results if gating_results is not None else [r for r in results if not r.reported_only]
+    k = gating[0].k if gating else (results[0].k if results else "?")
     lines = [
         "Spot retrieval gate (paraphrase queries; vector vs BM25/FTS):",
-        f"  library |relevant|={library_relevant} (recall@k = hits/|relevant|; k={results[0].k if results else '?'})",
+        f"  library |relevant|={library_relevant} (recall@k = hits/|relevant|; k={k})",
         f"  play_history this_week |relevant|={play_relevant}",
         "",
     ]
     for r in results:
-        lines.append(
-            f"  [{r.corpus}] {r.name}: {r.query!r}\n"
-            f"    vector  recall@{r.k}={r.vector.recall_at_k:.4f} "
-            f"prec@{r.k}={r.vector.precision_at_k:.4f} nDCG@{r.k}={r.vector.ndcg_at_k:.4f} "
-            f"win={r.vector_wins}\n"
-            f"    bm25    recall@{r.k}={r.bm25.recall_at_k:.4f} "
-            f"prec@{r.k}={r.bm25.precision_at_k:.4f} nDCG@{r.k}={r.bm25.ndcg_at_k:.4f}"
-        )
+        if not r.reported_only:
+            lines.append(_format_gate_case_line(r))
+    reported = [r for r in results if r.reported_only]
+    if reported:
+        lines.append("\n  Library reported-only (not gating):")
+        for r in reported:
+            lines.append(_format_gate_case_line(r))
     for corpus in ("library", "play_history"):
+        arm = [r for r in gating if r.corpus == corpus]
+        if not arm:
+            continue
         try:
-            s = summarize_arm(results, corpus)
+            s = summarize_arm(arm, corpus)
         except ValueError:
             continue
         lines.append(
-            f"\n  {corpus} summary: wins={s.vector_wins}/{s.query_count} "
+            f"\n  {corpus} gating summary: wins={s.vector_wins}/{s.query_count} "
             f"mean_vector recall={s.mean_vector_recall:.4f} prec={s.mean_vector_precision:.4f} "
             f"nDCG={s.mean_vector_ndcg:.4f}"
         )

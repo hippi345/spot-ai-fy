@@ -29,12 +29,17 @@ from evals.retrieval_gate_config import (
     PLAY_HISTORY_MEAN_RECALL_AT_K_FLOOR,
     PLAY_HISTORY_THIS_WEEK_RELEVANT_COUNT,
 )
-from evals.retrieval_queries import library_gate_cases, play_history_gate_cases
+from evals.retrieval_queries import (
+    library_gate_cases,
+    library_reported_only_gate_cases,
+    play_history_gate_cases,
+)
 from spot_backend.config import Settings
 from spot_backend.library_index import LibraryIndex
 from spot_backend.play_log import PlayLogStore
 
-SPOT_GATE_CASES = library_gate_cases() + play_history_gate_cases()
+SPOT_GATING_CASES = library_gate_cases() + play_history_gate_cases()
+SPOT_GATE_CASES = SPOT_GATING_CASES + library_reported_only_gate_cases()
 
 
 def _library_docs() -> list[dict]:
@@ -183,18 +188,21 @@ def test_spot_retrieval_gate_paraphrase_vector_beats_bm25(
                 margin_recall=v_metrics.recall_at_k - b_metrics.recall_at_k,
                 margin_ndcg=v_metrics.ndcg_at_k - b_metrics.ndcg_at_k,
                 vector_wins=wins,
+                reported_only=case.reported_only,
             )
         )
 
+    gating_results = [r for r in results if not r.reported_only]
     report = format_gate_report(
         results,
         library_relevant=LIBRARY_PLANTED_RELEVANT_COUNT,
         play_relevant=PLAY_HISTORY_THIS_WEEK_RELEVANT_COUNT,
+        gating_results=gating_results,
     )
     print(report)
 
-    lib = summarize_arm(results, "library")
-    play = summarize_arm(results, "play_history")
+    lib = summarize_arm([r for r in gating_results if r.corpus == "library"], "library")
+    play = summarize_arm([r for r in gating_results if r.corpus == "play_history"], "play_history")
 
     failures: list[str] = []
     if lib.vector_wins < MIN_VECTOR_WINS_PER_ARM:

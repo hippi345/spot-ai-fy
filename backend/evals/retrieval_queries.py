@@ -25,6 +25,13 @@ LIBRARY_PARAPHRASE_QUERIES: tuple[str, ...] = (
     "hazy evening glow listening I have kept",
 )
 
+# Original shoreline/ocean phrasing — scored in gate test output only (not gating).
+LIBRARY_REPORTED_ONLY_PARAPHRASE_QUERIES: tuple[str, ...] = (
+    "relaxed shoreline melodies I have enjoyed",
+    "quiet shoreline pieces from my saved collection",
+    "balmy ocean breeze music from my collection",
+)
+
 PLAY_HISTORY_THIS_WEEK_PARAPHRASE_QUERIES: tuple[str, ...] = (
     "twilight warmth I replayed in recent days",
     "mellow amber twilight spins from the last few days",
@@ -40,6 +47,7 @@ PLAY_HISTORY_THIS_WEEK_PARAPHRASE_QUERIES: tuple[str, ...] = (
 LIBRARY_COMMITTED_QUERIES: tuple[str, ...] = (
     LIBRARY_SUNSET_LITERAL,
     *LIBRARY_PARAPHRASE_QUERIES,
+    *LIBRARY_REPORTED_ONLY_PARAPHRASE_QUERIES,
 )
 
 PLAY_HISTORY_COMMITTED_QUERIES: tuple[str, ...] = (
@@ -56,6 +64,7 @@ class RetrievalGateCase:
     query: str
     corpus: str  # "library" | "play_history"
     window: str = "this_week"
+    reported_only: bool = False
 
 
 def library_gate_cases() -> tuple[RetrievalGateCase, ...]:
@@ -78,4 +87,16 @@ def play_history_gate_cases() -> tuple[RetrievalGateCase, ...]:
             window="this_week",
         )
         for i, q in enumerate(PLAY_HISTORY_THIS_WEEK_PARAPHRASE_QUERIES)
+    )
+
+
+def library_reported_only_gate_cases() -> tuple[RetrievalGateCase, ...]:
+    return tuple(
+        RetrievalGateCase(
+            name=f"library_reported_shoreline_{i + 1:02d}",
+            query=q,
+            corpus="library",
+            reported_only=True,
+        )
+        for i, q in enumerate(LIBRARY_REPORTED_ONLY_PARAPHRASE_QUERIES)
     )
