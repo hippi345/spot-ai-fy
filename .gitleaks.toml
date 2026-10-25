@@ -1,5 +1,8 @@
 title = "spot-ai-fy gitleaks config"
 
+[extend]
+useDefault = true
+
 [allowlist]
 description = "Deterministic test doubles only — never allow real API key material"
 regexes = [

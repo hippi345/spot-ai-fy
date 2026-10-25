@@ -6,7 +6,7 @@ calibration:
     Thresholds sit below observed means to allow minor LLM variance.
 
 mock_ci:
-  expected_case_count: 32
+  expected_case_count: 34
   hard_gates:
     assertion_pass_rate_min:
       MaxDuration: 1.0
