@@ -59,19 +59,29 @@ def _library_docs() -> list[dict]:
 
 def _library_planted_texts() -> list[str]:
     ids = {tid.replace("spotify:track:", "") for tid in planted_sunset_uris()}
-    texts: list[str] = []
-    for t in tracks("eval_user_a"):
-        if t["id"] in ids:
-            texts.append(f"{t.get('name') or ''} {t.get('artists', [{}])[0].get('name', '')}")
-    return texts
+    return [
+        library_index_document_text(t, added_at=t.get("liked_at"))
+        for t in tracks("eval_user_a")
+        if t["id"] in ids
+    ]
 
 
 def _play_planted_texts(meta: dict) -> list[str]:
+    from spot_backend.play_log import play_index_text
+
     uris = set(meta["planted"]["sunset_this_week"])
     texts: list[str] = []
     for row in meta.get("plays") or []:
         if row["track_uri"] in uris:
-            texts.append(f"{row.get('title') or ''} {row.get('artist') or ''}")
+            texts.append(
+                play_index_text(
+                    row["title"],
+                    row["artist"],
+                    row["album"],
+                    row.get("request_text"),
+                    mood_tags=row.get("mood_tags", ""),
+                )
+            )
     return texts
 
 

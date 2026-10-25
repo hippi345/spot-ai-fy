@@ -23,12 +23,13 @@ def planted_corpus_tokens(*texts: str) -> set[str]:
 
 
 def assert_zero_token_overlap(query: str, planted_texts: list[str]) -> None:
+    """No FTS token overlap with planted indexed doc text (same tokenizer as BM25)."""
     q = fts_query_tokens(query)
     p = planted_corpus_tokens(*planted_texts)
     overlap = q & p
     if overlap:
         raise AssertionError(
-            f"query/planted token overlap not allowed for {query!r}: {sorted(overlap)}"
+            f"query/planted indexed-doc token overlap not allowed for {query!r}: {sorted(overlap)}"
         )
 
 

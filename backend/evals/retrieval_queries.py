@@ -15,11 +15,11 @@ PLAY_DUSK_DRIVE = "dusk drive"
 # Paraphrase gate queries: no FTS token overlap with planted title/artist text (see gate test).
 LIBRARY_PARAPHRASE_QUERIES: tuple[str, ...] = (
     "warm coastal evening music from my collection",
-    "mellow amber hour songs I have saved",
-    "nostalgic golden dusk listening from my library",
-    "relaxed shoreline melodies I have enjoyed",
-    "quiet shoreline pieces from my saved collection",
-    "balmy ocean breeze music from my collection",
+    "mellow amber twilight songs I have saved",
+    "warm amber twilight listening from my library",
+    "soft evening glow tracks I have saved",
+    "coastal twilight calm I have enjoyed",
+    "quiet twilight warmth from my saved music",
     "tender sundown warmth from songs I saved",
     "coral twilight ambience in my music library",
     "hazy evening glow listening I have kept",
@@ -31,10 +31,10 @@ PLAY_HISTORY_THIS_WEEK_PARAPHRASE_QUERIES: tuple[str, ...] = (
     "quiet shoreline listening this week",
     "balmy evening playback from my recent history",
     "hazy horizon songs I heard lately this week",
-    "coral sky ambience from recent sessions",
-    "tender warmth I played in the past week",
+    "coral sky ambience from recent playback",
+    "twilight ambience I replayed in recent days",
     "ocean breeze listens from the last seven days",
-    "gentle amber twilight from my recent plays",
+    "amber twilight warmth I replayed in recent days",
 )
 
 LIBRARY_COMMITTED_QUERIES: tuple[str, ...] = (

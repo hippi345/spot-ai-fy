@@ -15,8 +15,9 @@ MIN_PARAPHRASE_QUERIES_PER_ARM = 8
 MIN_VECTOR_WINS_PER_ARM = 6
 
 # Library: |relevant|=50 with k=20 ⇒ recall@20 is hits/50 (max 0.40). Gate precision + nDCG.
-LIBRARY_MEAN_PRECISION_AT_K_FLOOR = 0.05  # ≥1 planted hit in top-20 on average
-LIBRARY_MEAN_NDCG_AT_K_FLOOR = 0.06
+# Floors ≈ half of observed gate means (~0.30 precision, ~0.30 nDCG on 9 paraphrases).
+LIBRARY_MEAN_PRECISION_AT_K_FLOOR = 0.15
+LIBRARY_MEAN_NDCG_AT_K_FLOOR = 0.15
 
 # Play history: 15 relevant URIs in this_week window (recall@20 is meaningful).
 PLAY_HISTORY_MEAN_RECALL_AT_K_FLOOR = 0.33
