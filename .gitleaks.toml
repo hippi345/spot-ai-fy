@@ -8,6 +8,7 @@ description = "Deterministic test doubles only — never allow real API key mate
 regexes = [
   '''AIzaSyMock[A-Za-z0-9_-]+''',
   '''AIzaSyMustNotAppear[A-Za-z0-9_-]+''',
+  '''AIzaSySecretKeyMustNotAppear[A-Za-z0-9_-]+''',
   '''AIzaSySecretKeyThatMustNotAppear[A-Za-z0-9_-]+''',
   '''AIzaSyRespxNotMocked[A-Za-z0-9_-]+''',
   '''AIzaSyEvalReportJson[A-Za-z0-9_-]+''',
