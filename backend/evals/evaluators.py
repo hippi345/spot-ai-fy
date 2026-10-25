@@ -215,11 +215,19 @@ class BlankTrackTitleRejected(Evaluator):
             args = tc.arguments or {}
             title = str(args.get("track_name") or args.get("title") or "").strip()
             artist = str(args.get("artist_name") or args.get("artist") or "").strip()
-            if title == "" and artist == "":
-                continue
             raw = tc.result or ""
+            raw_l = raw.lower()
+            if title == "" and artist == "":
+                if "is required" not in raw_l and "track_name is required" not in raw_l:
+                    return False
+                continue
             if title == "" or artist == "":
-                if "is required" not in raw and '"error"' in raw:
+                if "is required" in raw_l:
+                    continue
+                compact = raw.replace(" ", "")
+                if '"ok":true' in compact or '"ok": true' in raw:
+                    return False
+                if '"error"' in raw and "is required" not in raw_l:
                     return False
         return True
 

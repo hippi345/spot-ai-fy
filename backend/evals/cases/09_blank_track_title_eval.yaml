@@ -1,0 +1,57 @@
+name: spot_agent_evals
+cases:
+  - name: blank_track_title_eval_fails_on_catalog_guess
+    inputs:
+      prompt: evaluator regression — blank title must not play successfully
+      mode: mock
+      eval_fixture:
+        reply: Playing
+        duration_s: 0.01
+        tool_calls:
+          - name: spotify_play_track
+            arguments: {track_name: "   ", artist_name: "Jay Sean"}
+            result: '{"ok": true, "playback_verified": true}'
+    metadata:
+      group: blank_title_eval
+      ci: false
+      description: BlankTrackTitleRejected must return false when play succeeded without a title
+
+  - name: blank_track_title_eval_fails_both_blank
+    inputs:
+      prompt: evaluator regression — both fields blank must not succeed
+      mode: mock
+      eval_fixture:
+        reply: ok
+        duration_s: 0.01
+        tool_calls:
+          - name: spotify_play_track
+            arguments: {track_name: "", artist_name: ""}
+            result: '{"ok": true}'
+    metadata:
+      group: blank_title_eval
+      ci: false
+      description: BlankTrackTitleRejected must return false when both title and artist are blank
+
+  - name: blank_track_title_mock_rejects_empty_title
+    inputs:
+      prompt: fixture
+      mode: mock
+      mock_script:
+        - name: spotify_play_track
+          args: {track_name: "", artist_name: "Jay Sean"}
+    metadata:
+      group: blank_title_eval
+      ci: true
+      expected_tools: [spotify_play_track]
+
+  - name: blank_track_title_mock_rejects_both_blank
+    inputs:
+      prompt: fixture
+      mode: mock
+      mock_script:
+        - name: spotify_play_track
+          args: {track_name: "", artist_name: ""}
+    metadata:
+      group: blank_title_eval
+      ci: true
+      expected_tools: [spotify_play_track]

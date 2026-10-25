@@ -50,6 +50,42 @@ def test_mood_intent_judge_can_fail() -> None:
             assert ev.evaluate(ctx) is False
 
 
+def test_blank_track_title_evaluator_fails_on_catalog_guess() -> None:
+    ev = BlankTrackTitleRejected()
+    ctx = _ctx(
+        AgentTurnResult(
+            reply="Playing",
+            tool_calls=[
+                ToolCallRecord(
+                    name="spotify_play_track",
+                    arguments={"track_name": "   ", "artist_name": "Jay Sean"},
+                    result='{"ok": true, "playback_verified": true}',
+                )
+            ],
+        ),
+        {},
+    )
+    assert ev.evaluate(ctx) is False
+
+
+def test_blank_track_title_evaluator_fails_both_blank_success() -> None:
+    ev = BlankTrackTitleRejected()
+    ctx = _ctx(
+        AgentTurnResult(
+            reply="ok",
+            tool_calls=[
+                ToolCallRecord(
+                    name="spotify_play_track",
+                    arguments={"track_name": "", "artist_name": ""},
+                    result='{"ok": true}',
+                )
+            ],
+        ),
+        {},
+    )
+    assert ev.evaluate(ctx) is False
+
+
 def test_blank_track_title_rejected_evaluator() -> None:
     ev = BlankTrackTitleRejected()
     ctx = _ctx(
