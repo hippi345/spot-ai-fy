@@ -1,9 +1,12 @@
-"""Juke-style offline retrieval gate (vector vs BM25/FTS, same tokenizer)."""
+"""Offline Spot retrieval gate (vector vs BM25/FTS, same tokenizer)."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+from evals.library_retrieval_metrics import precision_at_k
+
 
 def fts_query_tokens(user_query: str) -> set[str]:
     """Same tokenization as SQLite FTS MATCH (format_fts_match_query)."""
@@ -24,12 +27,15 @@ def assert_zero_token_overlap(query: str, planted_texts: list[str]) -> None:
     p = planted_corpus_tokens(*planted_texts)
     overlap = q & p
     if overlap:
-        raise AssertionError(f"query/planted token overlap not allowed: {sorted(overlap)}")
+        raise AssertionError(
+            f"query/planted token overlap not allowed for {query!r}: {sorted(overlap)}"
+        )
 
 
 @dataclass
 class GateArmMetrics:
     recall_at_k: float
+    precision_at_k: float
     ndcg_at_k: float
 
 
@@ -37,7 +43,9 @@ class GateArmMetrics:
 class GateCaseResult:
     name: str
     query: str
+    corpus: str
     k: int
+    relevant_count: int
     vector: GateArmMetrics
     bm25: GateArmMetrics
     margin_recall: float
@@ -45,16 +53,66 @@ class GateCaseResult:
     vector_wins: bool
 
 
-def format_gate_report(results: list[GateCaseResult]) -> str:
-    lines = ["Juke retrieval gate (vector vs BM25/FTS, k={}):".format(results[0].k if results else "?")]
+@dataclass
+class GateArmSummary:
+    corpus: str
+    query_count: int
+    vector_wins: int
+    mean_vector_recall: float
+    mean_vector_precision: float
+    mean_vector_ndcg: float
+    mean_bm25_recall: float
+    mean_bm25_precision: float
+    mean_bm25_ndcg: float
+
+
+def summarize_arm(results: list[GateCaseResult], corpus: str) -> GateArmSummary:
+    arm = [r for r in results if r.corpus == corpus]
+    if not arm:
+        raise ValueError(f"no gate results for corpus {corpus}")
+    wins = sum(1 for r in arm if r.vector_wins)
+    return GateArmSummary(
+        corpus=corpus,
+        query_count=len(arm),
+        vector_wins=wins,
+        mean_vector_recall=sum(r.vector.recall_at_k for r in arm) / len(arm),
+        mean_vector_precision=sum(r.vector.precision_at_k for r in arm) / len(arm),
+        mean_vector_ndcg=sum(r.vector.ndcg_at_k for r in arm) / len(arm),
+        mean_bm25_recall=sum(r.bm25.recall_at_k for r in arm) / len(arm),
+        mean_bm25_precision=sum(r.bm25.precision_at_k for r in arm) / len(arm),
+        mean_bm25_ndcg=sum(r.bm25.ndcg_at_k for r in arm) / len(arm),
+    )
+
+
+def format_gate_report(
+    results: list[GateCaseResult],
+    *,
+    library_relevant: int,
+    play_relevant: int,
+) -> str:
+    lines = [
+        "Spot retrieval gate (paraphrase queries; vector vs BM25/FTS):",
+        f"  library |relevant|={library_relevant} (recall@k = hits/|relevant|; k={results[0].k if results else '?'})",
+        f"  play_history this_week |relevant|={play_relevant}",
+        "",
+    ]
     for r in results:
         lines.append(
-            f"  {r.name}: query={r.query!r}\n"
-            f"    vector  recall@{r.k}={r.vector.recall_at_k:.4f} nDCG@{r.k}={r.vector.ndcg_at_k:.4f}\n"
-            f"    bm25    recall@{r.k}={r.bm25.recall_at_k:.4f} nDCG@{r.k}={r.bm25.ndcg_at_k:.4f}\n"
-            f"    margin  recall={r.margin_recall:+.4f} nDCG={r.margin_ndcg:+.4f} wins={r.vector_wins}"
+            f"  [{r.corpus}] {r.name}: {r.query!r}\n"
+            f"    vector  recall@{r.k}={r.vector.recall_at_k:.4f} "
+            f"prec@{r.k}={r.vector.precision_at_k:.4f} nDCG@{r.k}={r.vector.ndcg_at_k:.4f} "
+            f"win={r.vector_wins}\n"
+            f"    bm25    recall@{r.k}={r.bm25.recall_at_k:.4f} "
+            f"prec@{r.k}={r.bm25.precision_at_k:.4f} nDCG@{r.k}={r.bm25.ndcg_at_k:.4f}"
         )
-    agg_ndcg = sum(r.margin_ndcg for r in results) / max(1, len(results))
-    agg_recall = sum(r.margin_recall for r in results) / max(1, len(results))
-    lines.append(f"  aggregate margin: recall={agg_recall:+.4f} nDCG={agg_ndcg:+.4f}")
+    for corpus in ("library", "play_history"):
+        try:
+            s = summarize_arm(results, corpus)
+        except ValueError:
+            continue
+        lines.append(
+            f"\n  {corpus} summary: wins={s.vector_wins}/{s.query_count} "
+            f"mean_vector recall={s.mean_vector_recall:.4f} prec={s.mean_vector_precision:.4f} "
+            f"nDCG={s.mean_vector_ndcg:.4f}"
+        )
     return "\n".join(lines)

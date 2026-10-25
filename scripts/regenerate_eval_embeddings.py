@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate eval library + play-history doc/query embeddings (offline MiniLM).
 
-Model: sentence-transformers/all-MiniLM-L6-v2 (same family as Juke retrieval gates).
+Model: sentence-transformers/all-MiniLM-L6-v2 (Spot offline retrieval gate).
 No Spotify network calls.
 """
 

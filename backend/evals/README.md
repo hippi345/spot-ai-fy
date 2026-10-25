@@ -34,7 +34,7 @@ pip install -r requirements-dev.txt
 python scripts/regenerate_eval_embeddings.py
 ```
 
-Juke-style gate: `pytest tests/test_juke_retrieval_gate.py` (vector vs BM25/FTS on paraphrase queries).
+Spot retrieval gate: `pytest tests/test_spot_retrieval_gate.py` (vector vs BM25/FTS on paraphrase queries; 8–10 per arm, majority wins, absolute floors).
 
 Common commands (run from `backend/`):
 
