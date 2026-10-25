@@ -36039,5 +36039,11 @@
       2997,
       2998
     ]
+  },
+  "embedding": {
+    "model": "sentence-transformers/all-MiniLM-L6-v2",
+    "dimensions": 384,
+    "normalize": true,
+    "regenerated_by": "scripts/regenerate_eval_embeddings.py"
   }
 }

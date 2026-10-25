@@ -9,7 +9,7 @@ import pytest
 
 from evals.play_history_fixture import load_fixture_metadata, seed_play_log_db
 from spot_backend.config import Settings
-from spot_backend.ollama_embed import HashingEmbedder
+from evals.play_history_fixture import CommittedPlayHistoryEmbedder
 from spot_backend.play_log import PlayLogStore
 from spot_backend.spotify_tools import ollama_tools_for_agent
 
@@ -17,7 +17,7 @@ from spot_backend.spotify_tools import ollama_tools_for_agent
 @pytest.fixture
 def play_log_db(tmp_path) -> PlayLogStore:
     s = Settings(data_dir=tmp_path / "data", spot_play_log="on", user_timezone="UTC")
-    store = PlayLogStore(settings=s, embedder=HashingEmbedder(dims=64))
+    store = PlayLogStore(settings=s, embedder=CommittedPlayHistoryEmbedder())
     seed_play_log_db(store)
     return store
 
@@ -46,7 +46,7 @@ def test_vector_beats_keyword_paraphrase(play_log_db: PlayLogStore) -> None:
     store_kw = PlayLogStore(
         settings=play_log_db.settings,
         path=play_log_db.path,
-        embedder=type("Boom", (), {"embed_query": lambda *_: (_ for _ in ()).throw(RuntimeError()), "embed_documents": lambda *_: [], "model_name": "x", "dimensions": 64})(),
+        embedder=type("Boom", (), {"embed_query": lambda *_: (_ for _ in ()).throw(RuntimeError()), "embed_documents": lambda *_: [], "model_name": "x", "dimensions": 384})(),
     )
     kw = store_kw.search("golden hour", window="this_week", limit=20, now=ref)
     sem_uris = {r["track_uri"] for r in sem["results"]}
@@ -79,7 +79,7 @@ def test_capture_writes_request_text(tmp_path) -> None:
         artist="A",
         album="B",
     )
-    store = PlayLogStore(settings=s, embedder=HashingEmbedder(dims=64))
+    store = PlayLogStore(settings=s, embedder=CommittedPlayHistoryEmbedder())
     with store._ensure() as conn:
         row = conn.execute("SELECT request_text, skipped FROM play_log LIMIT 1").fetchone()
         assert row["request_text"] == "play golden hour sunset mix"

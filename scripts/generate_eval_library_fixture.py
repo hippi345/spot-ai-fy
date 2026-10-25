@@ -162,6 +162,7 @@ def main() -> None:
     print(f"Wrote {len(tracks)} tracks -> {OUT_JSON} ({OUT_JSON.stat().st_size} bytes)")
     print(f"Planted sunset loved: {len(planted_ids)}")
     print(f"Wrote embeddings -> {OUT_NPZ} ({OUT_NPZ.stat().st_size} bytes)")
+    print("Note: for all-MiniLM-L6-v2 doc+query vectors run scripts/regenerate_eval_embeddings.py")
 
 
 if __name__ == "__main__":

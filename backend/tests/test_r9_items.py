@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from typing import Any
 from unittest.mock import patch
 
@@ -28,7 +29,6 @@ from tests.recheck_helpers import (
     FakeOllamaStream,
     gemini_candidates_payload,
     gemini_stop_candidate,
-    make_gemini_post_recorder,
     run_playback_restriction_violated,
 )
 
@@ -57,6 +57,18 @@ def _count_gemini_nudges(bodies: list[dict[str, Any]]) -> int:
     )
 
 
+def _patch_offline_gemini_generate(
+    handler: Any,
+) -> Any:
+    """Patch Gemini REST at _gemini_post_with_retry (no httpx/respx/network)."""
+
+    def fake_post(_client, _url, *, headers, json_body):
+        req = httpx.Request("POST", "https://generativelanguage.googleapis.com/v1beta/models/m:generateContent")
+        return handler(json_body, req)
+
+    return patch("spot_backend.gemini_llm._gemini_post_with_retry", fake_post)
+
+
 def _run_gemini_how_to_turn(
     user_text: str,
     *,
@@ -67,7 +79,7 @@ def _run_gemini_how_to_turn(
     bodies: list[dict[str, Any]] = []
     call_n = {"n": 0}
 
-    def handler(body: dict[str, Any], _n: int, req: httpx.Request) -> httpx.Response:
+    def handler(body: dict[str, Any], req: httpx.Request) -> httpx.Response:
         bodies.append(body)
         call_n["n"] += 1
         if call_n["n"] == 1:
@@ -82,10 +94,17 @@ def _run_gemini_how_to_turn(
         payload = gemini_candidates_payload(gemini_stop_candidate(part))
         return httpx.Response(200, json=payload, request=req)
 
-    _, fake_post = make_gemini_post_recorder(handler)
-    with patch("httpx.Client.post", fake_post):
-        with patch.object(SpotifyToolRunner, "run", lambda *a, **k: json.dumps({"items": []})):
-            text = run_chat_turn_gemini(user_text, settings, history=history)
+    env = {**os.environ, "SPOT_AI_FY_DISABLE_DETERMINISTIC_CHAT": "1"}
+    with patch.dict(os.environ, env, clear=False):
+        with _patch_offline_gemini_generate(handler):
+            with patch(
+                "spot_backend.gemini_llm.gemini_deterministic_shortcut_reply",
+                return_value=None,
+            ):
+                with patch.object(
+                    SpotifyToolRunner, "run", lambda *a, **k: json.dumps({"items": []})
+                ):
+                    text = run_chat_turn_gemini(user_text, settings, history=history)
     tool_names: list[str] = []
     for b in bodies:
         tool_names.extend(_gemini_tool_names_from_body(b))
@@ -99,17 +118,24 @@ def _run_gemini_non_how_to_nudge_scenario() -> tuple[str, list[dict[str, Any]]]:
     first = "Here is a helpful overview of your library."
     second = "Still summarizing without calling tools."
 
-    def handler(_body: dict[str, Any], _n: int, req: httpx.Request) -> httpx.Response:
-        bodies.append(copy.deepcopy(_body))
+    def handler(body: dict[str, Any], req: httpx.Request) -> httpx.Response:
+        bodies.append(copy.deepcopy(body))
         call_n["n"] += 1
         part = {"text": first if call_n["n"] == 1 else second}
         payload = gemini_candidates_payload(gemini_stop_candidate(part))
         return httpx.Response(200, json=payload, request=req)
 
-    _, fake_post = make_gemini_post_recorder(handler)
-    with patch("httpx.Client.post", fake_post):
-        with patch.object(SpotifyToolRunner, "run", lambda *a, **k: json.dumps({"items": []})):
-            text = run_chat_turn_gemini("list my playlists", settings)
+    env = {**os.environ, "SPOT_AI_FY_DISABLE_DETERMINISTIC_CHAT": "1"}
+    with patch.dict(os.environ, env, clear=False):
+        with _patch_offline_gemini_generate(handler):
+            with patch(
+                "spot_backend.gemini_llm.gemini_deterministic_shortcut_reply",
+                return_value=None,
+            ):
+                with patch.object(
+                    SpotifyToolRunner, "run", lambda *a, **k: json.dumps({"items": []})
+                ):
+                    text = run_chat_turn_gemini("list my playlists", settings)
     return text, bodies
 
 

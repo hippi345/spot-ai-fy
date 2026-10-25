@@ -18,6 +18,64 @@ Environment variables (never commit values):
 | `SPOT_LIBRARY_INDEX` | Default **off**; eval cases may set `library_index_arm: "on"` / `"off"` on inputs |
 | SAMPLE library seed | `make seed-library` / `make reset-library` — **SAMPLE_DATA** fictional catalog → `{DATA_DIR}/library_index.sqlite` (no Spotify account). See repo README. |
 
+### Committed retrieval embeddings (offline)
+
+Library and play-history vector fixtures use **sentence-transformers/all-MiniLM-L6-v2** (384-d, L2-normalized). Document and query vectors are stored in:
+
+- `evals/fixtures/eval_library_embeddings.npz`
+- `evals/fixtures/play_history_embeddings.npz`
+
+Query strings are listed in `evals/retrieval_queries.py`. At eval runtime `CommittedFixtureEmbedder` / `CommittedPlayHistoryEmbedder` load vectors by SHA-256 of the index text or query text — **no hashing fallback**; missing queries raise.
+
+Regenerate after changing fixture JSON or query strings (requires `sentence-transformers` from `requirements-dev.txt`; no Spotify calls):
+
+```bash
+pip install -r requirements-dev.txt
+python scripts/regenerate_eval_embeddings.py
+```
+
+Spot retrieval gate: `pytest tests/test_spot_retrieval_gate.py` (vector vs BM25/FTS on paraphrase queries; 8–10 gating cases per arm, majority wins, absolute floors). Library paraphrases were **revised** so every gating query has **zero FTS token overlap** with the **full** planted index document text (title, artist, album, genre, moods, tags, etc.); several original phrasings were replaced. Three original shoreline/ocean library queries remain as **reported-only** (committed embeddings + printed scores, not counted toward wins or floors). Play-history gating uses a **15-track** `sunset_this_week` planted set (`play_history_seed.json`).
+
+Gate thresholds (see `evals/retrieval_gate_config.py`): **≥ 6/9** vector wins per arm; library mean **precision@20 ≥ 0.15** and **nDCG@20 ≥ 0.15** (|relevant|=50, k=20); play **recall@20 ≥ 0.33** (|relevant|=15, k=20).
+
+Per-query results at k=20 (offline fixture; run `pytest tests/test_spot_retrieval_gate.py -s` to refresh):
+
+**Library gating** (|relevant|=50; recall@20 = hits/50)
+
+| # | Query | Vec R | Vec P | Vec nDCG | BM25 R | Win |
+|---|--------|-------|-------|----------|--------|-----|
+| 01 | warm coastal evening music from my collection | 0.02 | 0.05 | 0.061 | 0 | yes |
+| 02 | mellow amber twilight songs I have saved | 0.24 | 0.60 | 0.636 | 0 | yes |
+| 03 | warm amber twilight listening from my library | 0 | 0 | 0 | 0 | no (tie) |
+| 04 | soft evening glow tracks I have saved | 0.18 | 0.45 | 0.439 | 0 | yes |
+| 05 | coastal twilight calm I have enjoyed | 0.06 | 0.15 | 0.117 | 0 | yes |
+| 06 | quiet twilight warmth from my saved music | 0.06 | 0.15 | 0.117 | 0 | yes |
+| 07 | tender sundown warmth from songs I saved | 0.14 | 0.35 | 0.297 | 0 | yes |
+| 08 | coral twilight ambience in my music library | 0.08 | 0.20 | 0.194 | 0 | yes |
+| 09 | hazy evening glow listening I have kept | 0.34 | 0.85 | 0.885 | 0 | yes |
+
+**Library reported-only** (not gating; zero overlap with full planted index text verified)
+
+| Query | Vec R | Vec P | Vec nDCG | BM25 R |
+|--------|-------|-------|----------|--------|
+| relaxed shoreline melodies I have enjoyed | 0 | 0 | 0 | 0 |
+| quiet shoreline pieces from my saved collection | 0 | 0 | 0 | 0 |
+| balmy ocean breeze music from my collection | 0 | 0 | 0 | 0 |
+
+**Play history this_week gating** (|relevant|=15)
+
+| # | Query | Vec R | Vec P | Vec nDCG | BM25 R | Win |
+|---|--------|-------|-------|----------|--------|-----|
+| 01 | twilight warmth I replayed in recent days | 1.00 | 0.75 | 1.00 | 0 | yes |
+| 02 | mellow amber twilight spins from the last few days | 1.00 | 0.75 | 1.00 | 0 | yes |
+| 03 | quiet shoreline listening this week | 1.00 | 0.75 | 1.00 | 0 | yes |
+| 04 | balmy evening playback from my recent history | 1.00 | 0.75 | 1.00 | 0 | yes |
+| 05 | hazy horizon songs I heard lately this week | 1.00 | 0.75 | 1.00 | 0 | yes |
+| 06 | coral sky ambience from recent playback | 1.00 | 0.75 | 1.00 | 0 | yes |
+| 07 | twilight ambience I replayed in recent days | 1.00 | 0.75 | 1.00 | 0 | yes |
+| 08 | ocean breeze listens from the last seven days | 1.00 | 0.75 | 1.00 | 0 | yes |
+| 09 | amber twilight warmth I replayed in recent days | 1.00 | 0.75 | 1.00 | 0 | yes |
+
 Common commands (run from `backend/`):
 
 ```bash

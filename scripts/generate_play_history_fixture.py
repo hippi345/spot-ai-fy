@@ -193,6 +193,7 @@ def main() -> None:
     np.savez_compressed(OUT_NPZ, ids=np.array(ids, dtype=np.int32), vectors=np.vstack(vectors))
     print(f"Wrote {OUT_JSON} ({len(plays)} plays)")
     print(f"Wrote {OUT_NPZ}")
+    print("Note: for all-MiniLM-L6-v2 doc+query vectors run scripts/regenerate_eval_embeddings.py")
 
 
 if __name__ == "__main__":

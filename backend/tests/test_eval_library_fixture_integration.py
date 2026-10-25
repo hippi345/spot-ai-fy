@@ -10,14 +10,14 @@ from evals.eval_library_fixture import decoy_tracks_user_b, planted_sunset_uris,
 from evals.fixture_embedder import CommittedFixtureEmbedder
 from evals.fixture_index_text import library_index_document_text
 from evals.library_retrieval_metrics import bench_search, precision_at_k, recall_at_k
+from evals.retrieval_queries import LIBRARY_SUNSET_LITERAL
 from spot_backend.config import Settings
 from spot_backend.library_index import LibraryIndex
 
 RECALL_AT_20_MIN = 0.12
 PRECISION_AT_20_MIN = 0.08
 P95_MS_MAX = 100.0
-QUERY_SUNSET = "sunset vibes I've loved"
-QUERY_PARAPHRASE = "warm coastal vibes from songs I've loved"
+QUERY_SUNSET = LIBRARY_SUNSET_LITERAL
 
 
 def _docs_for_user(user_id: str = "eval_user_a") -> list[dict]:
@@ -57,21 +57,6 @@ def test_sunset_query_recall_and_precision(indexed_library: LibraryIndex) -> Non
     sem_precision = precision_at_k(relevant, sem_uris, 20)
     assert sem_recall >= RECALL_AT_20_MIN, f"semantic recall@20 {sem_recall}"
     assert sem_precision >= PRECISION_AT_20_MIN, f"semantic precision@20 {sem_precision}"
-
-
-def test_vector_beats_keyword_baseline(indexed_library: LibraryIndex) -> None:
-    relevant = planted_sunset_uris()
-    sem = indexed_library.search(QUERY_PARAPHRASE, limit=20)
-    sem_uris = [r["uri"] for r in sem.get("results") or []]
-    sem_recall = recall_at_k(relevant, sem_uris, 20)
-
-    indexed_library._keyword_only = True
-    kw = indexed_library.search(QUERY_PARAPHRASE, limit=20)
-    kw_uris = [r["uri"] for r in kw.get("results") or []]
-    kw_recall = recall_at_k(relevant, kw_uris, 20)
-    indexed_library._keyword_only = False
-
-    assert sem_recall >= kw_recall + 0.15, f"vector recall@20 {sem_recall} vs keyword {kw_recall}"
 
 
 def test_user_scoping_excludes_decoy_catalog(indexed_library: LibraryIndex) -> None:
