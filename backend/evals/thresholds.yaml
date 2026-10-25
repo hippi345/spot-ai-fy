@@ -24,7 +24,7 @@ mock_ci:
 
 # Default live gate: library index OFF (production default).
 live_off:
-  expected_case_count: 11
+  expected_case_count: 10
   hard_gates:
     assertion_pass_rate_min:
       MaxDuration: 1.0
@@ -51,7 +51,7 @@ live_off:
 
 # Library index ON arm: must finish; rubrics informational unless grounding/schema regresses vs OFF.
 live_on:
-  expected_case_count: 11
+  expected_case_count: 10
   hard_gates:
     assertion_pass_rate_min:
       LovedPickShare: 0.20

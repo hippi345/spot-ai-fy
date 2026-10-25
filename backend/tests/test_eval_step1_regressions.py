@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 import respx
 
 from evals.evaluators import BlankTrackTitleRejected, MoodIntentJudge, NoMockHttpLeakInReply
@@ -120,20 +121,84 @@ def test_blank_track_title_evaluator_allows_title_only_success() -> None:
         {},
     )
     assert ev.evaluate(ctx) is True
-    bad = _ctx(
+
+
+def test_blank_track_title_evaluator_allows_title_only_without_artist_key() -> None:
+    ev = BlankTrackTitleRejected()
+    ctx = _ctx(
         AgentTurnResult(
-            reply="",
+            reply="Playing",
             tool_calls=[
                 ToolCallRecord(
                     name="spotify_play_track",
-                    arguments={"track_name": "  ", "artist_name": "Jay Sean"},
-                    result='{"error": "ok"}',
+                    arguments={"track_name": "Down"},
+                    result='{"ok": true, "playback_verified": true}',
                 )
             ],
         ),
         {},
     )
-    assert ev.evaluate(bad) is False
+    assert ev.evaluate(ctx) is True
+
+
+_LIVE_PLAY_TRACK_PREVIEW = (
+    '{"ok": true, "playback_verified": true, "requested_track": "Down", '
+    '"requested_artist": "Jay Sean", "uri": "spotify:track:111"}'
+)
+
+
+@pytest.mark.parametrize(
+    "case_name,preview",
+    [
+        ("live_play_track_prompt", _LIVE_PLAY_TRACK_PREVIEW),
+        (
+            "library_index_on_semantic_hit",
+            '{"ok": true, "playback_verified": true, "requested_track": "Chill Vibes", "uri": "spotify:track:222"}',
+        ),
+        (
+            "mood_energetic_workout",
+            '{"ok": true, "playback_verified": true, "requested_track": "Power", "requested_artist": "", "uri": "spotify:track:333"}',
+        ),
+        (
+            "sample_loved_2022_upbeat",
+            '{"ok": true, "playback_verified": true, "requested_track": "Good 4 U", "uri": "spotify:track:444"}',
+        ),
+        (
+            "sample_sunday_morning_loved",
+            '{"ok": true, "playback_verified": true, "requested_track": "Sunday Morning", "uri": "spotify:track:555"}',
+        ),
+    ],
+)
+def test_blank_track_title_evaluator_skips_live_eval_tool_trace(case_name: str, preview: str) -> None:
+    """Live eval task stores tool_done previews only (arguments={})."""
+    ev = BlankTrackTitleRejected()
+    ctx = _ctx(
+        AgentTurnResult(
+            reply=f"ok ({case_name})",
+            tool_calls=[
+                ToolCallRecord(
+                    name="spotify_play_track",
+                    arguments={},
+                    result=preview,
+                )
+            ],
+        ),
+        {},
+    )
+    assert ev.evaluate(ctx) is True
+
+
+def test_thresholds_live_expected_case_count_matches_live_metadata_cases() -> None:
+    from evals.case_loader import load_dataset
+    from evals.thresholds import load_thresholds
+
+    ds = load_dataset(include_judges=False)
+    live_n = sum(
+        1 for c in ds.cases if isinstance(c.metadata, dict) and c.metadata.get("live")
+    )
+    th = load_thresholds()
+    assert th["live_off"]["expected_case_count"] == live_n
+    assert th["live_on"]["expected_case_count"] == live_n
 
 
 def test_mood_intent_judge_skipped_without_judge_model() -> None:

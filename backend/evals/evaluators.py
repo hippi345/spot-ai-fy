@@ -213,7 +213,12 @@ class BlankTrackTitleRejected(Evaluator):
             ):
                 continue
             args = tc.arguments or {}
-            title = str(args.get("track_name") or args.get("title") or "").strip()
+            title_keys = ("track_name", "title", "name")
+            artist_keys = ("artist_name", "artist")
+            if not any(k in args for k in title_keys) and not any(k in args for k in artist_keys):
+                # Live eval records tool_done previews only (arguments={}); cannot judge blanks.
+                continue
+            title = str(args.get("track_name") or args.get("title") or args.get("name") or "").strip()
             artist = str(args.get("artist_name") or args.get("artist") or "").strip()
             raw = tc.result or ""
             raw_l = raw.lower()
