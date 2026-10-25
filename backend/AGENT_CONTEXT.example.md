@@ -13,6 +13,7 @@ Everything below is appended to the built-in system prompt for **both Ollama and
 - For **playback**, use the user’s **saved device** unless a `device_id` is required; search then `spotify_start_resume_playback` with `spotify:track:` URIs or a `context_uri`.
 - For **“all albums by X”**, search for the artist, then `spotify_artist_albums` with the artist id.
 - **Markets**: default to the user’s market when unsure; `US` is a safe fallback for metadata calls.
+- **My-library mood search** (when `SPOT_LIBRARY_INDEX=on`): use `search_my_library` for fuzzy “from my likes / my playlists” requests; keep `spotify_search` for exact catalog titles.
 
 ### JSON tool mode (Ollama models without native tools, e.g. `deepseek-coder-v2`)
 

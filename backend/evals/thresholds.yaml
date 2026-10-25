@@ -1,0 +1,62 @@
+version: 1
+calibration:
+  date: "2026-10-24"
+  method: |
+    Calibrated from repeated live Gemini runs with EVAL_JUDGE_REPEAT=2 (judge calls averaged).
+    Thresholds sit below observed means to allow minor LLM variance.
+
+mock_ci:
+  expected_case_count: 34
+  hard_gates:
+    assertion_pass_rate_min:
+      MaxDuration: 1.0
+      ToolSequenceMatch: 1.0
+      ToolSequencePrefix: 0.96
+      ForbiddenTools: 1.0
+      ShortcutRouting: 1.0
+      HitAt1: 1.0
+      CaseMaxLatency: 1.0
+      ReplyGrounding: 1.0
+      ToolErrorHandled: 1.0
+      MockScriptRan: 1.0
+      ToolJsonValid: 1.0
+    key_leak_scan: false
+
+# Default live gate: library index OFF (production default).
+live_off:
+  expected_case_count: 11
+  hard_gates:
+    assertion_pass_rate_min:
+      MaxDuration: 1.0
+      ToolSequenceMatch: 0.83
+      ToolSequencePrefix: 1.0
+      ForbiddenTools: 1.0
+      ShortcutRouting: 1.0
+      HitAt1: 1.0
+      CaseMaxLatency: 1.0
+      ReplyGrounding: 0.80
+      ToolErrorHandled: 1.0
+      MockScriptRan: 1.0
+      ToolJsonValid: 1.0
+      MoodIntentJudge: 0.5
+      NoMockHttpLeakInReply: 0.90
+    key_leak_scan: true
+  qualitative:
+    rubric_mean_min:
+      accurate_summary_score: 0.40
+      concise_friendly_score: 0.80
+      no_false_claims_score: 0.70
+  regression_vs_live_baseline:
+    enabled: false
+
+# Library index ON arm: must finish; rubrics informational unless grounding/schema regresses vs OFF.
+live_on:
+  expected_case_count: 11
+  hard_gates:
+    assertion_pass_rate_min:
+      LovedPickShare: 0.20
+      LibraryOnlyActs: 0.80
+    key_leak_scan: true
+  regression_vs_off_arm:
+    hard_regression_tolerance: 0.05
+    compare_assertions: [ReplyGrounding, ToolJsonValid]

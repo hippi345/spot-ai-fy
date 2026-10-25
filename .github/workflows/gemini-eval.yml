@@ -1,31 +1,35 @@
 name: eval-gemini
 
+# PAUSED: Gemini API key rotation after leak report.
 on:
   workflow_dispatch:
   pull_request:
 
 jobs:
   gemini-eval:
-    if: ${{ secrets.GEMINI_API_KEY != '' }}
+    if: false # DISABLED: real Gemini eval paused until rotated GEMINI_API_KEY is in repo secrets.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install backend deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
-      - name: Run Gemini eval (mocked Spotify)
+      - name: Mask Gemini secret (when re-enabled)
+        if: false
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          cd backend && pytest -m gemini_eval -s -q --maxfail=1
-          echo "Gemini eval score summary:"
-          python3 -c "import json; d=json.load(open('tests/artifacts/gemini_eval_latest.json')); print('passed', d.get('passed'), 'failed', d.get('failed'), 'crashed', d.get('crashed'))"
+          if [ -n "${GEMINI_API_KEY:-}" ]; then
+            echo "::add-mask::${GEMINI_API_KEY}"
+          fi
+      - name: Run Gemini eval (mocked Spotify)
+        if: false
+        run: echo "gemini eval disabled"
+      - name: Scan and redact artifacts before upload
+        if: false # When re-enabled: must run before upload-artifact (never upload raw JSON).
+        run: python3 scripts/ci_scan_artifacts_for_secrets.py backend/tests/artifacts/
       - name: Upload eval artifact
-        if: always()
+        if: false # DISABLED: real Gemini eval paused until rotated GEMINI_API_KEY is in repo secrets.
         uses: actions/upload-artifact@v4
         with:
           name: gemini-eval-json

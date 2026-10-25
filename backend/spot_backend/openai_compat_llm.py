@@ -19,7 +19,7 @@ from spot_backend.llm_prefs import read_effective_model_for_provider
 from spot_backend.llm_secret_safety import redact_known_api_keys
 from spot_backend.llm_tool_loop import ToolLoopState, finalize_assistant_text, run_tool_calls
 from spot_backend.prompt_intent import informational_system_suffix, prompt_is_informational
-from spot_backend.spotify_tools import OLLAMA_TOOLS, SpotifyToolRunner
+from spot_backend.spotify_tools import SpotifyToolRunner, ollama_tools_for_agent
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def run_chat_turn_openai_compat(
                 body: dict[str, Any] = {
                     "model": model,
                     "messages": messages,
-                    "tools": OLLAMA_TOOLS,
+                    "tools": ollama_tools_for_agent(settings),
                     "tool_choice": "auto",
                 }
                 resp = client.post(url, headers=headers, json=body)

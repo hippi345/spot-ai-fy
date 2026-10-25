@@ -226,6 +226,38 @@ cases:
       ci: true
       expect_grounded: true
 
+  - name: library_mood_chill_from_likes
+    inputs:
+      prompt: play something mellow and rainy from my likes
+      mode: mock
+      eval_fixture:
+        reply: "I found a few mellow tracks in your likes and started one."
+        tool_calls:
+          - name: search_my_library
+            arguments: {query: mellow rainy, kind: track}
+            result: '{"available":true,"mode":"semantic","results":[{"kind":"track","name":"Rainy Day","artists":"Adele","uri":"spotify:track:1111111111111111111111","score":0.9}]}'
+    metadata:
+      group: library_mood
+      mood_request: true
+      ci: true
+      expect_grounded: true
+
+  - name: library_mood_no_hits
+    inputs:
+      prompt: any death metal in my library?
+      mode: mock
+      eval_fixture:
+        reply: "I didn't find death metal in your library."
+        tool_calls:
+          - name: search_my_library
+            arguments: {query: death metal, kind: track}
+            result: '{"available":true,"mode":"semantic","results":[]}'
+    metadata:
+      group: library_mood
+      mood_request: true
+      ci: true
+      expect_grounded: true
+
   - name: grounding_no_hallucinated_credit
     inputs:
       prompt: what did you play?

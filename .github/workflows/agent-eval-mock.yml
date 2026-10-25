@@ -25,15 +25,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements-dev.txt
 
+      - name: SAMPLE library vector integration (no LLM)
+        env:
+          DATA_DIR: /tmp/spot-library-integration
+        run: |
+          python -m pytest backend/tests/test_eval_library_fixture_integration.py \
+            backend/tests/test_eval_library_sunset_e2e.py \
+            backend/tests/test_sample_library_seed.py -q
+
       - name: Mocked agent eval vs baseline-ci.json
         env:
           DATA_DIR: /tmp/spot-agent-eval
           SPOTIFY_CLIENT_ID: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         working-directory: backend
         run: |
-          python -m evals.run --mode mock --ci --regression-report \
+          python -m evals.run --mode mock --ci --thresholds \
             --report-json /tmp/agent-eval-mock-report.json \
             --report-md /tmp/agent-eval-mock-report.md
+
+      - name: Redact and scan mock eval artifacts
+        if: always()
+        run: |
+          python3 scripts/ci_scan_artifacts_for_secrets.py \
+            /tmp/agent-eval-mock-report.json \
+            /tmp/agent-eval-mock-report.md
 
       - name: Upload mock eval reports
         if: always()

@@ -1917,8 +1917,25 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                 return self._playlist_builder_commit(arguments)
             case "spotify_play_show_latest_episode":
                 return self._play_show_latest_episode(arguments)
+            case "search_my_library":
+                return self._search_my_library(arguments)
             case _:
                 return json.dumps({"error": f"Unknown tool: {name}"})
+
+    def _search_my_library(self, arguments: dict[str, Any]) -> str:
+        from spot_backend.library_index import search_my_library_tool
+
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return json.dumps({"available": False, "reason": "query required"})
+        kind = str(arguments.get("kind") or "any").strip().lower()
+        limit = arguments.get("limit", 10)
+        try:
+            lim = int(limit)
+        except (TypeError, ValueError):
+            lim = 10
+        payload = search_my_library_tool(query, kind=kind, limit=lim, settings=self.settings)
+        return json.dumps(payload, ensure_ascii=False)
 
     def _artist_search_items(self, query: str, market: str) -> list[dict[str, Any]]:
         q = query.strip()
@@ -6221,7 +6238,7 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         label = query.strip()
         mode = self._bare_play_mode(label, market)
         if mode == "track":
-            inner = self._play_track({"track_name": label, "artist_name": ""})
+            inner = self._play_track({"track_name": label})
             return self._finish_play_bare(label, "track", inner)
         resolved = self._resolve_artist_search_query(label, market)
         if not resolved:
@@ -6272,9 +6289,7 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             and not _looks_like_spotify_catalog_id(str(raw_ref).strip())
         ):
             if self._bare_play_mode(str(raw_ref).strip(), market) == "track":
-                return self._play_track(
-                    {"track_name": str(raw_ref).strip(), "artist_name": ""}
-                )
+                return self._play_track({"track_name": str(raw_ref).strip()})
         artist_id_arg = _pick_arg(arguments, "artist_id", "id")
         parsed = _parse_spotify_context_ref(str(raw_ref))
         if (
@@ -6741,6 +6756,8 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             )
         if not track_name.strip():
             return json.dumps({"ok": False, "error": "track_name is required"})
+        if ("artist_name" in arguments or "artist" in arguments) and not artist_name.strip():
+            return json.dumps({"ok": False, "error": "artist_name is required"})
         uri, track_match, err = self._resolve_track_for_queue(
             track_name=track_name,
             artist_name=artist_name,
@@ -8219,3 +8236,37 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
         },
     },
 ]
+
+SEARCH_MY_LIBRARY_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "search_my_library",
+        "description": (
+            "Semantic search over the signed-in user's own library (liked tracks, playlists, followed artists). "
+            "Use for mood/fuzzy requests ('from my likes', 'one of my playlists', rainy-day vibes). "
+            "Use spotify_search for exact catalog titles outside the library."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "kind": {
+                    "type": "string",
+                    "description": "track, playlist, artist, or any (default any)",
+                },
+                "limit": {"type": "integer", "description": "1-25, default 10"},
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+def ollama_tools_for_agent(settings: Settings | None = None) -> list[dict[str, Any]]:
+    from spot_backend.library_index import library_index_enabled
+
+    s = settings or get_settings()
+    tools = list(OLLAMA_TOOLS)
+    if library_index_enabled(s):
+        tools.append(SEARCH_MY_LIBRARY_TOOL)
+    return tools

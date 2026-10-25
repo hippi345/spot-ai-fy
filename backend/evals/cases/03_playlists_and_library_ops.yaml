@@ -1,0 +1,107 @@
+name: spot_agent_evals
+cases:
+  - name: add_tracks_to_playlist_by_id
+    inputs:
+      prompt: add track to playlist 4444444444444444444444
+      mode: mock
+      mock_script:
+        - name: spotify_add_tracks_to_playlist
+          args: {playlist_id: "4444444444444444444444", track_ids: ["1111111111111111111111"]}
+    metadata:
+      feature: playlist
+      group: playlist_add_dedupe
+      check_type: deterministic
+      expected_tools: [spotify_add_tracks_to_playlist]
+
+  - name: remove_playlist_tracks
+    inputs:
+      prompt: remove first song from RNB2025
+      mode: mock
+      mock_script:
+        - name: spotify_user_playlists
+          args: {limit: 20}
+        - name: spotify_remove_playlist_tracks
+          args: {playlist_id: "4444444444444444444444", indices: [0]}
+    metadata:
+      feature: playlist
+      group: playlist_create_rename
+      check_type: deterministic
+      expected_tool_prefix: [spotify_user_playlists, spotify_remove_playlist_tracks]
+
+  - name: follow_playlist
+    inputs:
+      prompt: follow playlist 4444444444444444444444
+      mode: mock
+      mock_script:
+        - name: spotify_follow_playlist
+          args: {playlist_id: "4444444444444444444444"}
+    metadata:
+      feature: playlist
+      group: playlist_create_rename
+      check_type: deterministic
+      expected_tools: [spotify_follow_playlist]
+
+  - name: saved_tracks_list
+    inputs:
+      prompt: show my liked songs
+      mode: mock
+      mock_script:
+        - name: spotify_user_saved_tracks
+          args: {limit: 5}
+    metadata:
+      feature: library_ops
+      group: library_ops
+      check_type: deterministic
+      expected_tools: [spotify_user_saved_tracks]
+
+  - name: library_contains_album
+    inputs:
+      prompt: do I have this album saved?
+      mode: mock
+      mock_script:
+        - name: spotify_library_contains
+          args: {album_id: bbbbccccdddddddddddddd}
+    metadata:
+      feature: library_ops
+      group: library_ops
+      check_type: deterministic
+      expected_tools: [spotify_library_contains]
+
+  - name: save_track_to_library
+    inputs:
+      prompt: save this track to my library
+      mode: mock
+      mock_script:
+        - name: spotify_library_save
+          args: {track_id: "1111111111111111111111"}
+    metadata:
+      feature: library_ops
+      group: library_ops
+      check_type: deterministic
+      expected_tools: [spotify_library_save]
+
+  - name: top_artists_query
+    inputs:
+      prompt: who are my top artists?
+      mode: mock
+      mock_script:
+        - name: spotify_top_artists
+          args: {time_range: medium_term, limit: 5}
+    metadata:
+      feature: library_ops
+      group: library_ops
+      check_type: deterministic
+      expected_tools: [spotify_top_artists]
+
+  - name: recently_played
+    inputs:
+      prompt: what did I play recently?
+      mode: mock
+      mock_script:
+        - name: spotify_recently_played
+          args: {limit: 5}
+    metadata:
+      feature: library_ops
+      group: library_ops
+      check_type: deterministic
+      expected_tools: [spotify_recently_played]
