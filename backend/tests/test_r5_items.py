@@ -428,17 +428,17 @@ def test_r5_item7_intent_repeat_modes() -> None:
 
 # r5-item8 — Gemini ANY mode only when appropriate
 def test_r5_item8_gemini_function_calling_mode_in_payload(data_dir, signed_in_tokens) -> None:
-    settings = Settings(gemini_api_key="k")
+    import os
+
+    settings = Settings(gemini_api_key="k", data_dir=data_dir)
     cases = [
         ("how do I save a playlist?", "AUTO"),
         ("pause", "ANY"),
         ("add a track then play my workout playlist", "AUTO"),
     ]
     for user_text, expected_mode in cases:
-        bodies: list[dict[str, Any]] = []
 
         def handler(body: dict[str, Any], _n: int, req: httpx.Request) -> httpx.Response:
-            bodies.append(body)
             if expected_mode == "ANY":
                 part = {"functionCall": {"name": "spotify_pause", "args": {}}}
             else:
@@ -446,10 +446,21 @@ def test_r5_item8_gemini_function_calling_mode_in_payload(data_dir, signed_in_to
             payload = gemini_candidates_payload(gemini_stop_candidate(part))
             return httpx.Response(200, json=payload, request=req)
 
-        _, fake_post = make_gemini_post_recorder(handler)
-        with patch("httpx.Client.post", fake_post):
-            run_chat_turn_gemini(user_text, settings)
-        mode = (bodies[0].get("toolConfig") or {}).get("functionCallingConfig", {}).get("mode")
+        rec_bodies, base_fake_post = make_gemini_post_recorder(handler)
+
+        def fake_post(_self, url, **kwargs):
+            if "generateContent" not in str(url):
+                req = httpx.Request("POST", str(url))
+                return httpx.Response(200, json={}, request=req)
+            return base_fake_post(_self, url, **kwargs)
+
+        env = {**os.environ, "SPOT_AI_FY_DISABLE_DETERMINISTIC_CHAT": "1"}
+        with patch.dict(os.environ, env, clear=False):
+            with patch("httpx.Client.post", fake_post):
+                run_chat_turn_gemini(user_text, settings)
+        assert rec_bodies
+        gemini_body = next(b for b in rec_bodies if "toolConfig" in b)
+        mode = (gemini_body.get("toolConfig") or {}).get("functionCallingConfig", {}).get("mode")
         assert mode == expected_mode, user_text
 
 
