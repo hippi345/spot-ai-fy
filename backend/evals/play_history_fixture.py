@@ -8,7 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
-from spot_backend.ollama_embed import HashingEmbedder
+from evals.committed_npz import load_vector_maps, lookup_document, lookup_query
+from evals.text_hash import sha256_text
 from spot_backend.play_log import PlayLogStore, play_index_text
 
 FIXTURE_JSON = Path(__file__).resolve().parent / "fixtures" / "play_history_seed.json"
@@ -16,31 +17,45 @@ FIXTURE_NPZ = Path(__file__).resolve().parent / "fixtures" / "play_history_embed
 
 
 class CommittedPlayHistoryEmbedder:
-    """Query vectors via hashing; document vectors from committed npz when seeding."""
+    """Document + query vectors from committed npz (all-MiniLM-L6-v2)."""
 
-    def __init__(self, dims: int = 64) -> None:
-        self._hash = HashingEmbedder(dims=dims)
+    def __init__(self) -> None:
+        doc_by_hash, query_by_hash, model, dim = load_vector_maps(FIXTURE_NPZ)
+        self._doc_by_hash = doc_by_hash
+        self._query_by_hash = query_by_hash
+        self._model_name = model
+        self._dims = dim
         self._by_row: dict[int, list[float]] = {}
-        if FIXTURE_NPZ.is_file():
-            data = np.load(FIXTURE_NPZ)
-            ids = data["ids"]
-            vectors = data["vectors"]
-            for i, rid in enumerate(ids):
-                self._by_row[int(rid)] = vectors[i].astype(np.float32).tolist()
+        data = np.load(FIXTURE_NPZ)
+        ids = data["ids"]
+        vectors = data["vectors"]
+        for i, rid in enumerate(ids):
+            self._by_row[int(rid)] = vectors[i].astype(np.float32).tolist()
+        self._index_hash_to_row: dict[str, int] = {}
+        meta = load_fixture_metadata()
+        for idx, row in enumerate(meta.get("plays") or [], start=1):
+            itext = play_index_text(
+                row["title"],
+                row["artist"],
+                row["album"],
+                row.get("request_text"),
+                mood_tags=row.get("mood_tags", ""),
+            )
+            self._index_hash_to_row[sha256_text(itext)] = idx
 
     @property
     def model_name(self) -> str:
-        return "play-history-fixture"
+        return self._model_name
 
     @property
     def dimensions(self) -> int:
-        return self._hash.dimensions
+        return self._dims
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return self._hash.embed_documents(texts)
+        return [lookup_document(self._doc_by_hash, t or "") for t in texts]
 
     def embed_query(self, text: str) -> list[float]:
-        return self._hash.embed_query(text)
+        return lookup_query(self._query_by_hash, text or "")
 
     def vector_for_row(self, row_id: int) -> list[float] | None:
         return self._by_row.get(row_id)

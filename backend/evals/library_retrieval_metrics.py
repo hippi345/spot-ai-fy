@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Callable
 
@@ -18,6 +19,19 @@ def precision_at_k(relevant: set[str], retrieved: list[str], k: int) -> float:
         return 0.0
     top = retrieved[:k]
     return len(set(top) & relevant) / k
+
+
+def ndcg_at_k(relevant: set[str], retrieved: list[str], k: int) -> float:
+    if not relevant or k <= 0:
+        return 0.0
+    top = retrieved[:k]
+    dcg = 0.0
+    for i, item in enumerate(top):
+        if item in relevant:
+            dcg += 1.0 / math.log2(i + 2)
+    ideal = min(len(relevant), k)
+    idcg = sum(1.0 / math.log2(i + 2) for i in range(ideal))
+    return dcg / idcg if idcg > 0 else 0.0
 
 
 def percentile_ms(samples: list[float], p: float) -> float:

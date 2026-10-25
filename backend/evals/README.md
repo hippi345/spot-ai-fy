@@ -18,6 +18,24 @@ Environment variables (never commit values):
 | `SPOT_LIBRARY_INDEX` | Default **off**; eval cases may set `library_index_arm: "on"` / `"off"` on inputs |
 | SAMPLE library seed | `make seed-library` / `make reset-library` — **SAMPLE_DATA** fictional catalog → `{DATA_DIR}/library_index.sqlite` (no Spotify account). See repo README. |
 
+### Committed retrieval embeddings (offline)
+
+Library and play-history vector fixtures use **sentence-transformers/all-MiniLM-L6-v2** (384-d, L2-normalized). Document and query vectors are stored in:
+
+- `evals/fixtures/eval_library_embeddings.npz`
+- `evals/fixtures/play_history_embeddings.npz`
+
+Query strings are listed in `evals/retrieval_queries.py`. At eval runtime `CommittedFixtureEmbedder` / `CommittedPlayHistoryEmbedder` load vectors by SHA-256 of the index text or query text — **no hashing fallback**; missing queries raise.
+
+Regenerate after changing fixture JSON or query strings (requires `sentence-transformers` from `requirements-dev.txt`; no Spotify calls):
+
+```bash
+pip install -r requirements-dev.txt
+python scripts/regenerate_eval_embeddings.py
+```
+
+Juke-style gate: `pytest tests/test_juke_retrieval_gate.py` (vector vs BM25/FTS on paraphrase queries).
+
 Common commands (run from `backend/`):
 
 ```bash
