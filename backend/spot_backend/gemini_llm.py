@@ -1059,7 +1059,7 @@ def iter_gemini_chat_events(
     except Exception as e:
         logger.warning(
             "gemini_sse_turn_error err=%s user_text=%s",
-            redact_known_api_keys(str(e), [key]),
+            redact_known_api_keys(str(e), [(settings.gemini_api_key or "").strip()]),
             user_text[:120],
         )
         yield {
