@@ -1,4 +1,4 @@
-.PHONY: eval eval-mock seed-library reset-library
+.PHONY: eval eval-mock seed-library reset-library seed-play-history reset-play-history
 
 DATA_DIR ?= $(HOME)/.spot_ai_fy
 
@@ -17,3 +17,10 @@ seed-library:
 reset-library:
 	@echo "SAMPLE_DATA — removing local sample library index and marker"
 	DATA_DIR="$(DATA_DIR)" python3 scripts/reset-sample-library.py
+
+seed-play-history:
+	python3 scripts/seed_play_history.py
+
+reset-play-history:
+	rm -f "$${DATA_DIR:-$$HOME/.spot_ai_fy}/play_log.sqlite"
+	$(MAKE) seed-play-history

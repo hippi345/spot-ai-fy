@@ -1157,6 +1157,7 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
         self._last_show_search_id: str | None = None
         self._session_show_catalog: list[dict[str, str]] = []
         self._last_playlist_search_query: str | None = None
+        self._open_play_log_id: int | None = None
         from spot_backend.library_mutation_store import load_last_library_mutation
 
         prior = load_last_library_mutation(self.conversation_id)
@@ -1919,6 +1920,10 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                 return self._play_show_latest_episode(arguments)
             case "search_my_library":
                 return self._search_my_library(arguments)
+            case "search_play_history":
+                return self._search_play_history(arguments)
+            case "clear_play_history":
+                return self._clear_play_history(arguments)
             case _:
                 return json.dumps({"error": f"Unknown tool: {name}"})
 
@@ -1936,6 +1941,53 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             lim = 10
         payload = search_my_library_tool(query, kind=kind, limit=lim, settings=self.settings)
         return json.dumps(payload, ensure_ascii=False)
+
+    def _search_play_history(self, arguments: dict[str, Any]) -> str:
+        from spot_backend.play_log import search_play_history_tool
+
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return json.dumps({"available": False, "reason": "query required"})
+        window = str(arguments.get("window") or "this_week").strip()
+        limit = arguments.get("limit", 20)
+        try:
+            lim = int(limit)
+        except (TypeError, ValueError):
+            lim = 20
+        payload = search_play_history_tool(query, window=window, limit=lim, settings=self.settings)
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _clear_play_history(self, arguments: dict[str, Any]) -> str:
+        from spot_backend.play_log import clear_play_history_tool
+
+        payload = clear_play_history_tool(settings=self.settings)
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _maybe_log_playback_success(self, body: dict[str, Any]) -> None:
+        from spot_backend.play_log_capture import record_playback_started
+
+        uri = ""
+        uris = body.get("uris")
+        if isinstance(uris, list) and uris:
+            uri = str(uris[0])
+        offset = body.get("offset")
+        if isinstance(offset, dict) and isinstance(offset.get("uri"), str):
+            uri = offset["uri"]
+        if not uri.startswith("spotify:track:"):
+            return
+        snap = self._current_playback_snapshot()
+        title = str(snap.get("item_name") or uri.split(":")[-1])
+        artist = str(snap.get("item_artists") or "")
+        album = str(snap.get("item_album") or "")
+        row_id = record_playback_started(
+            self,
+            track_uri=uri,
+            title=title,
+            artist=artist,
+            album=album,
+        )
+        if row_id is not None:
+            self._open_play_log_id = row_id
 
     def _artist_search_items(self, query: str, market: str) -> list[dict[str, Any]]:
         q = query.strip()
@@ -5415,12 +5467,14 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
             }
             if device_note:
                 payload["device_fallback_note"] = device_note
+            self._maybe_log_playback_success(body)
             return json.dumps(payload)
         try:
             self._try_play(device_id, body)
         except httpx.HTTPStatusError:
             pass
         if self._playback_matches(body, attempts=6, delay_s=0.5):
+            self._maybe_log_playback_success(body)
             return json.dumps(
                 {
                     "ok": True,
@@ -6860,6 +6914,10 @@ class SpotifyToolRunner(SpotifyToolRunnerPr9Mixin):
                 changed = True
                 player = self._poll_player_state(attempts=1, delay_s=0)
                 break
+        if changed and direction == "next" and before_uri:
+            from spot_backend.play_log_capture import record_skip_for_uri
+
+            record_skip_for_uri(self, before_uri)
         return json.dumps(
             {
                 "ok": changed,
@@ -8237,6 +8295,42 @@ OLLAMA_TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+SEARCH_PLAY_HISTORY_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "search_play_history",
+        "description": (
+            "Search songs the user played through Spot-AI-fy in a time window (vibe + when). "
+            "Use for 'like what we played this week', 'last Friday night', 'yesterday'. "
+            "Does not include skipped plays. For liked-library mood search use search_my_library."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Vibe or genre, e.g. sunset, workout, chill"},
+                "window": {
+                    "type": "string",
+                    "description": (
+                        "this_week, last_7_days, today, yesterday, last_weekend, last_30_days, "
+                        "last_friday, last_friday_night, or custom via start/end in future"
+                    ),
+                },
+                "limit": {"type": "integer", "description": "1-50, default 20"},
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+CLEAR_PLAY_HISTORY_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "clear_play_history",
+        "description": "Erase the local Spot-AI-fy play history log for this machine.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
 SEARCH_MY_LIBRARY_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -8264,9 +8358,13 @@ SEARCH_MY_LIBRARY_TOOL: dict[str, Any] = {
 
 def ollama_tools_for_agent(settings: Settings | None = None) -> list[dict[str, Any]]:
     from spot_backend.library_index import library_index_enabled
+    from spot_backend.play_log import play_log_enabled
 
     s = settings or get_settings()
     tools = list(OLLAMA_TOOLS)
     if library_index_enabled(s):
         tools.append(SEARCH_MY_LIBRARY_TOOL)
+    if play_log_enabled(s):
+        tools.append(SEARCH_PLAY_HISTORY_TOOL)
+        tools.append(CLEAR_PLAY_HISTORY_TOOL)
     return tools

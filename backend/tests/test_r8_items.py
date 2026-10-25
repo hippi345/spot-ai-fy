@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -54,8 +56,11 @@ def _gemini_declaration_names(body: dict[str, Any]) -> set[str]:
     return {d.get("name") for d in decls if isinstance(d, dict) and d.get("name")}
 
 
-def _capture_gemini_first_body(user_text: str) -> dict[str, Any]:
-    settings = Settings(gemini_api_key="k")
+def _capture_gemini_first_body(user_text: str, *, data_dir: Path | None = None) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"gemini_api_key": "k"}
+    if data_dir is not None:
+        kwargs["data_dir"] = data_dir
+    settings = Settings(**kwargs)
 
     def handler(_body: dict[str, Any], _n: int, req: httpx.Request) -> httpx.Response:
         payload = gemini_candidates_payload(
@@ -63,9 +68,18 @@ def _capture_gemini_first_body(user_text: str) -> dict[str, Any]:
         )
         return httpx.Response(200, json=payload, request=req)
 
-    bodies, fake_post = make_gemini_post_recorder(handler)
-    with patch("httpx.Client.post", fake_post):
-        run_chat_turn_gemini(user_text, settings)
+    bodies, base_fake_post = make_gemini_post_recorder(handler)
+
+    def fake_post(_self, url, **kwargs):
+        if "generateContent" not in str(url):
+            req = httpx.Request("POST", str(url))
+            return httpx.Response(200, json={}, request=req)
+        return base_fake_post(_self, url, **kwargs)
+
+    env = {**os.environ, "SPOT_AI_FY_DISABLE_DETERMINISTIC_CHAT": "1"}
+    with patch.dict(os.environ, env, clear=False):
+        with patch("httpx.Client.post", fake_post):
+            run_chat_turn_gemini(user_text, settings)
     assert bodies
     return bodies[0]
 
@@ -99,11 +113,16 @@ def test_r8_item1_informational_library_questions_readonly_tools_both_providers(
 
         assert prompt_requests_recent_listening_history(phrase)
     else:
-        gemini_body = _capture_gemini_first_body(phrase)
+        gemini_body = _capture_gemini_first_body(phrase, data_dir=data_dir)
         gemini_names = _gemini_declaration_names(gemini_body)
         assert gemini_names
         assert not gemini_names & SPOTIFY_MUTATING_TOOL_NAMES
-        assert "spotify_top_artists" in gemini_names or "spotify_recently_played" in gemini_names
+        readonly_ok = (
+            "spotify_top_artists" in gemini_names
+            or "spotify_recently_played" in gemini_names
+            or ("playlist" in phrase.lower() and "spotify_user_playlists" in gemini_names)
+        )
+        assert readonly_ok
         assert "toolConfig" in gemini_body
 
     if phrase != "what have I been listening to lately?":

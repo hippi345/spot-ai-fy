@@ -55,3 +55,19 @@ cases:
       group: blank_title_eval
       ci: true
       expected_tools: [spotify_play_track]
+
+  - name: blank_track_title_eval_allows_title_only_success
+    inputs:
+      prompt: evaluator regression — title without artist may succeed (bare track)
+      mode: mock
+      eval_fixture:
+        reply: Playing
+        duration_s: 0.01
+        tool_calls:
+          - name: spotify_play_track
+            arguments: {track_name: "Down", artist_name: ""}
+            result: '{"ok": true, "playback_verified": true}'
+    metadata:
+      group: blank_title_eval
+      ci: false
+      description: BlankTrackTitleRejected must pass when play succeeded with title only

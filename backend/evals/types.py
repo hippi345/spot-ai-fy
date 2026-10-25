@@ -39,6 +39,7 @@ class EvalCaseInput(BaseModel):
     forbid_llm: bool = False
     eval_fixture: dict[str, Any] | None = None
     library_index_arm: str = ""
+    play_log_enabled: bool = False
 
 
 class EvalCaseMetadata(BaseModel):
@@ -62,3 +63,5 @@ class EvalCaseMetadata(BaseModel):
     library_index_arm: str = ""  # "on" | "off" | "" (unset)
     canonical_library: bool = False
     library_only: bool = False
+    expect_play_history_window: str = ""
+    play_log_arm: str = ""

@@ -111,6 +111,13 @@ def run_mock_case(
     import respx
 
     with respx.mock:
+        if case_input.play_log_enabled:
+            settings = settings.model_copy(update={"spot_play_log": "on"})
+            from evals.play_history_fixture import seed_play_log_db
+            from spot_backend.play_log import PlayLogStore
+
+            store = PlayLogStore(settings=settings)
+            seed_play_log_db(store)
         install_profile(case_input.mock_spotify_profile)
         t0 = time.perf_counter()
         runner = SpotifyToolRunner(settings=settings, conversation_id=case_input.conversation_id)
@@ -234,7 +241,11 @@ def run_live_case(
             if et == "tool_done":
                 name = str(ev.get("name") or "")
                 preview = str(ev.get("preview") or "")
-                tool_calls.append(ToolCallRecord(name=name, arguments={}, result=preview))
+                raw_args = ev.get("arguments")
+                arguments = dict(raw_args) if isinstance(raw_args, dict) else {}
+                tool_calls.append(
+                    ToolCallRecord(name=name, arguments=arguments, result=preview)
+                )
                 tool_results.append(preview)
             if et == "final":
                 reply = str(ev.get("text") or "")

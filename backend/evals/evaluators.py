@@ -213,7 +213,12 @@ class BlankTrackTitleRejected(Evaluator):
             ):
                 continue
             args = tc.arguments or {}
-            title = str(args.get("track_name") or args.get("title") or "").strip()
+            title_keys = ("track_name", "title", "name")
+            artist_keys = ("artist_name", "artist")
+            if not any(k in args for k in title_keys) and not any(k in args for k in artist_keys):
+                # Live eval records tool_done previews only (arguments={}); cannot judge blanks.
+                continue
+            title = str(args.get("track_name") or args.get("title") or args.get("name") or "").strip()
             artist = str(args.get("artist_name") or args.get("artist") or "").strip()
             raw = tc.result or ""
             raw_l = raw.lower()
@@ -221,7 +226,7 @@ class BlankTrackTitleRejected(Evaluator):
                 if "is required" not in raw_l and "track_name is required" not in raw_l:
                     return False
                 continue
-            if title == "" or artist == "":
+            if title == "":
                 if "is required" in raw_l:
                     continue
                 compact = raw.replace(" ", "")
@@ -229,6 +234,10 @@ class BlankTrackTitleRejected(Evaluator):
                     return False
                 if '"error"' in raw and "is required" not in raw_l:
                     return False
+                continue
+            if artist == "":
+                # Bare-track play: title required; artist may be omitted when search can resolve it.
+                continue
         return True
 
 
@@ -305,6 +314,25 @@ class NoMockHttpLeakInReply(Evaluator):
 
 
 @dataclass
+class PlayHistoryWindowMatch(Evaluator):
+    """search_play_history must use the expected window argument when set."""
+
+    def evaluate(self, ctx: EvaluatorContext) -> bool:
+        meta = _meta(ctx)
+        want = (meta.expect_play_history_window or "").strip()
+        if not want:
+            return True
+        out = _output(ctx)
+        for tc in out.tool_calls:
+            if tc.name != "search_play_history":
+                continue
+            got = str(tc.arguments.get("window") or "").strip().lower()
+            if got == want.lower():
+                return True
+        return False
+
+
+@dataclass
 class MockScriptRan(Evaluator):
     """Mock cases with mock_script must execute at least one tool."""
 
@@ -340,6 +368,7 @@ CUSTOM_EVALUATOR_TYPES: list[type[Evaluator]] = [
     CanonicalVibeJudge,
     CanonicalTasteJudge,
     NoMockHttpLeakInReply,
+    PlayHistoryWindowMatch,
 ]
 
 
@@ -367,6 +396,7 @@ def dataset_evaluators(include_judges: bool = True) -> list[Any]:
         CanonicalVibeJudge(),
         CanonicalTasteJudge(),
         NoMockHttpLeakInReply(),
+        PlayHistoryWindowMatch(),
     ]
     if include_judges:
         evals.extend(qualitative_judges())

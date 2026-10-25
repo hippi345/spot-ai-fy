@@ -35,6 +35,7 @@ from spot_backend.gemini_history import (
     repair_gemini_contents,
     validate_gemini_contents,
 )
+from spot_backend.chat_tool_events import tool_done_event
 from spot_backend.llm_secret_safety import redact_known_api_keys
 from spot_backend.llm_catalog import DEFAULT_MODEL_BY_PROVIDER
 from spot_backend.llm_tool_loop import (
@@ -785,7 +786,7 @@ def run_chat_turn_gemini(
                             record_successful_tool(successful_tools, name, result)
                         if emit:
                             preview = result[:240] + ("…" if len(result) > 240 else "")
-                            emit({"type": "tool_done", "name": name, "preview": preview})
+                            emit(tool_done_event(name, preview, args))
                         fr_parts.append(
                             {
                                 "functionResponse": {
