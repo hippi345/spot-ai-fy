@@ -221,7 +221,7 @@ class BlankTrackTitleRejected(Evaluator):
                 if "is required" not in raw_l and "track_name is required" not in raw_l:
                     return False
                 continue
-            if title == "" or artist == "":
+            if title == "":
                 if "is required" in raw_l:
                     continue
                 compact = raw.replace(" ", "")
@@ -229,6 +229,10 @@ class BlankTrackTitleRejected(Evaluator):
                     return False
                 if '"error"' in raw and "is required" not in raw_l:
                     return False
+                continue
+            if artist == "":
+                # Bare-track play: title required; artist may be omitted when search can resolve it.
+                continue
         return True
 
 

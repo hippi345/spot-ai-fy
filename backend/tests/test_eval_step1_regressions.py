@@ -102,6 +102,24 @@ def test_blank_track_title_rejected_evaluator() -> None:
         {},
     )
     assert ev.evaluate(ctx) is True
+
+
+def test_blank_track_title_evaluator_allows_title_only_success() -> None:
+    ev = BlankTrackTitleRejected()
+    ctx = _ctx(
+        AgentTurnResult(
+            reply="Playing",
+            tool_calls=[
+                ToolCallRecord(
+                    name="spotify_play_track",
+                    arguments={"track_name": "Down", "artist_name": ""},
+                    result='{"ok": true, "playback_verified": true}',
+                )
+            ],
+        ),
+        {},
+    )
+    assert ev.evaluate(ctx) is True
     bad = _ctx(
         AgentTurnResult(
             reply="",
